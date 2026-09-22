@@ -1,0 +1,43 @@
+:root {
+  color-scheme: light;
+  --color-canvas: #f5f6f8;
+  --color-surface: #ffffff;
+  --color-ink: #20242d;
+  --color-muted: #626978;
+  --color-line: #e1e5ec;
+  --color-brand: #465bd8;
+  --color-info: #3653c7;
+  --color-info-surface: #eef1ff;
+  --color-warning: #8a5a00;
+  --color-warning-surface: #fff5d6;
+  --color-success: #237a4b;
+  --color-success-surface: #eaf7ef;
+  --color-danger: #b42318;
+  --color-danger-surface: #feecea;
+  --font-family-sans: "Noto Sans SC", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+  --font-size-page-title: 28px;
+  --font-size-section-title: 18px;
+  --font-size-body: 14px;
+  --font-size-caption: 12px;
+  --line-height-page-title: 36px;
+  --line-height-section-title: 27px;
+  --line-height-body: 21px;
+  --line-height-caption: 18px;
+  --radius-control: 8px;
+  --radius-panel: 12px;
+  --radius-pill: 999px;
+  --space-section: 24px;
+  --space-content: 32px;
+}
+
+@media (min-width: 768px) {
+  :root {
+    --navigation-width: 216px;
+  }
+}
+
+@media (min-width: 1280px) {
+  :root {
+    --content-max-width: 1440px;
+  }
+}

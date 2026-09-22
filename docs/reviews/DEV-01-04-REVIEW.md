@@ -1,0 +1,24 @@
+# DEV-01-04 建立测试分层与统一命令
+
+- 执行模型：`gpt-5.6-terra`
+- 关联需求/AC/Figma：DEV-01-04；G3 测试门禁与 Gate B 的测试基础要求。
+- 范围与非目标：用 Vitest 建立 unit、integration、contract、e2e 四个独立可重放的测试入口，并提供统一 test 命令；统一命令递归编排所有具有 `test` 脚本的 workspace 子包，避免将根脚本递归回调。不会将占位测试伪称为产品、桌面或 AC 验收测试，不实现领域、Adapter、Tauri 或 UI 行为。
+- 变更文件/模块：`vitest.config.ts`、`tests/{unit,integration,contract,e2e}/` 下的分层发现测试、根 `package.json` 及 `pnpm-lock.yaml`。
+- 领域与数据影响：无。contract 基线只读取并解析冻结的 Adapter manifest Schema，未改写 Schema 或定义新协议语义。
+- 安全与隐私影响：无真实浏览器会话、生产凭据、网络服务或用户目录依赖；测试全部本地、确定性执行。
+- 验证命令：
+  - `pnpm run typecheck`
+  - `pnpm run fmt:check`
+  - `pnpm run test:unit`
+  - `pnpm run test:integration`
+  - `pnpm run test:contract`
+  - `pnpm run test:e2e`
+  - `pnpm run test:workspace`
+  - `pnpm run test`
+  - `cargo test --workspace --locked`
+- 验证结果：扩展的 `fmt:check` 覆盖 apps/packages 受支持源码并通过；`typecheck` 同时通过 root 和 desktop/contracts-ts/design-tokens 子包。四个根 Vitest 层均以退出码 0 独立通过（unit 4、integration 1、contract 15、e2e 1）；`pnpm run test:workspace` 使用 `pnpm --recursive --if-present run test` 运行所有有自身测试的子包，当前桌面与 design-tokens 均为 1 个文件、4 个测试通过；`pnpm run test` 顺序编排四个根层和 workspace 测试并通过；`cargo test --workspace --locked` 通过（包含 domain 的 12 个已锁定值对象测试）。
+- 失败/边界用例：统一命令中任一层失败会中断 shell 链并返回非零退出码；pnpm 输出 `Scope: 3 of 4 workspace projects`，证明 workspace root 未被递归选择，故不会形成根 `test` 循环。`--if-present` 允许无测试脚本的子包不被误判失败。contract 层确认冻结 manifest 可解析且声明 `$schema`。真实桌面 E2E、完整 Schema 正反例契约和业务集成测试由后续拥有对应实现的节点补齐。
+- 视觉/无障碍证据（适用时）：不适用；本节点只建立测试运行结构。
+- 迁移与回退：无数据或协议迁移。回退时移除测试配置和脚本入口即可；不影响工作区或领域数据。
+- 遗留风险：当前 e2e 入口是稳定的结构性占位，尚未驱动真实 Tauri；DEV-01-06 及后续 AC 节点须以真实桌面边界替换/扩展该套件，且 DEV-03-01 须提供完整 Schema 正反例验证。
+- 审核结论：**PASS**

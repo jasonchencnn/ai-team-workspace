@@ -1,0 +1,44 @@
+{
+  "name": "ai-team-workspace",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": "24.21.0",
+    "pnpm": "10.33.0"
+  },
+  "packageManager": "pnpm@10.33.0",
+  "scripts": {
+    "build": "pnpm --recursive --if-present run build",
+    "check:toolchain": "node scripts/check-toolchain.mjs",
+    "contracts:check": "node scripts/check-contracts.mjs",
+    "contracts:generate": "node scripts/generate-contracts.mjs",
+    "fmt": "prettier --write package.json eslint.config.mjs scripts tests tsconfig.json vitest.config.ts .prettierrc.json apps packages --ignore-unknown",
+    "fmt:check": "prettier --check package.json eslint.config.mjs scripts tests tsconfig.json vitest.config.ts .prettierrc.json apps packages --ignore-unknown && cargo fmt --all -- --check",
+    "lint": "pnpm run lint:ts && pnpm run lint:rust",
+    "lint:rust": "cargo clippy --workspace --all-targets --all-features -- -D warnings",
+    "lint:ts": "eslint .",
+    "test": "pnpm run test:all",
+    "test:all": "pnpm run test:unit && pnpm run test:integration && pnpm run test:contract && pnpm run test:e2e && pnpm run test:workspace",
+    "test:contract": "vitest run --project contract",
+    "test:e2e": "vitest run --project e2e",
+    "test:integration": "vitest run --project integration",
+    "test:unit": "vitest run --project unit",
+    "test:workspace": "pnpm --recursive --if-present run test",
+    "typecheck": "pnpm run typecheck:root && pnpm run typecheck:workspace",
+    "typecheck:root": "tsc --noEmit",
+    "typecheck:workspace": "pnpm --recursive --if-present run typecheck",
+    "verify:guards": "node scripts/verify-tooling-guards.mjs"
+  },
+  "devDependencies": {
+    "@eslint/js": "10.0.1",
+    "@types/node": "26.6.2",
+    "ajv": "8.17.1",
+    "ajv-formats": "3.0.1",
+    "eslint": "10.11.0",
+    "globals": "17.12.0",
+    "prettier": "3.9.8",
+    "typescript": "5.9.3",
+    "typescript-eslint": "8.70.0",
+    "vitest": "5.0.1"
+  }
+}

@@ -1,0 +1,25 @@
+{
+  "jsonrpc": "2.0",
+  "method": "run.completed",
+  "params": {
+    "team_id": "01992d6d-2f31-7b11-8aa8-c975a632c011",
+    "task_id": "01992d6d-2f31-7b11-8aa8-c975a632c012",
+    "run_id": "01992d6d-2f31-7b11-8aa8-c975a632c013",
+    "role_id": "01992d6d-2f31-7b11-8aa8-c975a632c014",
+    "binding_id": "01992d6d-2f31-7b11-8aa8-c975a632c015",
+    "binding_version": 3,
+    "fencing_token": 7,
+    "sequence": 5,
+    "completed_at": "2026-09-21T12:04:00.000Z",
+    "result_references": [
+      {
+        "kind": "git_commit",
+        "uri": "git:4f7b2c0bfae6d818f28f29d4880d0983a4b3f730",
+        "version": "4f7b2c0bfae6d818f28f29d4880d0983a4b3f730",
+        "checksum": null,
+        "media_type": "application/vnd.git.commit"
+      }
+    ],
+    "summary": "登录界面已实现并通过指定测试。"
+  }
+}

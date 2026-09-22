@@ -1,0 +1,14 @@
+# Dependency and build outputs
+node_modules/
+target/
+coverage/
+playwright-report/
+test-results/
+
+# Local tooling and operating-system files
+.DS_Store
+.env
+.env.*
+!.env.example
+*.local
+pnpm-debug.log*

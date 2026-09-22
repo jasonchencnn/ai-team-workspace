@@ -1,0 +1,24 @@
+{
+  "name": "@ai-team-workspace/desktop",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "build": "tsc --noEmit && vite build",
+    "dev": "vite --host 127.0.0.1",
+    "test": "vitest run --config vitest.config.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "=2.9.1",
+    "@tauri-apps/cli": "=2.9.5",
+    "react": "=19.2.3",
+    "react-dom": "=19.2.3"
+  },
+  "devDependencies": {
+    "@types/react": "=19.2.7",
+    "@types/react-dom": "=19.2.3",
+    "@vitejs/plugin-react": "=5.1.1",
+    "vite": "=7.3.1"
+  }
+}

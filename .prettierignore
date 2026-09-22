@@ -1,0 +1,6 @@
+node_modules/
+target/
+coverage/
+apps/**/dist/
+apps/**/src-tauri/gen/
+pnpm-lock.yaml

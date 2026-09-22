@@ -1,0 +1,26 @@
+# DEV-01-06 创建 Tauri/React 最小桌面壳
+
+- 执行模型：`gpt-5.6-terra`
+- 关联需求/AC/Figma：DEV-01-06；Gate B 的桌面壳启动与最小 Tauri capability 要求。
+- 范围与非目标：仅在 `apps/desktop/` 建立 React 19/Vite 前端入口和 Tauri 2 主机装配。没有业务状态、IPC 命令、领域规则、Adapter、文件系统访问、外部链接能力、Shell、凭据或生产集成。
+- 变更文件/模块：`apps/desktop/package.json`、Vite/TypeScript/Vitest 配置、React 静态入口与样式、`src-tauri` 的 Tauri manifest、build script、主机入口、窗口配置和 capability；构建必需的临时图标 `src-tauri/icons/icon.png`；模块级 `.gitignore`；`docs/reviews/DEV-01-06-REVIEW.md`。
+- 领域与数据影响：无。界面仅说明后续节点将接入控制面，未定义或模拟 Team、Role、Task、Run 或其他业务事实。
+- 安全与隐私影响：唯一 capability 绑定 `main` 窗口且 `permissions` 为空；没有启用 `core:default`、Shell、通用文件系统、opener 或任何 Tauri plugin。开发地址固定为 loopback `127.0.0.1:1420`；production frontend 使用相对打包产物。
+- 验证命令：
+  - `pnpm --dir apps/desktop test`
+  - `pnpm --dir apps/desktop run typecheck`
+  - `pnpm --dir apps/desktop run build`
+  - `pnpm run lint:ts`
+  - `pnpm run typecheck`
+  - `pnpm exec prettier --check <desktop 源码与配置文件>`
+  - `cargo fmt --manifest-path apps/desktop/src-tauri/Cargo.toml -- --check`
+  - `cargo check --manifest-path apps/desktop/src-tauri/Cargo.toml --locked`
+  - `cargo build --manifest-path apps/desktop/src-tauri/Cargo.toml --locked`
+  - `cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml --locked`
+  - `cargo clippy --manifest-path apps/desktop/src-tauri/Cargo.toml --all-targets --all-features --locked -- -D warnings`
+- 验证结果：统一锁定后，根 `lint:ts`、根和包级 `typecheck`、前端 production build、Rust fmt/check/build/test/clippy 均以退出码 0 通过。模块静态测试 4/4 通过，验证 capability 为空、未声明 shell/fs/opener plugin、开发 origin 仅为 loopback，且临时构建图标存在。总控在 macOS 以 `cargo run --locked -p desktop` 真实启动，日志进入 `Running target/debug/desktop` 事件循环；随后在同一可控终端 session 发送 Ctrl-C，进程按预期以信号退出码 1 关闭。最终 Rust 依赖为 `tauri =2.11.6`、`tauri-build =2.6.3`。Prettier 对源码与配置零差异；`dist/` 与 `src-tauri/gen/` 是构建生成物，按模块 `.gitignore` 排除且未格式化或手改。未修改 lockfile。
+- 失败/边界用例：Tauri capability 的空权限集合是默认拒绝，静态测试覆盖了错误加入高权限 plugin 或非 loopback dev origin 的回归。Tauri 在 Unix/macOS 的 `generate_context!()` 对默认窗口图标无条件回退到 `icons/icon.png`，空 `bundle.icon` 仍不能避免读取；因此添加透明背景的中性圆角方块 PNG，仅作为构建占位，不是品牌或设计资产，须在 DEV-06/发布节点替换。本节点的 macOS 证据仅证明本地进程可启动并通过可控终端关闭，不宣称已验证窗口交互、用户手势或桌面 E2E。
+- 视觉/无障碍证据（适用时）：提供语义化 `main`、单一 `h1` 与页面语言；它只是桌面壳占位，不是业务界面。完整视觉、键盘和 axe 验收归 DEV-06。
+- 迁移与回退：无数据、协议或运行时迁移。`apps/desktop/.gitignore` 明确忽略可重建的 `dist/`、`node_modules/` 和 `src-tauri/gen/`；不删除已存在产物。回退可整体移除 `apps/desktop/` 的本节点文件；未改变根配置、lockfile、领域模块或冻结规格。
+- 遗留风险：临时中性图标不是视觉设计资产，必须在 DEV-06/发布节点替换；完整视觉、键盘和 axe 验收仍归 DEV-06。窗口交互与完整桌面 E2E 也属于后续节点，不包含在本最小壳启动/关闭验证内。
+- 审核结论：**PASS**

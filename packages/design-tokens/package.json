@@ -1,0 +1,14 @@
+{
+  "name": "@ai-team-workspace/design-tokens",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./index.ts",
+    "./theme.css": "./theme.css"
+  },
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json",
+    "test": "vitest run --config test/vitest.config.ts"
+  }
+}

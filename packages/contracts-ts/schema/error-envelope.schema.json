@@ -1,0 +1,34 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ErrorEnvelope",
+  "description": "The stable error response shared by typed UI/IPC boundaries.\n\nError-code-specific detail keys remain governed by the frozen error catalog.\nThis transport type deliberately does not invent a second error-code enum.",
+  "type": "object",
+  "properties": {
+    "code": {
+      "description": "Stable, machine-readable code from the frozen error catalog.",
+      "type": "string"
+    },
+    "correlation_id": {
+      "description": "Canonical UUIDv7 used to correlate diagnostics.",
+      "type": "string"
+    },
+    "details": {
+      "description": "Whitelisted, redacted details defined per error code.",
+      "type": "object",
+      "additionalProperties": true
+    },
+    "field": {
+      "description": "Stable field path for validation errors; otherwise `null`.",
+      "type": ["string", "null"]
+    },
+    "message": {
+      "description": "Localizable, human-readable message with no secrets or backtraces.",
+      "type": "string"
+    },
+    "retryable": {
+      "description": "Whether the same idempotent intent may be retried after remediation.",
+      "type": "boolean"
+    }
+  },
+  "required": ["code", "message", "retryable", "correlation_id", "details"]
+}

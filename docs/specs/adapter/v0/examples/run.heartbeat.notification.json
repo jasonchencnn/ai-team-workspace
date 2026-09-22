@@ -1,0 +1,17 @@
+{
+  "jsonrpc": "2.0",
+  "method": "run.heartbeat",
+  "params": {
+    "team_id": "01992d6d-2f31-7b11-8aa8-c975a632c011",
+    "task_id": "01992d6d-2f31-7b11-8aa8-c975a632c012",
+    "run_id": "01992d6d-2f31-7b11-8aa8-c975a632c013",
+    "role_id": "01992d6d-2f31-7b11-8aa8-c975a632c014",
+    "binding_id": "01992d6d-2f31-7b11-8aa8-c975a632c015",
+    "binding_version": 3,
+    "fencing_token": 7,
+    "sequence": 4,
+    "observed_at": "2026-09-21T12:00:10.000Z",
+    "phase": "testing",
+    "progress_percent": 70
+  }
+}
