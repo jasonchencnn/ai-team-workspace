@@ -35,13 +35,25 @@ if (listing.status !== 0) {
 
 const packagePaths = new Set(listing.stdout.split(/\r?\n/u).filter(Boolean));
 const checked = new Map();
+const unavailablePlatformPackages = [];
 const violations = [];
 
 for (const packagePath of packagePaths) {
   const workspaceRelativePath = relative(root, packagePath);
   if (!workspaceRelativePath.split(sep).includes("node_modules")) continue;
 
-  const manifest = JSON.parse(readFileSync(resolve(packagePath, "package.json"), "utf8"));
+  let manifest;
+  try {
+    manifest = JSON.parse(readFileSync(resolve(packagePath, "package.json"), "utf8"));
+  } catch (error) {
+    if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") {
+      // pnpm lists lockfile-reachable optional binaries for every OS/CPU even when
+      // their package directory is intentionally absent on the current runner.
+      unavailablePlatformPackages.push(packagePath);
+      continue;
+    }
+    throw error;
+  }
   const identity = `${manifest.name ?? "<unnamed>"}@${manifest.version ?? "<unknown>"}`;
   const license = typeof manifest.license === "string" ? manifest.license.trim() : "";
 
@@ -82,4 +94,7 @@ const summary = [...licenseCounts]
   .sort(([left], [right]) => left.localeCompare(right))
   .map(([license, count]) => `${license}=${count}`)
   .join(", ");
-process.stdout.write(`Node license policy passed for ${checked.size} packages (${summary}).\n`);
+process.stdout.write(
+  `Node license policy passed for ${checked.size} installed packages (${summary}); ` +
+    `${unavailablePlatformPackages.length} unavailable platform-specific optional package paths skipped.\n`,
+);

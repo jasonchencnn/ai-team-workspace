@@ -11,6 +11,11 @@ const workflow = read(workflowPath);
 const dependabot = read(dependabotPath);
 const cargoDeny = read(cargoDenyPath);
 
+assert(
+  /^on:\n {2}push:\n {4}branches: \[main\]$/m.test(workflow),
+  "push CI must be limited to main; pull requests validate feature branches",
+);
+
 const requiredJobs = [
   "toolchain",
   "workflow-validation",
@@ -35,10 +40,10 @@ for (const runner of ["ubuntu-latest", "macos-latest"]) {
 }
 
 for (const action of [
-  "actions/checkout@v4.2.2",
-  "actions/setup-node@v4.4.0",
-  "pnpm/action-setup@v4.1.0",
-  "gitleaks/gitleaks-action@v2.3.9",
+  "actions/checkout@v7.0.1",
+  "actions/setup-node@v7.0.0",
+  "pnpm/action-setup@v6.1.0",
+  "gitleaks/gitleaks-action@v3.0.0",
   "docker://rhysd/actionlint:1.7.7",
 ]) {
   assert(workflow.includes(action), `action is not pinned to ${action}`);
