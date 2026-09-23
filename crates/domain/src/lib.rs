@@ -12,6 +12,12 @@ use std::str::FromStr;
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
+mod sources;
+/// Deterministic sources reserved for tests and local development fixtures.
+pub mod test_fixtures;
+
+pub use sources::{Clock, RandomSource, UuidV7Generator, UuidV7GeneratorError, UuidV7Source};
+
 /// A parse or validation error for a domain value object.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ValueObjectError {

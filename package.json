@@ -17,6 +17,7 @@
     "lint": "pnpm run lint:ts && pnpm run lint:rust",
     "lint:rust": "cargo clippy --workspace --all-targets --all-features -- -D warnings",
     "lint:ts": "eslint .",
+    "licenses:check": "node scripts/ci/check-node-licenses.mjs",
     "test": "pnpm run test:all",
     "test:all": "pnpm run test:unit && pnpm run test:integration && pnpm run test:contract && pnpm run test:e2e && pnpm run test:workspace",
     "test:contract": "vitest run --project contract",
@@ -27,6 +28,7 @@
     "typecheck": "pnpm run typecheck:root && pnpm run typecheck:workspace",
     "typecheck:root": "tsc --noEmit",
     "typecheck:workspace": "pnpm --recursive --if-present run typecheck",
+    "unsafe:check": "node scripts/ci/check-rust-unsafe.mjs",
     "verify:guards": "node scripts/verify-tooling-guards.mjs"
   },
   "devDependencies": {

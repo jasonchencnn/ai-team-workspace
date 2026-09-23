@@ -1,0 +1,278 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  toolchain:
+    name: ci / toolchain (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4.2.2
+      - uses: pnpm/action-setup@v4.1.0
+        with:
+          version: 10.33.0
+      - uses: actions/setup-node@v4.4.0
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+      # Restored caches only improve speed; strict installation remains authoritative.
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm run check:toolchain
+
+  workflow-validation:
+    name: ci / workflow validation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4.2.2
+      - uses: actions/setup-node@v4.4.0
+        with:
+          node-version-file: .nvmrc
+      - uses: docker://rhysd/actionlint:1.7.7
+      - run: node scripts/ci/verify-workflows.mjs
+      - run: node scripts/ci/check-rust-unsafe.mjs
+
+  format:
+    name: ci / format (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4.2.2
+      - uses: pnpm/action-setup@v4.1.0
+        with:
+          version: 10.33.0
+      - uses: actions/setup-node@v4.4.0
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm run fmt:check
+
+  lint:
+    name: ci / lint (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4.2.2
+      - uses: pnpm/action-setup@v4.1.0
+        with:
+          version: 10.33.0
+      - uses: actions/setup-node@v4.4.0
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm run lint:ts
+
+  typecheck:
+    name: ci / typecheck (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4.2.2
+      - uses: pnpm/action-setup@v4.1.0
+        with:
+          version: 10.33.0
+      - uses: actions/setup-node@v4.4.0
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm run typecheck
+
+  tests:
+    name: ci / ${{ matrix.layer }} tests (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        layer: [unit, integration, contract, e2e, workspace]
+    steps:
+      - uses: actions/checkout@v4.2.2
+      - uses: pnpm/action-setup@v4.1.0
+        with:
+          version: 10.33.0
+      - uses: actions/setup-node@v4.4.0
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm run test:${{ matrix.layer }}
+
+  rust-locked:
+    name: ci / rust ${{ matrix.check }} (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            check: test
+            command: cargo test --workspace --locked
+          - os: macos-latest
+            check: test
+            command: cargo test --workspace --locked
+          - os: ubuntu-latest
+            check: build
+            command: cargo build --workspace --locked
+          - os: macos-latest
+            check: build
+            command: cargo build --workspace --locked
+          - os: ubuntu-latest
+            check: clippy
+            command: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+          - os: macos-latest
+            check: clippy
+            command: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+    steps:
+      - uses: actions/checkout@v4.2.2
+      - name: Install Linux desktop build dependencies
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes \
+            libwebkit2gtk-4.1-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            libxdo-dev \
+            patchelf
+      - run: rustup toolchain install 1.98.0 --profile minimal --component clippy --component rustfmt
+      - run: ${{ matrix.command }}
+
+  contracts-drift:
+    name: ci / generated contracts (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4.2.2
+      - uses: pnpm/action-setup@v4.1.0
+        with:
+          version: 10.33.0
+      - uses: actions/setup-node@v4.4.0
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm run contracts:check
+
+  secret-scan:
+    name: ci / secret scan (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4.2.2
+        with:
+          fetch-depth: 0
+      - uses: gitleaks/gitleaks-action@v2.3.9
+
+  dependency-security:
+    name: ci / dependency vulnerabilities (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4.2.2
+      - uses: pnpm/action-setup@v4.1.0
+        with:
+          version: 10.33.0
+      - uses: actions/setup-node@v4.4.0
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm audit --audit-level=high
+      - run: cargo install cargo-audit --version 0.22.0 --locked
+      - run: cargo audit
+
+  license-compliance:
+    name: ci / dependency licenses (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4.2.2
+      - uses: pnpm/action-setup@v4.1.0
+        with:
+          version: 10.33.0
+      - uses: actions/setup-node@v4.4.0
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+      - run: cargo install cargo-deny --version 0.18.6 --locked
+      - run: cargo deny check --config .github/cargo-deny.toml licenses
+      - run: pnpm run licenses:check
+
+  required-checks:
+    name: ci / required checks
+    runs-on: ubuntu-latest
+    if: ${{ always() }}
+    needs:
+      - toolchain
+      - workflow-validation
+      - format
+      - lint
+      - typecheck
+      - tests
+      - rust-locked
+      - contracts-drift
+      - secret-scan
+      - dependency-security
+      - license-compliance
+    steps:
+      - run: |
+          test "${{ needs.toolchain.result }}" = success
+          test "${{ needs.workflow-validation.result }}" = success
+          test "${{ needs.format.result }}" = success
+          test "${{ needs.lint.result }}" = success
+          test "${{ needs.typecheck.result }}" = success
+          test "${{ needs.tests.result }}" = success
+          test "${{ needs.rust-locked.result }}" = success
+          test "${{ needs.contracts-drift.result }}" = success
+          test "${{ needs.secret-scan.result }}" = success
+          test "${{ needs.dependency-security.result }}" = success
+          test "${{ needs.license-compliance.result }}" = success
