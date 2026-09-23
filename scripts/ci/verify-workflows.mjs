@@ -35,7 +35,7 @@ for (const job of requiredJobs) {
   assert(new RegExp(`^ {2}${job}:`, "m").test(workflow), `missing required job '${job}'`);
 }
 
-for (const runner of ["ubuntu-latest", "macos-latest"]) {
+for (const runner of ["ubuntu-24.04", "macos-latest"]) {
   assert(workflow.includes(runner), `missing ${runner} coverage`);
 }
 
@@ -80,6 +80,10 @@ assert(
   "pnpm cache must key from the lockfile",
 );
 assert(!workflow.includes("secrets."), "workflow must not pass repository secrets to jobs");
+assert(
+  workflow.includes("GITHUB_TOKEN: ${{ github.token }}"),
+  "Gitleaks must receive only the automatic least-privilege GitHub token",
+);
 for (const dependency of [
   "libwebkit2gtk-4.1-dev",
   "libayatana-appindicator3-dev",
@@ -90,7 +94,7 @@ for (const dependency of [
   assert(workflow.includes(dependency), `missing Ubuntu desktop build dependency '${dependency}'`);
 }
 assert(workflow.includes("needs:"), "required-checks must depend on individual gates");
-for (const runner of ["ubuntu-latest", "macos-latest"]) {
+for (const runner of ["ubuntu-24.04", "macos-latest"]) {
   for (const check of ["test", "build", "clippy"]) {
     assert(
       workflow.includes(`- os: ${runner}\n            check: ${check}`),
