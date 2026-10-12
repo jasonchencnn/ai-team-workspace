@@ -10,7 +10,7 @@
 |---|---|
 | 阶段 | M1 团队与任务：按执行计划派工中（第 9 节） |
 | 已完成 | Codex 时期工作已完整存档（分支 `codex/wave-2-ci-validation`，提交 `2907728`、`ad0ae10`、`519d4d6`）；过程文档已清理；旧代码、旧工具和冻结规格移入 `archive/codex-era/`；CI 精简为 3 个任务；两条分支已推送到 GitHub；仓库已公开，旧 PR #1–#5 已关闭 |
-| 进行中 | 第 1 波：M1-01 工程准备 |
+| 进行中 | 第 1 波 M1-01 待启动：等 Claude Code CLI 改为账号登录、重启会话后派工 |
 | 待你确认 | 无 |
 | 下一步 | 第 2 波：M1-02 领域契约 |
 
@@ -175,11 +175,10 @@ M4 的 Leader 编排没有对应画板，交互主要发生在 Leader 自己的�
 | 功能开发 | 子 agent · Sonnet | 按契约实现功能、页面还原、命令接线、补测试 |
 | 工程杂务 | 子 agent · Haiku | 依赖与配置、文档同步、批量机械修改 |
 | 交叉审查 | Codex CLI（GPT 系模型） | 用另一家的模型审查核心代码，找同一模型容易忽略的问题 |
-| 试点开发 | Claude Code + MiniMax 模型 | 承担个别前端任务，对比产出质量 |
 
-Codex 与 MiniMax 会消耗你的额度；M1 已同意 Codex 审查（M1-11）和 MiniMax 试点（M1-07），其他使用先征得你同意。
+Codex 会消耗你的额度；M1 已同意用它做交叉审查（M1-11），其他使用先征得你同意。MiniMax 不参与本项目开发。
 
-子 agent 通过 `.claude/agents/` 里的岗位定义启动：`team-kernel`（Opus）、`team-dev`（Sonnet）、`team-chore`（Haiku），定义里写明完整模型 ID。原因是全局 Claude Code 配置把模型别名映射到了 MiniMax，按别名选模型会失败。Codex 审查用 `codex exec review`；MiniMax 试点直接使用终端 Claude Code 的现有配置。
+子 agent 通过 `.claude/agents/` 里的岗位定义启动：`team-kernel`（Opus）、`team-dev`（Sonnet）、`team-chore`（Haiku），定义里写明完整模型 ID，不受全局模型别名配置影响。Codex 审查用 `codex exec review`。
 
 协作规则：
 
@@ -198,7 +197,7 @@ Codex 与 MiniMax 会消耗你的额度；M1 已同意 Codex 审查（M1-11）�
 | M1-04 | 系统探测：Git 工作空间检测、工作区文件搜索、Claude Code / Codex 检测与健康检查 | 子 agent · Sonnet | 02 | 用临时目录和假可执行文件测试，不调用真实 CLI | 待开始 |
 | M1-05 | 前端骨架：侧边导航与团队切换、路由、基础组件（设计规范 `8:315`）、IPC 调用封装 | 子 agent · Sonnet | 02 | 各页面占位可跳转，基础组件与 Figma 一致 | 待开始 |
 | M1-06 | Tauri 命令层：应用数据目录、命令注册、文件夹选择、错误提示 | 子 agent · Sonnet | 03、04 | 界面能调用到真实内核 | 待开始 |
-| M1-07 | 页面：创建团队、空状态、团队空间（`13:353`、`8:314`、`4:291`） | 子 agent · Sonnet，或 MiniMax 试点 | 05 | 与 Figma 截图逐项对照 | 待开始 |
+| M1-07 | 页面：创建团队、空状态、团队空间（`13:353`、`8:314`、`4:291`） | 子 agent · Sonnet | 05 | 与 Figma 截图逐项对照 | 待开始 |
 | M1-08 | 页面：岗位与绑定、Harness 注册与健康检查（`4:402`、`13:354`、`59:839`） | 子 agent · Sonnet | 05 | 同上 | 待开始 |
 | M1-09 | 页面：任务面板（看板 / 列表）、任务详情（`4:336`、`4:369`） | 子 agent · Sonnet | 05 | 同上 | 待开始 |
 | M1-10 | 页面：创建与编辑任务（`13:358`、`8:421`、`8:422`） | 子 agent · Sonnet | 05 | 同上 | 待开始 |
