@@ -1,0 +1,149 @@
+/* 团队空间页：岗位卡片区 + 两个面板。颜色、圆角、字号只使用 theme.css 的变量。 */
+
+.th-page {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-section);
+}
+
+.th-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+}
+
+.th-note {
+  color: var(--color-muted);
+  font-size: var(--font-size-caption);
+  line-height: var(--line-height-caption);
+}
+
+/* 岗位卡片区 */
+.th-roles {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 16px;
+}
+
+@media (min-width: 768px) {
+  .th-roles {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
+
+@media (min-width: 1280px) {
+  .th-roles {
+    grid-template-columns: repeat(4, 1fr);
+  }
+}
+
+.th-role .ui-card__body {
+  color: var(--color-muted);
+}
+
+.th-health {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+/* 底部两栏面板 */
+.th-panels {
+  display: grid;
+  grid-template-columns: 1fr;
+  align-items: start;
+  gap: var(--space-section);
+}
+
+@media (min-width: 1080px) {
+  .th-panels {
+    grid-template-columns: 1.6fr 1fr;
+  }
+}
+
+.th-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  min-width: 0;
+}
+
+.th-panel__title {
+  font-size: var(--font-size-section-title);
+  font-weight: 700;
+  line-height: var(--line-height-section-title);
+}
+
+.th-panel__subtitle {
+  font-size: var(--font-size-body);
+  font-weight: 600;
+  line-height: var(--line-height-body);
+}
+
+/* 进行中任务行：key、标题、负责岗位、状态 */
+.th-task-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.th-task-row {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr) max-content max-content;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  padding: 12px 16px;
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius-control);
+  background: var(--color-surface);
+  text-align: left;
+  cursor: pointer;
+}
+
+.th-task-row:hover {
+  background: var(--color-canvas);
+}
+
+.th-task-row__key {
+  color: var(--color-muted);
+  font-size: var(--font-size-caption);
+}
+
+.th-task-row__title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.th-task-row__owner {
+  color: var(--color-muted);
+  font-size: var(--font-size-caption);
+}
+
+/* 最近活动 */
+.th-event-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.th-event {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.th-event__time {
+  color: var(--color-muted);
+  font-size: var(--font-size-caption);
+  line-height: var(--line-height-caption);
+}

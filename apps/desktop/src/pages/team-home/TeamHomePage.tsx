@@ -1,11 +1,243 @@
-import { PageHeader, Panel } from "../../components/index.js";
+import { useQuery } from "@tanstack/react-query";
+import { useNavigate, useParams } from "react-router";
 
-// 占位页面，由 M1-07 替换本文件。
+import { getTeamOverview } from "../../api/commands.js";
+import { queryKeys } from "../../api/queryKeys.js";
+import type { HarnessKind } from "../../bindings/HarnessKind.js";
+import type { HealthStatus } from "../../bindings/HealthStatus.js";
+import type { TaskStatus } from "../../bindings/TaskStatus.js";
+import {
+  Button,
+  Card,
+  EmptyState,
+  ErrorBanner,
+  PageHeader,
+  Panel,
+  Spinner,
+  Tag,
+} from "../../components/index.js";
+import type { TagTone } from "../../components/index.js";
+import { formatLocalDateTime } from "./formatLocalDateTime.js";
+import "./team-home.css";
+
+const HARNESS_LABEL: Record<HarnessKind, string> = {
+  claude_code: "Claude Code",
+  codex: "Codex",
+  mock: "Mock",
+};
+
+const HEALTH_TONE: Record<HealthStatus, TagTone> = {
+  ok: "success",
+  error: "danger",
+  unknown: "neutral",
+};
+
+const HEALTH_LABEL: Record<HealthStatus, string> = {
+  ok: "在线",
+  error: "异常",
+  unknown: "未检测",
+};
+
+const STATUS_TONE: Record<TaskStatus, TagTone> = {
+  todo: "neutral",
+  ready: "info",
+  doing: "info",
+  blocked: "warning",
+  review: "warning",
+  done: "success",
+  cancelled: "neutral",
+};
+
 export function TeamHomePage() {
+  const { teamId } = useParams();
+  const navigate = useNavigate();
+  const key = teamId ?? "";
+
+  const overview = useQuery({
+    queryKey: queryKeys.teamOverview(key),
+    queryFn: () => getTeamOverview(key),
+    enabled: teamId !== undefined,
+  });
+
+  if (overview.isPending) {
+    return <Spinner label="正在加载团队空间" />;
+  }
+  if (overview.isError) {
+    return (
+      <ErrorBanner
+        error={overview.error}
+        action={
+          <Button
+            variant="neutral"
+            onClick={() => {
+              void overview.refetch();
+            }}
+          >
+            重试
+          </Button>
+        }
+      />
+    );
+  }
+
+  const data = overview.data;
+  const totalTasks = data.taskCounts.reduce((sum, item) => sum + item.count, 0);
+  const activeCounts = data.taskCounts.filter((item) => item.count > 0);
+  const statusLabel = new Map(data.taskCounts.map((item) => [item.status, item.label]));
+  const goTask = (taskId: string) => {
+    void navigate(`/teams/${data.team.id}/tasks/${taskId}`);
+  };
+
   return (
-    <>
-      <PageHeader title="团队空间" description="让每个岗位共同推进一件事。" />
-      <Panel>待实现：M1-07</Panel>
-    </>
+    <div className="th-page">
+      <PageHeader
+        title="团队空间"
+        description={
+          data.team.description.trim() === ""
+            ? "让每个岗位，共同推进一件事。"
+            : `${data.team.description} · 让每个岗位，共同推进一件事。`
+        }
+      />
+
+      <section className="th-roles" aria-label="岗位">
+        {data.roles.length === 0 ? (
+          <Panel className="th-panel">
+            <EmptyState
+              title="还没有岗位"
+              description="团队已创建，先建立岗位再派工。"
+              action={
+                <Button
+                  variant="neutral"
+                  onClick={() => {
+                    void navigate(`/teams/${data.team.id}/roles`);
+                  }}
+                >
+                  建立岗位
+                </Button>
+              }
+            />
+          </Panel>
+        ) : (
+          data.roles.map((item) => (
+            <Card key={item.role.id} title={item.role.name} className="th-role">
+              <div className="th-stack">
+                {item.harness === null ? (
+                  <p>未绑定 Harness · 暂不派工</p>
+                ) : (
+                  <p>
+                    当前绑定 {HARNESS_LABEL[item.harness.kind]}
+                    {item.harness.name === "" ? "" : ` · ${item.harness.name}`}
+                  </p>
+                )}
+                <div className="th-health">
+                  <Tag tone={HEALTH_TONE[item.harness?.health.status ?? "unknown"]}>
+                    {item.harness === null
+                      ? "未绑定 Harness"
+                      : HEALTH_LABEL[item.harness.health.status]}
+                  </Tag>
+                  {item.harness?.health.detail ? (
+                    <span className="th-note">{item.harness.health.detail}</span>
+                  ) : null}
+                </div>
+                {item.openTaskCount > 0 ? (
+                  <p className="th-note">未结束任务 {item.openTaskCount}</p>
+                ) : null}
+              </div>
+            </Card>
+          ))
+        )}
+      </section>
+
+      <div className="th-panels">
+        <Panel className="th-panel">
+          <h2 className="th-panel__title">推进中的工作</h2>
+
+          {totalTasks === 0 ? (
+            <EmptyState
+              title="团队已就绪，创建第一项任务"
+              description="将任务分配给岗位，并关联已有需求文件。岗位当前绑定的 Harness 会在满足依赖后领取任务。"
+              action={
+                <Button
+                  onClick={() => {
+                    void navigate(`/teams/${data.team.id}/tasks/new`);
+                  }}
+                >
+                  创建任务
+                </Button>
+              }
+            />
+          ) : (
+            <div className="th-stack">
+              <p className="th-note">
+                {activeCounts.length === 0
+                  ? "暂无进行中的任务"
+                  : activeCounts.map((item) => `${String(item.count)} 个${item.label}`).join(" / ")}
+              </p>
+              {data.activeTasks.length === 0 ? (
+                <p className="th-note">当前没有执行中、受阻或待验收的任务。</p>
+              ) : (
+                <ul className="th-task-list">
+                  {data.activeTasks.map((task) => (
+                    <li key={task.id}>
+                      <button
+                        type="button"
+                        className="th-task-row"
+                        onClick={() => {
+                          goTask(task.id);
+                        }}
+                      >
+                        <span className="th-task-row__key">{task.key}</span>
+                        <span className="th-task-row__title">{task.title}</span>
+                        <span className="th-task-row__owner">{task.owner.name}</span>
+                        <Tag tone={STATUS_TONE[task.status]}>
+                          {statusLabel.get(task.status) ?? task.status}
+                        </Tag>
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              )}
+              <p className="th-note">联调任务将在前后端验收通过后开始。</p>
+            </div>
+          )}
+        </Panel>
+
+        <Panel className="th-panel">
+          <h2 className="th-panel__title">团队共用的上下文</h2>
+
+          <div className="th-stack">
+            {data.workspaceProblem !== null ? (
+              <Card tone="warning" title="工作区不可用">
+                <p>{data.workspaceProblem}</p>
+              </Card>
+            ) : data.workspace === null ? (
+              <p className="th-note">工作区状态未知。</p>
+            ) : (
+              <div className="th-stack">
+                <p>路径：{data.workspace.path}</p>
+                <p>
+                  分支：{data.workspace.branch ?? "detached HEAD"} · 提交：
+                  {data.workspace.commit ?? "暂无提交"}
+                </p>
+              </div>
+            )}
+
+            <h3 className="th-panel__subtitle">最近活动</h3>
+            {data.recentEvents.length === 0 ? (
+              <p className="th-note">暂无活动记录。</p>
+            ) : (
+              <ul className="th-event-list">
+                {data.recentEvents.map((event) => (
+                  <li key={event.id} className="th-event">
+                    <span className="th-event__time">{formatLocalDateTime(event.createdAt)}</span>
+                    <span className="th-event__summary">{event.summary}</span>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+        </Panel>
+      </div>
+    </div>
   );
 }
