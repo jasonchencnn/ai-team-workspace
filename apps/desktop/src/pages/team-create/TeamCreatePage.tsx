@@ -165,7 +165,10 @@ export function TeamCreatePage() {
 
           <Card tone="info" title="本地 Git 工作空间" className="tc-stack-card">
             <div className="tc-stack">
-              <p>路径：{workspacePath.trim() === "" ? "尚未选择工作空间" : workspacePath}</p>
+              <p>
+                <span className="nowrap">路径：</span>
+                {workspacePath.trim() === "" ? "尚未选择工作空间" : workspacePath}
+              </p>
               <p>共享工作区 + 任务执行工作区</p>
               <p>
                 {workspace === null

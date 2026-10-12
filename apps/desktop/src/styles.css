@@ -44,3 +44,8 @@ textarea {
   outline: 2px solid var(--color-brand);
   outline-offset: 2px;
 }
+
+/* Keep short labels such as 「路径：」 on one line inside wrapping text. */
+.nowrap {
+  white-space: nowrap;
+}

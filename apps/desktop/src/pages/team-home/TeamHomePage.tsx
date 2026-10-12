@@ -226,7 +226,8 @@ export function TeamHomePage() {
             ) : (
               <div className="th-stack">
                 <p className="th-path">
-                  路径：<span title={data.workspace.path}>{data.workspace.path}</span>
+                  <span className="nowrap">路径：</span>
+                  <span title={data.workspace.path}>{data.workspace.path}</span>
                 </p>
                 <p>
                   分支：{data.workspace.branch ?? "detached HEAD"} · 提交：
