@@ -5,6 +5,7 @@ pub mod api;
 pub mod error;
 pub mod model;
 pub mod probe;
+pub mod system_probe;
 
 pub use api::Teamspace;
 pub use error::{Error, ErrorKind, ErrorPayload, Result};
