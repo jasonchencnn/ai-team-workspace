@@ -179,6 +179,8 @@ M4 的 Leader 编排没有对应画板，交互主要发生在 Leader 自己的�
 
 Codex 与 MiniMax 会消耗你的额度；M1 已同意 Codex 审查（M1-11）和 MiniMax 试点（M1-07），其他使用先征得你同意。
 
+子 agent 通过 `.claude/agents/` 里的岗位定义启动：`team-kernel`（Opus）、`team-dev`（Sonnet）、`team-chore`（Haiku），定义里写明完整模型 ID。原因是全局 Claude Code 配置把模型别名映射到了 MiniMax，按别名选模型会失败。Codex 审查用 `codex exec review`；MiniMax 试点直接使用终端 Claude Code 的现有配置。
+
 协作规则：
 
 - 每个任务的说明写清目标、输入（文件、Figma 节点）、允许修改的范围和完成标准。
