@@ -1,0 +1,48 @@
+/* Harness 详情页：连接设置、健康检查与生效范围说明。 */
+
+.harness-detail {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-section);
+}
+
+.harness-detail__columns {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: var(--space-section);
+  align-items: start;
+}
+
+@media (max-width: 1080px) {
+  .harness-detail__columns {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.harness-detail__connection,
+.harness-detail__health,
+.harness-detail__scope {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.harness-detail__health-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.harness-detail__checked,
+.harness-detail__detail,
+.harness-detail__version,
+.harness-detail__scope-text {
+  color: var(--color-muted);
+}
+
+.harness-detail__actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
