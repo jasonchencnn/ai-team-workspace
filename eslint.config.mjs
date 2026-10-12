@@ -11,6 +11,8 @@ export default tseslint.config(
       "**/*.d.mts",
       "apps/desktop/dist/**",
       "apps/desktop/src-tauri/gen/**",
+      // Immutable audit reproduction; active scripts and adjacent evidence stay linted.
+      "docs/reviews/evidence/deep-audit-2026-10-08/replay_env_manifest.mjs",
     ],
   },
   eslint.configs.recommended,

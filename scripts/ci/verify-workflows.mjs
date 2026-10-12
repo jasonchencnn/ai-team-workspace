@@ -1,5 +1,7 @@
-import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { spawnSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = resolve(fileURLToPath(new URL("../..", import.meta.url)));
@@ -26,6 +28,8 @@ const requiredJobs = [
   "rust-locked",
   "contracts-drift",
   "secret-scan",
+  "history-secret-scan",
+  "tooling-guards",
   "dependency-security",
   "license-compliance",
   "required-checks",
@@ -35,16 +39,14 @@ for (const job of requiredJobs) {
   assert(new RegExp(`^ {2}${job}:`, "m").test(workflow), `missing required job '${job}'`);
 }
 
-for (const runner of ["ubuntu-24.04", "macos-latest"]) {
-  assert(workflow.includes(runner), `missing ${runner} coverage`);
-}
+assert(workflow.includes("macos-latest"), "missing macOS coverage");
+assert(!workflow.includes("ubuntu-24.04"), "Ubuntu must not block the Mac-first workflow");
 
 for (const action of [
   "actions/checkout@v7.0.1",
   "actions/setup-node@v7.0.0",
   "pnpm/action-setup@v6.1.0",
   "gitleaks/gitleaks-action@v3.0.0",
-  "docker://rhysd/actionlint:1.7.7",
 ]) {
   assert(workflow.includes(action), `action is not pinned to ${action}`);
 }
@@ -60,15 +62,44 @@ for (const command of [
   "cargo build --workspace --locked",
   "cargo clippy --workspace --all-targets --all-features --locked -- -D warnings",
   "pnpm run contracts:check",
+  "pnpm exec prettier --check .github/workflows/ci.yml",
   "pnpm audit --audit-level=high",
   "cargo audit",
   "cargo deny check --config .github/cargo-deny.toml licenses",
   "pnpm run licenses:check",
+  "pnpm run verify:guards",
   "node scripts/ci/verify-workflows.mjs",
   "node scripts/ci/check-rust-unsafe.mjs",
 ]) {
   assert(workflow.includes(command), `missing gate command '${command}'`);
 }
+
+// The full history scan must read every ref, not only the checked-out branch,
+// and must prove that scope locally instead of trusting the hosted action.
+assert(
+  workflow.includes(
+    "gitleaks git --log-opts=--all --config .gitleaks.toml --redact --exit-code 1 --no-banner .",
+  ),
+  "the history scan must cover all refs with the reviewed policy",
+);
+
+const historyJob = extractWorkflowJob(workflow, "history-secret-scan");
+assert(historyJob !== undefined, "the workflow must define a history-secret-scan job");
+assert(
+  historyJob.includes("fetch-depth: 0"),
+  "the history scan job must fetch the complete history (fetch-depth: 0)",
+);
+
+const guardStep = findFailClosedShallowGuard(historyJob);
+assert(
+  guardStep !== undefined,
+  "the history scan job must assert that the clone is not shallow before scanning",
+);
+assert(
+  guardStep.index < findHistoryScanStepIndex(historyJob),
+  "the shallow-repository assertion must run before the history secret scan",
+);
+assertFailsClosedOnShallowClone(guardStep.script);
 
 assert(
   /^permissions:\n[ ]{2}contents: read$/m.test(workflow),
@@ -84,23 +115,16 @@ assert(
   workflow.includes("GITHUB_TOKEN: ${{ github.token }}"),
   "Gitleaks must receive only the automatic least-privilege GitHub token",
 );
-for (const dependency of [
-  "libwebkit2gtk-4.1-dev",
-  "libayatana-appindicator3-dev",
-  "librsvg2-dev",
-  "libxdo-dev",
-  "patchelf",
-]) {
-  assert(workflow.includes(dependency), `missing Ubuntu desktop build dependency '${dependency}'`);
-}
+assert(
+  workflow.includes("GITLEAKS_CONFIG: .gitleaks.toml"),
+  "Gitleaks must use the reviewed repository policy",
+);
 assert(workflow.includes("needs:"), "required-checks must depend on individual gates");
-for (const runner of ["ubuntu-24.04", "macos-latest"]) {
-  for (const check of ["test", "build", "clippy"]) {
-    assert(
-      workflow.includes(`- os: ${runner}\n            check: ${check}`),
-      `rust matrix is missing ${check} on ${runner}`,
-    );
-  }
+for (const check of ["test", "build", "clippy"]) {
+  assert(
+    workflow.includes(`- os: macos-latest\n            check: ${check}`),
+    `rust matrix is missing ${check} on macos-latest`,
+  );
 }
 assert(
   /package-ecosystem:\s*"github-actions"/.test(dependabot),
@@ -137,4 +161,134 @@ function read(path) {
 
 function assert(condition, message) {
   if (!condition) throw new Error(message);
+}
+
+// The workflow is YAML, but pulling in a parser is not permitted here, so the
+// job body is located by indentation. Every top-level job sits at two spaces
+// and its steps at six, which is what this repository's workflow uses.
+function extractWorkflowJob(source, jobName) {
+  const lines = source.split("\n");
+  const start = lines.findIndex((line) => new RegExp(`^ {2}${jobName}:\\s*$`, "u").test(line));
+  if (start === -1) return undefined;
+  let end = start + 1;
+  while (end < lines.length && !/^ {2}\S/u.test(lines[end])) end += 1;
+  return lines.slice(start + 1, end).join("\n");
+}
+
+// Returns every `run` step of a job body as an executable script. A block
+// scalar (`run: |`) must be detected before the inline form, otherwise the
+// literal `|` is mistaken for the command itself.
+function readStepScripts(jobBody) {
+  const steps = [];
+  const lines = jobBody.split("\n");
+  for (const [offset, line] of lines.entries()) {
+    if (!/^ {6}- /u.test(line)) continue;
+    const block = [line];
+    for (let index = offset + 1; index < lines.length; index += 1) {
+      if (/^ {6}- /u.test(lines[index])) break;
+      block.push(lines[index]);
+    }
+    const blockHeader = /^ {6}- run: \||^ {8}run: \|/u.exec(
+      block.find((entry) => /^ {6}- run: \||^ {8}run: \|/u.test(entry)) ?? "",
+    );
+    if (blockHeader) {
+      const script = [];
+      for (const entry of block.slice(block.indexOf(blockHeader[0]) + 1)) {
+        if (entry.trim() !== "" && !/^ {8,}\S/u.test(entry)) break;
+        script.push(entry.replace(/^ {8}/u, ""));
+      }
+      steps.push({ index: steps.length, script: script.join("\n") });
+      continue;
+    }
+    const inlineRun = /^ {6}- run: (?<command>[^|>].*)$/u.exec(line);
+    if (inlineRun?.groups) {
+      steps.push({ index: steps.length, script: inlineRun.groups.command });
+    }
+  }
+  return steps;
+}
+
+function findHistoryScanStepIndex(jobBody) {
+  return readStepScripts(jobBody).findIndex((step) => /^gitleaks git\b/u.test(step.script.trim()));
+}
+
+// A step qualifies as the guard only when it both reads the shallow state and
+// can fail the job, so a step that merely prints the state cannot satisfy this.
+// Whether it decides correctly is settled by executing it, not by its tokens.
+function findFailClosedShallowGuard(jobBody) {
+  return readStepScripts(jobBody).find(
+    (step) =>
+      /git rev-parse --is-shallow-repository/u.test(step.script) &&
+      /\bexit\b/u.test(step.script) &&
+      /!=|=|\[\[/u.test(step.script),
+  );
+}
+
+// Executing the guard is what separates a real fail-closed assertion from a
+// line that merely mentions the command. The stubbed `git` decides the outcome
+// without needing a repository, and nothing here touches the network.
+function assertFailsClosedOnShallowClone(script) {
+  if (/\$\{\{/u.test(script)) {
+    throw new Error("the shallow-repository assertion must not depend on workflow expressions");
+  }
+  const scenarios = [
+    {
+      description: "git reports a shallow repository",
+      exitCode: 0,
+      expected: "reject",
+      stdout: "true\n",
+    },
+    {
+      description: "git reports a complete clone",
+      exitCode: 0,
+      expected: "accept",
+      stdout: "false\n",
+    },
+    {
+      description: "git cannot determine the state",
+      exitCode: 128,
+      expected: "reject",
+      stdout: "",
+    },
+    {
+      description: "git reports an unparsable value",
+      exitCode: 0,
+      expected: "reject",
+      stdout: "\n",
+    },
+  ];
+  for (const scenario of scenarios) {
+    const verdict = runShallowGuard(script, scenario);
+    const rejected = verdict !== 0;
+    const wanted = scenario.expected === "reject";
+    if (rejected !== wanted) {
+      throw new Error(
+        `the shallow-repository assertion must ${wanted ? "fail" : "pass"} when ${scenario.description}; it exited ${verdict}`,
+      );
+    }
+  }
+}
+
+function runShallowGuard(script, scenario) {
+  const sandbox = mkdtempSync(join(tmpdir(), "verify-workflows-shallow-"));
+  try {
+    const stub = join(sandbox, "git");
+    writeFileSync(
+      stub,
+      `#!/bin/sh\ncat <<'STDOUT'\n${scenario.stdout}STDOUT\nexit ${scenario.exitCode}\n`,
+      { mode: 0o755 },
+    );
+    mkdirSync(join(sandbox, "work"), { recursive: true });
+    const guardPath = join(sandbox, "guard.sh");
+    writeFileSync(guardPath, script);
+    const result = spawnSync("bash", [guardPath], {
+      cwd: join(sandbox, "work"),
+      encoding: "utf8",
+      env: { ...process.env, PATH: `${sandbox}:${process.env.PATH ?? ""}` },
+    });
+    if (result.error) throw new Error(`could not run the shallow-repository assertion`);
+    return result.status ?? 1;
+  } finally {
+    rmSync(sandbox, { force: true, recursive: true });
+  }
 }

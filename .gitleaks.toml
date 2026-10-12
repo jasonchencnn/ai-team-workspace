@@ -1,0 +1,71 @@
+title = "AI Team Workspace secret scanning policy"
+
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Dependency caches, build outputs, and AppleDouble metadata are not source inputs"
+paths = [
+  '''(^|/)(node_modules|target|\.pnpm-store|dist)(/|$)''',
+  '''(^|/)\._[^/]+$''',
+]
+
+[[rules]]
+id = "generic-api-key"
+
+[[rules.allowlists]]
+description = "Figma document identifiers are locators, not authentication credentials"
+condition = "AND"
+regexTarget = "line"
+paths = ['''(^|/)design/figma-state\.json$''']
+regexes = ['''^\s*"fileKey": "C1roCB6shYmzP6oEu5ZAs4",?$''']
+
+[[rules.allowlists]]
+description = "Structured logging fixture intentionally contains a derived fake secret"
+condition = "AND"
+regexTarget = "line"
+paths = ['''(^|/)crates/observability/tests/structured_logging\.rs$''']
+regexes = ['''^\s*let base64_secret = "d2F2ZTItc2VjcmV0LWNvb2tpZQ==";$''']
+
+
+[[rules.allowlists]]
+description = "Exact synthetic base64 fixture in retained AF audit source copies"
+condition = "AND"
+regexTarget = "line"
+paths = [
+  '''(^|/)docs/reviews/evidence/minimax-audit-next/AF-01/mutation-copy-tests-GREEN-BASELINE\.rs$''',
+  '''(^|/)docs/reviews/evidence/minimax-audit-next/AF-01/mutation-copy/tests/structured_logging\.rs$''',
+  '''(^|/)docs/reviews/evidence/af-return-audit-2026-10-09/main/af01-mutations/tests/structured_logging\.rs$''',
+]
+regexes = ['''^\s*let base64_secret = "d2F2ZTItc2VjcmV0LWNvb2tpZQ==";$''']
+
+[[rules.allowlists]]
+description = "Exact assertion key is an audit label, not an API credential"
+condition = "AND"
+regexTarget = "line"
+paths = [
+  '''(^|/)docs/reviews/evidence/minimax-audit-next/AF-03/replay-output\.json$''',
+  '''(^|/)docs/reviews/evidence/af-return-audit-2026-10-09/main/replay-output\.json$''',
+]
+regexes = ['''^\s*"key": "m14_revised_m14r\.detected_by_tests",$''']
+
+
+[[rules.allowlists]]
+description = "Two exact non-credential values in before-config snapshot and its reviewed diff"
+condition = "AND"
+regexTarget = "secret"
+paths = [
+  '''(^|/)docs/reviews/evidence/af-return-audit-2026-10-09/main/gitleaks-config-before\.toml$''',
+  '''(^|/)docs/reviews/evidence/af-return-audit-2026-10-09/main/gitleaks-config\.patch$''',
+]
+regexes = ['''^C1roCB6shYmzP6oEu5ZAs4$''', '''^d2F2ZTItc2VjcmV0LWNvb2tpZQ==$''']
+
+[[rules.allowlists]]
+description = "Exact design-token test SHA-256 in two retained HC-01 input manifests"
+condition = "AND"
+regexTarget = "line"
+paths = [
+  '''(^|/)docs/reviews/evidence/dev02-08-history-2026-10-10/prior-engineering-verification\.json$''',
+  '''(^|/)docs/reviews/evidence/dev02-08-history-2026-10-10/handoff-input\.json$''',
+]
+regexes = ['''^\s*"packages/design-tokens/test/tokens\.test\.ts": "a026553060b232b5a898c5aac868568a013f0077e99ef40fdf53d0ffacc29002",?$''']
