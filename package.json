@@ -11,6 +11,7 @@
     "bindings": "cargo test -p teamspace-core --lib --locked export_bindings",
     "build": "pnpm --recursive --if-present run build",
     "check": "pnpm run bindings && pnpm run fmt:check && pnpm run lint && pnpm run typecheck && pnpm run test",
+    "e2e": "pnpm --dir apps/desktop exec playwright test",
     "dev": "pnpm --dir apps/desktop exec tauri dev",
     "fmt": "prettier --write package.json eslint.config.mjs .prettierrc.json tsconfig.base.json apps packages --ignore-unknown && cargo fmt --all",
     "fmt:check": "prettier --check package.json eslint.config.mjs .prettierrc.json tsconfig.base.json apps packages --ignore-unknown && cargo fmt --all -- --check",

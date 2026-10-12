@@ -3478,6 +3478,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "teamspace-e2e-bridge"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "teamspace-core",
+]
+
+[[package]]
 name = "tempfile"
 version = "3.27.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"

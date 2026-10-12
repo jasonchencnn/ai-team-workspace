@@ -15,3 +15,7 @@ pnpm-debug.log*
 
 # Agent worktrees
 .claude/worktrees/
+
+# End-to-end test output
+apps/desktop/e2e-artifacts/
+apps/desktop/test-results/
