@@ -1,0 +1,322 @@
+/* 岗位与绑定页：布局用 flex/grid，颜色与间距只使用 theme.css 变量。 */
+
+.roles-page {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-section);
+}
+
+.roles-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 320px) minmax(0, 1fr);
+  gap: var(--space-section);
+  align-items: start;
+}
+
+@media (max-width: 1080px) {
+  .roles-layout {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.roles-column {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-section);
+  min-width: 0;
+}
+
+/* 左侧岗位列表 */
+.role-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.role-list__title {
+  font-size: var(--font-size-section-title);
+  font-weight: 700;
+  line-height: var(--line-height-section-title);
+}
+
+.role-list__items {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.role-list__item {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+}
+
+.role-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+  padding: 8px 14px;
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius-control);
+  background: var(--color-surface);
+  font-size: var(--font-size-body);
+  text-align: left;
+  cursor: pointer;
+}
+
+.role-chip:hover {
+  background: var(--color-canvas);
+}
+
+.role-chip--active {
+  border-color: var(--color-brand);
+  background: var(--color-info-surface);
+  color: var(--color-info);
+  font-weight: 500;
+}
+
+.role-chip__separator {
+  color: var(--color-muted);
+}
+
+.role-chip--active .role-chip__separator {
+  color: var(--color-info);
+}
+
+.role-list__unbound {
+  color: var(--color-muted);
+  font-size: var(--font-size-caption);
+  line-height: var(--line-height-caption);
+}
+
+.role-list__note {
+  color: var(--color-muted);
+  font-size: var(--font-size-caption);
+  line-height: var(--line-height-caption);
+}
+
+/* 新增岗位表单 */
+.role-create {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.role-create__title,
+.harness-section__title,
+.harness-detail__title {
+  font-size: var(--font-size-section-title);
+  font-weight: 700;
+  line-height: var(--line-height-section-title);
+}
+
+.role-create__actions,
+.harness-create__actions,
+.harness-detail__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+/* 右侧岗位详情 */
+.role-detail {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: var(--space-section);
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius-panel);
+  background: var(--color-surface);
+}
+
+.role-detail__title {
+  font-size: var(--font-size-page-title);
+  font-weight: 700;
+  line-height: var(--line-height-page-title);
+}
+
+.role-detail__meta {
+  margin-top: 4px;
+  color: var(--color-muted);
+  font-size: var(--font-size-body);
+}
+
+.role-detail__meta code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  color: var(--color-ink);
+}
+
+.role-detail__unbound {
+  color: var(--color-muted);
+}
+
+.role-detail__binding {
+  border-color: var(--color-info-surface);
+  background: var(--color-info-surface);
+  color: var(--color-ink);
+}
+
+.role-detail__binding-meta {
+  color: var(--color-ink);
+  font-weight: 500;
+}
+
+.role-detail__health--ok {
+  color: var(--color-success);
+}
+
+.role-detail__health--error {
+  color: var(--color-warning);
+}
+
+.role-detail__health--unknown {
+  color: var(--color-muted);
+}
+
+.role-detail__binding-detail,
+.role-detail__hint,
+.role-detail__counts {
+  color: var(--color-muted);
+}
+
+.role-detail__fields {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.role-detail__actions,
+.role-detail__binding-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.role-detail__picker {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px;
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius-control);
+  background: var(--color-canvas);
+}
+
+.role-detail__hint {
+  font-size: var(--font-size-caption);
+  line-height: var(--line-height-caption);
+}
+
+/* Harness 实例区 */
+.harness-section {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.harness-section__hint {
+  color: var(--color-muted);
+}
+
+.harness-section__toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 16px;
+}
+
+.harness-section__grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 16px;
+}
+
+.harness-card {
+  display: block;
+  padding: 0;
+  border: 0;
+  background: none;
+  text-align: left;
+  cursor: pointer;
+}
+
+.harness-card__inner {
+  width: 100%;
+  height: 100%;
+}
+
+.harness-card:hover .harness-card__inner {
+  border-color: var(--color-brand);
+}
+
+.harness-card__meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--color-muted);
+  font-size: var(--font-size-caption);
+  line-height: var(--line-height-caption);
+}
+
+.harness-card__checked {
+  color: var(--color-muted);
+}
+
+.harness-card__config,
+.harness-card__detail {
+  color: var(--color-muted);
+  font-size: var(--font-size-caption);
+  line-height: var(--line-height-caption);
+}
+
+.harness-card__detail {
+  color: var(--color-warning);
+}
+
+.harness-detection {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.harness-detection__list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.harness-detection__item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.harness-detection__text {
+  color: var(--color-muted);
+  font-size: var(--font-size-caption);
+  line-height: var(--line-height-caption);
+}
+
+.harness-create {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: var(--space-section);
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius-control);
+  background: var(--color-canvas);
+}
+
+.harness-create__title {
+  font-size: var(--font-size-section-title);
+  font-weight: 700;
+  line-height: var(--line-height-section-title);
+}
