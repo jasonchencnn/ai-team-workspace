@@ -9,7 +9,9 @@
   "packageManager": "pnpm@10.33.0",
   "scripts": {
     "build": "pnpm --recursive --if-present run build",
+    "check": "pnpm run fmt:check && pnpm run lint && pnpm run typecheck && pnpm run test && cargo test --workspace --locked",
     "check:toolchain": "node scripts/check-toolchain.mjs",
+    "dev": "pnpm --dir apps/desktop exec tauri dev",
     "contracts:check": "node scripts/check-contracts.mjs",
     "contracts:generate": "node scripts/generate-contracts.mjs",
     "fmt": "prettier --write package.json eslint.config.mjs scripts tests tsconfig.json vitest.config.ts .prettierrc.json apps packages --ignore-unknown",
