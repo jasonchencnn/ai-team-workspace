@@ -17,11 +17,21 @@ const NAV_ENTRIES: NavEntry[] = [
   { label: "待我处理", note: "M5 提供" },
 ];
 
-function DisabledItem({ label, note }: { label: string; note: string }) {
+function DisabledItem({ id, label, note }: { id: string; label: string; note: string }) {
+  // 可聚焦的禁用项：读屏读出「标签，已禁用」，并用 aria-describedby 关联说明文字。
   return (
-    <span className="nav-item nav-item--disabled" aria-disabled="true" title={note}>
+    <span
+      className="nav-item nav-item--disabled"
+      role="link"
+      aria-disabled="true"
+      aria-describedby={id}
+      tabIndex={0}
+      title={note}
+    >
       <span>{label}</span>
-      <span className="nav-item__note">{note}</span>
+      <span className="nav-item__note" id={id}>
+        {note}
+      </span>
     </span>
   );
 }
@@ -41,11 +51,23 @@ export function Sidebar() {
         {NAV_ENTRIES.map((entry) => {
           if (entry.to === undefined) {
             return (
-              <DisabledItem key={entry.label} label={entry.label} note={entry.note ?? "暂未提供"} />
+              <DisabledItem
+                key={entry.label}
+                id={`nav-note-${entry.label}`}
+                label={entry.label}
+                note={entry.note ?? "暂未提供"}
+              />
             );
           }
           if (teamId === undefined) {
-            return <DisabledItem key={entry.label} label={entry.label} note="先选择团队" />;
+            return (
+              <DisabledItem
+                key={entry.label}
+                id={`nav-note-${entry.label}`}
+                label={entry.label}
+                note="先选择团队"
+              />
+            );
           }
           return (
             <NavLink

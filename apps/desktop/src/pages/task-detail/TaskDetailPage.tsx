@@ -274,11 +274,13 @@ export function TaskDetailPage() {
             <p className="task-detail__caption">后续依赖</p>
             {renderDependencies(dependents)}
           </div>
-          <p className="task-detail__notice">
-            本次执行结束后提交验收。
-            <br />
-            执行完成不代表任务已验收。
-          </p>
+          {task.status === "doing" || task.status === "review" ? (
+            <p className="task-detail__notice">
+              本次执行结束后提交验收。
+              <br />
+              执行完成不代表任务已验收。
+            </p>
+          ) : null}
         </Panel>
       </div>
     </>

@@ -32,7 +32,7 @@
 
 .task-detail__section h2 {
   font-size: var(--font-size-section-title);
-  font-weight: 700;
+  font-weight: 600;
   line-height: var(--line-height-section-title);
 }
 
@@ -156,8 +156,8 @@
   display: flex;
   align-items: center;
   gap: 8px;
-  font-size: var(--font-size-section-title);
-  font-weight: 700;
+  font-size: var(--font-size-body);
+  font-weight: 600;
 }
 
 .task-detail__dep-list {

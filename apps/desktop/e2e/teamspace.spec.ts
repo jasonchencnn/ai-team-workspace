@@ -256,7 +256,7 @@ test("团队空间页显示计数、进行中的任务和最近活动", async ({
 
 test("编辑任务：修改标题与说明后详情页立即更新", async ({ page }) => {
   await gotoTeam(page, "/tasks");
-  await page.getByLabel(/^已完成 \d+/).check(); // FE-001 已完成，默认不在看板上
+  await page.getByLabel(/^显示已完成（\d+）/).check(); // FE-001 已完成，默认不在看板上
   await card(page, /FE-001 实现注册界面/).click();
   await page.getByRole("button", { name: "编辑" }).click();
   await page.getByLabel("任务名称").fill("实现注册与登录界面");
@@ -273,7 +273,7 @@ test("看板可显示已完成列，非法输入由后端拒绝（创建 READY �
   page,
 }) => {
   await gotoTeam(page, "/tasks");
-  await page.getByLabel("已完成 1").check();
+  await page.getByLabel("显示已完成（1）").check();
   await expect(page.locator(".task-board__heading", { hasText: "已完成 1" })).toBeVisible();
   await shot(page, "tasks-board-with-done");
 

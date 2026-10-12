@@ -95,7 +95,7 @@ function lastLine(task: TaskSummary): string | null {
       return "尚未引用文件，暂不能标记为 READY";
     }
     if (task.openDependencyCount > 0) {
-      return "依赖任务未完成，暂不能标记为 READY";
+      return null; // 第二行已写明在等待依赖，不重复。
     }
     return "可尝试标记为 READY";
   }
@@ -117,12 +117,16 @@ function TaskCard({
     (task.status === "doing" && harness !== null ? `当前绑定 ${harness.name}` : null);
   const last = lastLine(task);
   return (
-    <Link className="task-card-link" to={`/teams/${teamId}/tasks/${task.id}`}>
+    <Link
+      className="task-card-link"
+      to={`/teams/${teamId}/tasks/${task.id}`}
+      aria-label={`${task.key} ${task.title}`}
+    >
       <Card
         tone={task.status === "blocked" ? "warning" : "default"}
         title={
           <span className="task-card__title">
-            <span>
+            <span className="task-card__name">
               {task.key} {task.title}
             </span>
             {task.status === "todo" || task.status === "ready" ? (
@@ -259,7 +263,7 @@ export function TasksPage() {
               setShowDone(event.target.checked);
             }}
           />
-          已完成 {doneCount}
+          显示已完成（{doneCount}）
         </label>
         <label className="tasks-toolbar__toggle">
           <input
@@ -280,6 +284,10 @@ export function TasksPage() {
           style={{
             gridTemplateColumns: `repeat(${String(displayColumns.length)}, minmax(220px, 1fr))`,
           }}
+          // 列数多时在看板区域内横向滚动，让键盘用户也能滚动。
+          tabIndex={0}
+          aria-label="任务看板"
+          role="region"
         >
           {displayColumns.map((column) => (
             <section key={column.key} className="task-board__column">
@@ -313,16 +321,22 @@ export function TasksPage() {
                 return (
                   <tr
                     key={task.id}
-                    tabIndex={0}
                     onClick={() => void navigate(`/teams/${teamId}/tasks/${task.id}`)}
-                    onKeyDown={(event) => {
-                      if (event.key === "Enter") {
-                        void navigate(`/teams/${teamId}/tasks/${task.id}`);
-                      }
-                    }}
                   >
-                    <td>{task.key}</td>
-                    <td>{task.title}</td>
+                    <td>
+                      <Link
+                        className="task-table__link"
+                        to={`/teams/${teamId}/tasks/${task.id}`}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                        }}
+                      >
+                        {task.key}
+                      </Link>
+                    </td>
+                    <td className="task-table__title" title={task.title}>
+                      {task.title}
+                    </td>
                     <td>{task.owner.name}</td>
                     <td>
                       <Tag tone={statusTone[task.status]}>{label}</Tag>

@@ -51,7 +51,9 @@
   display: grid;
   gap: 16px;
   align-items: start;
+  min-width: 0;
   overflow-x: auto;
+  padding-bottom: 8px;
 }
 
 .task-board__column {
@@ -68,21 +70,21 @@
 }
 
 .task-board__heading--todo,
+.task-board__heading--done,
+.task-board__heading--cancelled {
+  color: var(--color-muted);
+}
+
 .task-board__heading--doing {
-  color: var(--color-info);
+  color: var(--color-brand);
 }
 
 .task-board__heading--blocked {
   color: var(--color-warning);
 }
 
-.task-board__heading--review,
-.task-board__heading--done {
+.task-board__heading--review {
   color: var(--color-success);
-}
-
-.task-board__heading--cancelled {
-  color: var(--color-muted);
 }
 
 .task-card-link {
@@ -102,6 +104,16 @@
   align-items: flex-start;
   justify-content: space-between;
   gap: 8px;
+}
+
+.task-card__name {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.task-card__title > .ui-tag {
+  flex: none;
 }
 
 .task-card__lines {
@@ -135,6 +147,22 @@
   border-bottom: 1px solid var(--color-line);
   text-align: left;
   white-space: nowrap;
+}
+
+.task-table__title {
+  max-width: 360px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.task-table__link {
+  color: var(--color-brand);
+  text-decoration: none;
+}
+
+.task-table__link:hover,
+.task-table__link:focus-visible {
+  text-decoration: underline;
 }
 
 .task-table th {

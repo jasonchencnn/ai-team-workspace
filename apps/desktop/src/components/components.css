@@ -242,10 +242,18 @@ textarea.ui-field__control {
   align-items: center;
   gap: 8px;
   padding: 48px var(--space-section);
-  border: 1px dashed var(--color-line);
+  border: 1px dashed var(--color-muted);
   border-radius: var(--radius-panel);
   background: var(--color-surface);
   text-align: center;
+}
+
+/* 放进 Panel 内时使用，由 Panel 提供边框与内边距。 */
+.ui-empty--bare {
+  padding: 8px 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
 }
 
 .ui-empty__title {
@@ -255,6 +263,8 @@ textarea.ui-field__control {
 }
 
 .ui-empty__description {
+  max-width: 56ch;
+  margin-inline: auto;
   color: var(--color-muted);
 }
 
