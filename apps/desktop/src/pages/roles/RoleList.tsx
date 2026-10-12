@@ -8,7 +8,7 @@ export interface RoleListProps {
   onRetry: () => void;
   selectedRoleId: string | null;
   onSelect: (roleId: string) => void;
-  /** 未绑定岗位的「绑定 <岗位名> 执行者」按钮。 */
+  /** 未绑定岗位的「绑定执行者」按钮。 */
   onBindRequest: (roleId: string) => void;
   onCreate: () => void;
 }
@@ -58,24 +58,27 @@ export function RoleList({
                   onSelect(view.role.id);
                 }}
               >
-                {view.role.name}
+                <span className="role-chip__name">{view.role.name}</span>
                 <span className="role-chip__separator">/</span>
-                {view.harness === null ? "未绑定" : view.harness.name}
+                <span className="role-chip__harness">
+                  {view.harness === null ? "未绑定" : view.harness.name}
+                </span>
               </button>
 
+              {selected && view.harness === null ? (
+                <p className="role-list__unbound">未绑定 Harness · 暂不派工</p>
+              ) : null}
+
               {!selected && view.harness === null ? (
-                <>
-                  <p className="role-list__unbound">未绑定 Harness · 暂不派工</p>
-                  <Button
-                    variant="neutral"
-                    className="role-list__bind"
-                    onClick={() => {
-                      onBindRequest(view.role.id);
-                    }}
-                  >
-                    绑定 {view.role.name} 执行者
-                  </Button>
-                </>
+                <Button
+                  variant="neutral"
+                  className="role-list__bind"
+                  onClick={() => {
+                    onBindRequest(view.role.id);
+                  }}
+                >
+                  绑定执行者
+                </Button>
               ) : null}
             </li>
           );

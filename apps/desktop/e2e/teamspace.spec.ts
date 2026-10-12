@@ -93,27 +93,33 @@ test("创建团队：选择工作空间、保留默认岗位、保存后进入�
 });
 
 test("新建 Mock Harness 实例并健康检查为正常，进入 Harness 详情", async ({ page }) => {
-  await gotoTeam(page, "/roles");
+  await gotoTeam(page, "/roles?tab=harness");
+  await expect(page.getByRole("tab", { name: "Harness 实例" })).toHaveAttribute(
+    "aria-selected",
+    "true",
+  );
   await expect(page.getByText("本团队还没有 Harness 实例")).toBeVisible();
   await page.getByRole("button", { name: "新建实例" }).click();
   await page.getByLabel("实例名称").fill("mock-local");
   await page.getByLabel("类型").selectOption("mock");
   await page.getByRole("button", { name: "注册实例" }).click();
 
-  const card = page.locator("button.harness-card", { hasText: "mock-local" });
+  const card = page.locator(".harness-card", { hasText: "mock-local" });
   await expect(card).toBeVisible();
-  await card.click();
+  // Mock 实例在卡片上标注「测试用」，避免误绑到正式岗位。
+  await expect(card).toContainText("测试用");
+  await card.getByRole("button", { name: "查看详情" }).click();
   await expect(page).toHaveURL(/\/harnesses\/[^/]+$/);
   await expect(page.getByRole("heading", { name: "健康检查结果" })).toBeVisible();
-  await page.getByRole("button", { name: "重新健康检查" }).first().click();
+  await page.getByRole("button", { name: "重新健康检查" }).click();
   await expect(page.locator(".harness-detail__health .ui-tag")).toHaveText("在线");
   await expect(page.getByText("Mock Harness，无需检测")).toBeVisible();
   await shot(page, "harness-detail-healthy");
 
-  await gotoTeam(page, "/roles");
-  await expect(page.locator("button.harness-card", { hasText: "mock-local" })).toContainText(
-    "在线",
-  );
+  // 详情页唯一的「返回」落回实例列表视图。
+  await page.getByRole("button", { name: "返回实例列表" }).click();
+  await expect(page).toHaveURL(/\/roles\?tab=harness$/);
+  await expect(page.locator(".harness-card", { hasText: "mock-local" })).toContainText("在线");
   await shot(page, "harness-list-healthy");
 });
 

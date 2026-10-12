@@ -13,6 +13,14 @@ export function harnessKindLabel(kind: HarnessKind): string {
   return KIND_LABELS[kind];
 }
 
+/** Mock 是仅供验证的测试实例：卡片与绑定选择处都标「测试用」，避免误绑到正式岗位。 */
+export function isTestHarness(kind: HarnessKind): boolean {
+  return kind === "mock";
+}
+
+/** 测试用实例的标签文案。 */
+export const TEST_HARNESS_LABEL = "测试用";
+
 const HEALTH_LABELS: Record<HealthStatus, string> = {
   ok: "在线",
   error: "异常",
@@ -63,11 +71,16 @@ export function formatDate(iso: string | null): string {
   return `${String(date.getFullYear())}.${pad(date.getMonth() + 1)}.${pad(date.getDate())}`;
 }
 
-/** 「12 秒前」这类相对时间；超过一天回退为日期时间。`now` 由调用方传入，便于保持纯函数。 */
+/** 实例的 CLI 版本；尚未检测到时统一占位为「未检测」，卡片与详情页共用同一措辞。 */
+export function formatVersion(version: string | null): string {
+  return version ?? "未检测";
+}
+
+/** 「12 秒前」这类相对时间；从未检查过时返回「从未检查」，与状态标签「未检查」区分。 */
 export function formatRelative(iso: string | null, now: number): string {
   const date = parse(iso);
   if (date === null) {
-    return "未检查";
+    return "从未检查";
   }
   const seconds = Math.max(0, Math.round((now - date.getTime()) / 1000));
   if (seconds < 60) {

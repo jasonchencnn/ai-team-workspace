@@ -12,7 +12,13 @@ import {
 import type { HarnessInstance } from "../../bindings/HarnessInstance.js";
 import type { RoleView } from "../../bindings/RoleView.js";
 import { useRoleMutations } from "./useRoleMutations.js";
-import { formatDate, harnessKindLabel, healthLabel } from "../harness-detail/harnessFormat.js";
+import {
+  TEST_HARNESS_LABEL,
+  formatDate,
+  harnessKindLabel,
+  healthLabel,
+  isTestHarness,
+} from "../harness-detail/harnessFormat.js";
 
 export interface RoleDetailProps {
   teamId: string;
@@ -50,12 +56,15 @@ export function RoleDetail({
     description !== role.description ||
     guidelines !== role.guidelines;
 
+  const pendingHarness = harnesses.find((instance) => instance.id === pendingHarnessId);
+  const pendingIsTestHarness = pendingHarness !== undefined && isTestHarness(pendingHarness.kind);
+
   return (
     <article className="role-detail">
       <header className="role-detail__header">
         <h2 className="role-detail__title">{role.name}</h2>
         <p className="role-detail__meta">
-          固定岗位 <code>{role.code}</code> / 创建于 {formatDate(role.createdAt)}
+          岗位标识 {role.code} · 创建于 {formatDate(role.createdAt)}
         </p>
       </header>
 
@@ -130,6 +139,7 @@ export function RoleDetail({
           保存岗位说明
         </Button>
         <Button
+          variant="neutral"
           loading={archiveRole.isPending}
           onClick={() => {
             archiveRole.mutate(role.id);
@@ -142,7 +152,11 @@ export function RoleDetail({
       {archiveRole.error === null ? null : <ErrorBanner error={archiveRole.error} />}
 
       <section className="role-detail__binding-actions">
-        <Button onClick={onPickToggle} disabled={isHarnessPending && !picking}>
+        <Button
+          variant={harness === null ? "primary" : "neutral"}
+          onClick={onPickToggle}
+          disabled={isHarnessPending && !picking}
+        >
           {harness === null ? "绑定 Harness" : "更换 Harness"}
         </Button>
         {harness === null ? null : (
@@ -170,7 +184,7 @@ export function RoleDetail({
           {!isHarnessPending && harnessError === null && harnesses.length === 0 ? (
             <EmptyState
               title="本团队还没有 Harness 实例"
-              description="请先在页面下方注册一个实例。"
+              description="请先在「Harness 实例」页签注册一个实例。"
             />
           ) : null}
 
@@ -186,11 +200,17 @@ export function RoleDetail({
                 <option value="">请选择实例</option>
                 {harnesses.map((instance) => (
                   <option key={instance.id} value={instance.id}>
-                    {harnessKindLabel(instance.kind)} / {instance.name}（
-                    {healthLabel(instance.health.status)}）
+                    {harnessKindLabel(instance.kind)}
+                    {isTestHarness(instance.kind) ? `（${TEST_HARNESS_LABEL}）` : ""} /{" "}
+                    {instance.name}（{healthLabel(instance.health.status)}）
                   </option>
                 ))}
               </SelectField>
+              {pendingIsTestHarness ? (
+                <p className="role-detail__test-hint">
+                  这是测试用实例：仅用于验证流程，不要绑定正式岗位。
+                </p>
+              ) : null}
               <Button
                 disabled={pendingHarnessId === ""}
                 loading={bindRoleHarness.isPending}
