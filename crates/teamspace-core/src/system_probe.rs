@@ -7,11 +7,12 @@
 //! 装的 CLI 都会找不到），因此这里先用 `$SHELL -ilc` 打印一段带标记的 PATH，再补上常见安装
 //! 目录，去重后缓存，所有子进程共用这一份 PATH。
 //!
-//! 依赖只用标准库：子进程超时用 `try_wait` 轮询实现，不引入新依赖。
+//! 依赖只用标准库：子进程超时用 `try_wait` 轮询实现，超时时按**进程组**整组杀掉，不引入新依赖。
 
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::OnceLock;
+use std::sync::mpsc::{self, Receiver};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -29,6 +30,13 @@ const VERSION_TIMEOUT: Duration = Duration::from_secs(10);
 const GIT_TIMEOUT: Duration = Duration::from_secs(30);
 /// 等待子进程退出时的轮询间隔。
 const POLL_INTERVAL: Duration = Duration::from_millis(20);
+/// 杀掉子进程后等读线程收尾的宽限时间。
+///
+/// 正常情况下进程一死管道立刻 EOF，这里只是兜底：万一有个漏网进程一直攥着管道写端，界面也不能
+/// 被它一直卡住，超时就当没读到输出。
+const OUTPUT_GRACE: Duration = Duration::from_secs(2);
+/// 进程组收不到信号时的重试次数。
+const KILL_ATTEMPTS: usize = 3;
 
 /// 登录 shell 输出中 PATH 的起始标记。
 const PATH_START_MARKER: &str = "__TS_PATH_START__";
@@ -195,10 +203,8 @@ impl LocalProbe {
         let mut command = Command::new("git");
         command.arg("-C").arg(path);
         command.args(args);
-        command.stdin(Stdio::null());
         command.env("PATH", path_env(self.path_dirs()));
-        // 不做交互式凭据提问，避免远程仓库查询把界面卡住。
-        command.env("GIT_TERMINAL_PROMPT", "0");
+        git_env(&mut command);
 
         let output = run_command(&mut command, GIT_TIMEOUT)
             .map_err(|err| Error::internal(format!("无法运行 git：{err}")))?;
@@ -215,20 +221,39 @@ impl LocalProbe {
     }
 }
 
+/// 给 Git 子进程统一设置的环境变量。
+///
+/// `GIT_TERMINAL_PROMPT=0` 不做交互式凭据提问，避免远程仓库查询把界面卡住；`GIT_CONFIG_NOSYSTEM=1`
+/// 忽略系统级 `/etc/gitconfig`，免得机器上装的代理、模板仓库等全局设置影响只读查询的结果。
+fn git_env(command: &mut Command) -> &mut Command {
+    command
+        .stdin(Stdio::null())
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+}
+
+/// 探测前确认工作区目录还在且确实是目录。
+///
+/// 目录不存在和目录不是仓库是两回事，得分开报错：前者通常是仓库被移动或删除，后者是选错了地方。
+fn ensure_workspace_dir(path: &Path) -> Result<()> {
+    if !path.exists() {
+        return Err(Error::invalid(format!(
+            "工作区目录不存在或已移动：{}",
+            path.display()
+        )));
+    }
+    if !path.is_dir() {
+        return Err(Error::invalid(format!(
+            "所选路径不是目录：{}",
+            path.display()
+        )));
+    }
+    Ok(())
+}
+
 impl SystemProbe for LocalProbe {
     fn inspect_workspace(&self, path: &Path) -> Result<WorkspaceInfo> {
-        if !path.exists() {
-            return Err(Error::invalid(format!(
-                "所选目录不存在：{}",
-                path.display()
-            )));
-        }
-        if !path.is_dir() {
-            return Err(Error::invalid(format!(
-                "所选路径不是目录：{}",
-                path.display()
-            )));
-        }
+        ensure_workspace_dir(path)?;
 
         let root = self
             .git_text(path, &["rev-parse", "--show-toplevel"])?
@@ -247,6 +272,8 @@ impl SystemProbe for LocalProbe {
     }
 
     fn search_files(&self, workspace: &Path, query: &str, limit: usize) -> Result<Vec<String>> {
+        ensure_workspace_dir(workspace)?;
+
         let mut command = Command::new("git");
         command.arg("-C").arg(workspace);
         command.args([
@@ -256,9 +283,8 @@ impl SystemProbe for LocalProbe {
             "--exclude-standard",
             "-z",
         ]);
-        command.stdin(Stdio::null());
         command.env("PATH", path_env(self.path_dirs()));
-        command.env("GIT_TERMINAL_PROMPT", "0");
+        git_env(&mut command);
 
         let output = run_command(&mut command, GIT_TIMEOUT)
             .map_err(|err| Error::internal(format!("无法运行 git：{err}")))?;
@@ -293,49 +319,140 @@ struct CommandOutput {
     timed_out: bool,
 }
 
+/// 等待子进程的结果：要么自己退出了，要么超时被杀掉。
+enum WaitOutcome {
+    Exited(ExitStatus),
+    Killed,
+}
+
 /// 运行子进程并在超时后杀掉它。标准库没有跨平台超时，用 `try_wait` 轮询实现。
+///
+/// 子进程启动时就被放进**独立进程组**（见 [`isolate_in_process_group`]），超时时对整个进程组发
+/// 信号：Harness CLI 几乎都会再 fork 自己的孙进程，只杀直接子进程的话孙进程会继续持有
+/// stdout / stderr 的管道写端，下面两个读线程就永远等不到 EOF。
 ///
 /// stdout / stderr 各自在一个线程里读，避免管道写满后互相死锁。
 fn run_command(command: &mut Command, timeout: Duration) -> std::io::Result<CommandOutput> {
+    isolate_in_process_group(command);
     let mut child = command
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()?;
 
-    let out_handle = child
-        .stdout
-        .take()
-        .map(|stream| thread::spawn(move || read_stream(stream)));
-    let err_handle = child
-        .stderr
-        .take()
-        .map(|stream| thread::spawn(move || read_stream(stream)));
+    // 读线程把结果发回通道而不是直接 join：万一有进程漏网一直占着管道，最多等 OUTPUT_GRACE，
+    // 到点就放弃（线程随之detach），绝不能把界面卡在一次探测上。
+    let out_rx = child.stdout.take().map(read_in_background);
+    let err_rx = child.stderr.take().map(read_in_background);
 
     let deadline = Instant::now() + timeout;
     let mut timed_out = false;
-    let status = loop {
-        match child.try_wait()? {
-            Some(status) => break status,
-            None => {
+    let outcome = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break WaitOutcome::Exited(status),
+            Ok(None) => {
                 if Instant::now() >= deadline {
                     timed_out = true;
-                    let _ = child.kill();
-                    break child.wait()?;
+                    kill_process_group(&mut child);
+                    break WaitOutcome::Killed;
                 }
                 thread::sleep(POLL_INTERVAL);
+            }
+            Err(err) => {
+                // 问不出状态就不能放着不管：同样杀掉整组并回收，不留孤儿和僵尸。
+                kill_process_group(&mut child);
+                let _ = child.wait();
+                return Err(err);
             }
         }
     };
 
-    let join = |handle: Option<thread::JoinHandle<String>>| {
-        handle.map_or_else(String::new, |h| h.join().unwrap_or_default())
+    // 杀掉之后 wait 只是回收子进程（拿退出码），整组已死，管道随即关闭，读线程可以正常结束。
+    let status = match outcome {
+        WaitOutcome::Exited(status) => status,
+        WaitOutcome::Killed => child.wait()?,
+    };
+
+    // 通道里没东西（读线程被放弃，或本来就没管道）就当没输出，不算错误。
+    let collect = |receiver: Option<Receiver<String>>| {
+        receiver
+            .and_then(|receiver| receiver.recv_timeout(OUTPUT_GRACE).ok())
+            .unwrap_or_default()
     };
     Ok(CommandOutput {
         success: status.success(),
-        stdout: join(out_handle),
-        stderr: join(err_handle),
+        stdout: collect(out_rx),
+        stderr: collect(err_rx),
         timed_out,
     })
+}
+
+/// 让子进程成为新进程组的组长，这样超时可以整组一起杀。
+///
+/// 子进程的后代默认都继承这个进程组，所以一次 `kill` 能收干净整棵进程树；`spawn` 失败时调用方
+/// 直接报错，不会留下半启动的进程。非 Unix 平台没有进程组概念，退化为只杀直接子进程。
+#[cfg(unix)]
+fn isolate_in_process_group(command: &mut Command) {
+    use std::os::unix::process::CommandExt;
+    // 0 表示「用子进程自己的 pid 作为进程组 id」，即 setpgid(0, 0)。
+    command.process_group(0);
+}
+
+#[cfg(not(unix))]
+fn isolate_in_process_group(_command: &mut Command) {}
+
+/// 杀掉子进程所在的整个进程组，再兜底杀一次子进程本身，最后由调用方 `wait` 回收。
+#[cfg(unix)]
+fn kill_process_group(child: &mut Child) {
+    kill_group(child.id());
+    let _ = child.kill();
+}
+
+#[cfg(not(unix))]
+fn kill_process_group(child: &mut Child) {
+    let _ = child.kill();
+}
+
+/// 对进程组 `pid` 发 SIGKILL。进程组 id 就是组长的 pid，负号表示「整个进程组」。
+///
+/// 只用 `kill` 子进程的话，它 fork 出来的孙进程会活下来并继续占着管道。走 `/bin/kill` 不用手写
+/// `unsafe` 的 `libc::kill`，也不引入新依赖；`--` 结束选项解析，避免 `-123` 被当成选项。
+#[cfg(unix)]
+fn kill_group(pid: u32) {
+    let target = format!("-{pid}");
+    // `/bin/kill` 自己也可能因为机器繁忙没起成，那样信号就落空了，孙进程会一直攥着管道。
+    // 没送达就再试几次；正常情况下第一条就返回，不额外花时间。
+    for attempt in 1..=KILL_ATTEMPTS {
+        if send_sigkill(&target) {
+            return;
+        }
+        if attempt < KILL_ATTEMPTS {
+            thread::sleep(POLL_INTERVAL);
+        }
+    }
+}
+
+/// 用 `/bin/kill -KILL -- <target>` 给进程组发信号，信号送达返回 `true`。
+#[cfg(unix)]
+fn send_sigkill(target: &str) -> bool {
+    Command::new("/bin/kill")
+        .args(["-KILL", "--", target])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .is_ok_and(|status| status.success())
+}
+
+/// 起一个后台线程读完一条管道，把结果发回通道。
+///
+/// 通道的所有权只在读线程和调用方之间传递：线程读完就发结果、发完就关闭发送端，调用方最多等
+/// [`OUTPUT_GRACE`]。读线程被放弃时只是 detach，不会留下僵尸线程。
+fn read_in_background<R: std::io::Read + Send + 'static>(stream: R) -> Receiver<String> {
+    let (sender, receiver) = mpsc::channel();
+    thread::spawn(move || {
+        let _ = sender.send(read_stream(stream));
+    });
+    receiver
 }
 
 /// 读完一个管道并按 UTF-8 宽松解码（文件路径理论上都是 UTF-8，但不因为个别坏字节丢掉整条命令的输出）。
@@ -692,6 +809,15 @@ mod tests {
             .to_string()
     }
 
+    /// 一个确定不存在的路径：先建一个唯一的临时目录再删掉，保证它确实不在了。
+    fn gone_workspace() -> PathBuf {
+        let dir = tempfile::tempdir().unwrap();
+        let gone = dir.path().join("not-here");
+        drop(dir);
+        assert!(!gone.exists());
+        gone
+    }
+
     fn harness(kind: HarnessKind) -> HarnessInstance {
         HarnessInstance {
             id: "harness-1".to_string(),
@@ -794,18 +920,15 @@ mod tests {
 
     #[test]
     fn inspect_rejects_missing_directory() {
-        // 先建一个唯一的临时目录再删掉，保证这个路径确实不存在。
-        let dir = tempfile::tempdir().unwrap();
-        let gone = dir.path().to_path_buf();
-        drop(dir);
-        assert!(!gone.exists());
-
         let probe = LocalProbe::new();
         let err = probe
-            .inspect_workspace(&gone.join("not-here"))
+            .inspect_workspace(&gone_workspace())
             .expect_err("目录不存在应报错");
         assert!(matches!(err, Error::Invalid(_)));
-        assert!(err.to_string().contains("不存在"));
+        assert!(
+            err.to_string().contains("不存在或已移动"),
+            "实际错误：{err}"
+        );
     }
 
     #[test]
@@ -925,6 +1048,55 @@ mod tests {
             .expect_err("非仓库目录应报错");
         assert!(matches!(err, Error::Invalid(_)));
         assert!(err.to_string().contains("不是 Git 仓库"));
+    }
+
+    #[test]
+    fn search_rejects_missing_directory_with_its_own_message() {
+        let probe = LocalProbe::new();
+
+        let err = probe
+            .search_files(&gone_workspace(), "", 10)
+            .expect_err("目录不存在应报错");
+        assert!(matches!(err, Error::Invalid(_)));
+        let message = err.to_string();
+        assert!(message.contains("不存在或已移动"), "实际错误：{message}");
+        assert!(
+            !message.contains("不是 Git 仓库"),
+            "目录不存在不该被说成不是仓库：{message}"
+        );
+    }
+
+    #[test]
+    fn search_rejects_file_path() {
+        let dir = tempfile::tempdir().expect("创建临时目录");
+        let file = dir.path().join("notes.txt");
+        std::fs::write(&file, "x").unwrap();
+        let probe = LocalProbe::new();
+
+        let err = probe
+            .search_files(&file, "", 10)
+            .expect_err("文件路径应报错");
+        assert!(matches!(err, Error::Invalid(_)));
+        assert!(err.to_string().contains("不是目录"));
+    }
+
+    #[test]
+    fn missing_and_non_repository_directories_report_different_messages() {
+        let probe = LocalProbe::new();
+        let plain = tempfile::tempdir().unwrap();
+
+        let missing = probe
+            .inspect_workspace(&gone_workspace())
+            .expect_err("目录不存在应报错")
+            .to_string();
+        let not_repo = probe
+            .inspect_workspace(plain.path())
+            .expect_err("非仓库目录应报错")
+            .to_string();
+
+        assert!(missing.contains("不存在或已移动"), "实际错误：{missing}");
+        assert!(not_repo.contains("不是 Git 仓库"), "实际错误：{not_repo}");
+        assert_ne!(missing, not_repo);
     }
 
     #[test]
@@ -1107,7 +1279,12 @@ mod tests {
     #[test]
     fn version_command_times_out_and_kills_process() {
         let dir = tempfile::tempdir().unwrap();
-        let executable = fake_executable(dir.path(), "claude", "/bin/sleep 30");
+        // 脚本在后台再 fork 一个孙进程，两个都攥着 stdout/stderr 管道不放。
+        let executable = fake_executable(
+            dir.path(),
+            "claude",
+            "/bin/sh -c 'exec /bin/sleep 30' &\n/bin/sleep 30",
+        );
         let probe = LocalProbe::new();
 
         let started = Instant::now();
@@ -1119,10 +1296,69 @@ mod tests {
             )
             .expect_err("超时应报错");
         assert!(err.contains("超时"), "实际错误：{err}");
+        // 硬上限是「超时 + 两条管道各等 OUTPUT_GRACE」≈ 4.5 秒，这里留足机器繁忙的余量；
+        // 「孙进程是否真的被杀干净」由 run_command_kills_whole_process_group 断言。
         assert!(
-            started.elapsed() < Duration::from_secs(5),
-            "应尽快杀掉子进程"
+            started.elapsed() < Duration::from_secs(8),
+            "应尽快杀掉整组进程，实际耗时 {:?}",
+            started.elapsed()
         );
+    }
+
+    #[test]
+    fn run_command_kills_whole_process_group() {
+        let dir = tempfile::tempdir().unwrap();
+        // 孙进程把 pid 打到继承来的 stdout 上：管道被 run_command 收走，不用等文件落盘去抢时序。
+        let executable = fake_executable(
+            dir.path(),
+            "claude",
+            "/bin/sh -c 'echo $$; exec /bin/sleep 30' &\n/bin/sleep 30",
+        );
+        let mut command = Command::new(&executable);
+        command.stdin(Stdio::null());
+
+        let started = Instant::now();
+        // 超时给足 2 秒，保证孙进程一定来得及启动并打出 pid；只杀直接子进程的话这里会拖满 30 秒。
+        let output = run_command(&mut command, Duration::from_secs(2)).expect("运行应返回");
+        let elapsed = started.elapsed();
+
+        assert!(output.timed_out, "应判定为超时");
+        assert!(
+            elapsed < Duration::from_secs(20),
+            "孙进程还占着管道时应立刻返回，实际耗时 {elapsed:?}"
+        );
+
+        let grandchild: i32 = first_non_empty_line(&output.stdout)
+            .expect("孙进程应已把 pid 打到 stdout")
+            .parse()
+            .expect("pid 应是数字");
+        // 决定性断言：孙进程必须真的没了。回收要被 init 收养，机器繁忙时慢，给足时间。
+        assert!(
+            wait_until_gone(grandchild, Duration::from_secs(15)),
+            "孙进程 {grandchild} 还活着，说明只杀了直接子进程"
+        );
+    }
+
+    /// 轮询等待 pid 不再存在（被杀掉并回收后 `/bin/kill -0` 会失败）。
+    fn wait_until_gone(pid: i32, budget: Duration) -> bool {
+        let deadline = Instant::now() + budget;
+        loop {
+            let alive = Command::new("/bin/kill")
+                .args(["-0", &pid.to_string()])
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status()
+                .is_ok_and(|status| status.success());
+            if !alive {
+                return true;
+            }
+            if Instant::now() >= deadline {
+                return false;
+            }
+            // 这里每次轮询都要起一个 /bin/kill，间隔放大一点，别跟测试本身抢机器。
+            thread::sleep(Duration::from_millis(200));
+        }
     }
 
     #[test]
