@@ -12,3 +12,6 @@ test-results/
 !.env.example
 *.local
 pnpm-debug.log*
+
+# Agent worktrees
+.claude/worktrees/

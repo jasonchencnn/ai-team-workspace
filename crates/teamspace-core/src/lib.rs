@@ -7,6 +7,7 @@ pub mod model;
 pub mod probe;
 mod service;
 mod store;
+pub mod system_probe;
 #[cfg(test)]
 mod tests;
 
