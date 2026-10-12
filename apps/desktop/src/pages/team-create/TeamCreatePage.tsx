@@ -123,7 +123,15 @@ export function TeamCreatePage() {
 
   return (
     <div className="tc-page">
-      <PageHeader title="创建 Team" description="先建立协作边界，再创建稳定岗位并连接执行工具。" />
+      <PageHeader
+        title="创建 Team"
+        description="先建立协作边界，再创建稳定岗位并连接执行工具。"
+        actions={
+          <Button loading={create.isPending} onClick={submit}>
+            创建团队并配置岗位
+          </Button>
+        }
+      />
 
       <div className="tc-layout">
         <section className="tc-column" aria-labelledby="tc-team-heading">
@@ -138,7 +146,7 @@ export function TeamCreatePage() {
                 required
                 value={name}
                 error={nameError}
-                placeholder="账号系统迭代"
+                placeholder="给团队起个名字"
                 onChange={(event) => {
                   setName(event.currentTarget.value);
                 }}
@@ -158,7 +166,7 @@ export function TeamCreatePage() {
           <Card tone="info" title="本地 Git 工作空间" className="tc-stack-card">
             <div className="tc-stack">
               <p>路径：{workspacePath.trim() === "" ? "尚未选择工作空间" : workspacePath}</p>
-              <p>Shared Workspace + Task Execution Workspace</p>
+              <p>共享工作区 + 任务执行工作区</p>
               <p>
                 {workspace === null
                   ? "代码库状态：尚未检测"
@@ -175,9 +183,8 @@ export function TeamCreatePage() {
               hint="填写后点「检测」按该路径重新检测 Git 仓库。"
               onChange={(event) => {
                 setWorkspacePath(event.currentTarget.value);
-                // 路径变了，之前的检测结果不再可信，回到未检测状态。
+                // 路径变了，之前的检测结果不再可信，回到未检测状态；校验态只由提交控制，不在这里重置。
                 setWorkspace(null);
-                setSubmitted(false);
               }}
             />
             <div className="tc-actions">
@@ -251,7 +258,7 @@ export function TeamCreatePage() {
                 }
               >
                 <div className="tc-stack">
-                  <p>{draft.description}</p>
+                  {draft.enabled ? null : <p>{draft.description}</p>}
                   {draft.enabled ? (
                     <div className="tc-stack tc-role__fields">
                       <InputField
@@ -289,11 +296,8 @@ export function TeamCreatePage() {
         </section>
       </div>
 
-      <div className="tc-footer">
-        <Button loading={create.isPending} onClick={submit}>
-          保存岗位并配置 Harness
-        </Button>
-        {create.isError ? (
+      {create.isError ? (
+        <div className="tc-footer">
           <ErrorBanner
             error={create.error}
             action={
@@ -307,8 +311,8 @@ export function TeamCreatePage() {
               </Button>
             }
           />
-        ) : null}
-      </div>
+        </div>
+      ) : null}
     </div>
   );
 }

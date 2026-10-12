@@ -19,15 +19,16 @@
   }
 }
 
-/* 两栏底色用画布灰，卡片本身保持白色，与设计稿一致。 */
+/* 两栏用白色面板 + 描边，与画布底色拉开，栏边界才看得见。 */
 .tc-column {
   display: flex;
   flex-direction: column;
   gap: 16px;
   min-width: 0;
   padding: var(--space-section);
+  border: 1px solid var(--color-line);
   border-radius: var(--radius-panel);
-  background: var(--color-canvas);
+  background: var(--color-surface);
 }
 
 .tc-column__title {
@@ -41,6 +42,12 @@
   flex-direction: column;
   gap: 12px;
   min-width: 0;
+}
+
+/* 长路径按任意位置折行，不把「路径：」拆成两行，也不冲出卡片。 */
+.tc-stack > p {
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 /* 卡片内正文在基础组件里是弱化色，表单需要恢复为正文色。 */
@@ -74,9 +81,13 @@
   cursor: pointer;
 }
 
+/* 岗位代码保留在标题里（Figma 原稿即如此），但降为次要灰色说明字，不与岗位名同权重。 */
 .tc-role__code {
   color: var(--color-muted);
+  font-size: var(--font-size-caption);
   font-weight: 400;
+  line-height: var(--line-height-caption);
+  overflow-wrap: anywhere;
 }
 
 .tc-role__fields {
