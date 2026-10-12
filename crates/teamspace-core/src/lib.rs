@@ -5,6 +5,10 @@ pub mod api;
 pub mod error;
 pub mod model;
 pub mod probe;
+mod service;
+mod store;
+#[cfg(test)]
+mod tests;
 
 pub use api::Teamspace;
 pub use error::{Error, ErrorKind, ErrorPayload, Result};

@@ -94,6 +94,10 @@ export const detectHarnesses = () => invoke<HarnessDetection[]>("detect_harnesse
 export const listHarnesses = (teamId: string) =>
   invoke<HarnessInstance[]>("list_harnesses", { teamId });
 
+/** 单个 Harness 实例（含最近健康检查）。 */
+export const getHarness = (harnessId: string) =>
+  invoke<HarnessInstance>("get_harness", { harnessId });
+
 /** 注册 Harness 实例。 */
 export const createHarness = (input: CreateHarnessInput) =>
   invoke<HarnessInstance>("create_harness", { input });
