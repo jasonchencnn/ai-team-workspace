@@ -36,8 +36,10 @@
 .harness-detail__checked,
 .harness-detail__detail,
 .harness-detail__version,
+.harness-detail__instance,
 .harness-detail__scope-text {
   color: var(--color-muted);
+  overflow-wrap: anywhere;
 }
 
 .harness-detail__actions {

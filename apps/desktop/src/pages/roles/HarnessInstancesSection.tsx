@@ -18,10 +18,13 @@ import {
 import type { HarnessInstance } from "../../bindings/HarnessInstance.js";
 import type { HarnessKind } from "../../bindings/HarnessKind.js";
 import {
+  TEST_HARNESS_LABEL,
   formatRelative,
+  formatVersion,
   harnessKindLabel,
   healthLabel,
   healthTone,
+  isTestHarness,
 } from "../harness-detail/harnessFormat.js";
 
 export interface HarnessInstancesSectionProps {
@@ -95,20 +98,19 @@ export function HarnessInstancesSection({
 
       <div className="harness-section__grid">
         {harnesses.map((instance) => (
-          <button
-            key={instance.id}
-            type="button"
-            className="harness-card"
-            onClick={() => {
-              void navigate(detailPath(instance.id));
-            }}
-          >
+          <div key={instance.id} className="harness-card">
             <Card
-              title={`${harnessKindLabel(instance.kind)} / ${instance.name}`}
+              title={
+                <span className="harness-card__title">
+                  {harnessKindLabel(instance.kind)}
+                  {isTestHarness(instance.kind) ? `（${TEST_HARNESS_LABEL}）` : ""} /{" "}
+                  {instance.name}
+                </span>
+              }
               tone={instance.health.status === "error" ? "warning" : "default"}
               className="harness-card__inner"
             >
-              <p className="harness-card__meta">版本：{instance.health.version ?? "未检测"}</p>
+              <p className="harness-card__meta">版本：{formatVersion(instance.health.version)}</p>
               <p className="harness-card__meta">
                 <Tag tone={healthTone(instance.health.status)}>
                   {healthLabel(instance.health.status)}
@@ -125,8 +127,18 @@ export function HarnessInstancesSection({
               {instance.health.status === "error" && instance.health.detail !== null ? (
                 <p className="harness-card__detail">{instance.health.detail}</p>
               ) : null}
+              <div className="harness-card__actions">
+                <Button
+                  variant="neutral"
+                  onClick={() => {
+                    void navigate(detailPath(instance.id));
+                  }}
+                >
+                  查看详情
+                </Button>
+              </div>
             </Card>
-          </button>
+          </div>
         ))}
       </div>
 
@@ -259,7 +271,7 @@ function HarnessCreateForm({
       </SelectField>
       <InputField
         label="可执行文件路径"
-        hint="可留空；填写时须为绝对路径。"
+        hint="可留空；留空则使用本机检测到的路径，填写时须为绝对路径。"
         value={executable}
         onChange={(event) => {
           setExecutable(event.target.value);
