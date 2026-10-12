@@ -4,7 +4,7 @@ use rusqlite::{Connection, OptionalExtension, params};
 use serde_json::json;
 
 use super::event::{self, NewEvent};
-use super::{harness, team};
+use super::{MAX_LONG_TEXT, MAX_NAME, harness, team, text};
 use crate::error::{Error, Result};
 use crate::model::{CreateRoleInput, EventKind, NewRole, Role, RoleRef, RoleView, UpdateRoleInput};
 use crate::store::{new_id, now};
@@ -107,11 +107,15 @@ fn valid_prefix(prefix: &str) -> bool {
 }
 
 fn validate_name(name: &str) -> Result<String> {
-    let name = name.trim();
-    if name.is_empty() {
-        return Err(Error::invalid("岗位名称不能为空"));
-    }
-    Ok(name.to_owned())
+    text("岗位名称", name, MAX_NAME, true)
+}
+
+/// 校验职责与工作约定。
+fn validate_texts(description: &str, guidelines: &str) -> Result<(String, String)> {
+    Ok((
+        text("职责", description, MAX_LONG_TEXT, false)?,
+        text("工作约定", guidelines, MAX_LONG_TEXT, false)?,
+    ))
 }
 
 fn validate_prefix(prefix: &str) -> Result<String> {
@@ -173,6 +177,7 @@ pub(crate) fn insert(conn: &Connection, team_id: &str, input: NewRole) -> Result
         )));
     }
     let prefix = validate_prefix(&input.task_prefix)?;
+    let (description, guidelines) = validate_texts(&input.description, &input.guidelines)?;
     let code_taken: bool = conn.query_row(
         "SELECT EXISTS (SELECT 1 FROM roles WHERE team_id = ?1 AND code = ?2)",
         params![team_id, code],
@@ -194,8 +199,8 @@ pub(crate) fn insert(conn: &Connection, team_id: &str, input: NewRole) -> Result
             name,
             code,
             prefix,
-            input.description.trim(),
-            input.guidelines.trim(),
+            description,
+            guidelines,
             input.is_leader,
             at
         ],
@@ -224,6 +229,7 @@ pub(crate) fn update(conn: &Connection, input: UpdateRoleInput) -> Result<RoleVi
     let old = get_active(conn, &input.role_id)?;
     let name = validate_name(&input.name)?;
     let prefix = validate_prefix(&input.task_prefix)?;
+    let (description, guidelines) = validate_texts(&input.description, &input.guidelines)?;
     check_unique(conn, &old.team_id, Some(&old.id), &prefix, input.is_leader)?;
     conn.execute(
         "UPDATE roles SET name = ?2, task_prefix = ?3, description = ?4, guidelines = ?5,
@@ -233,8 +239,8 @@ pub(crate) fn update(conn: &Connection, input: UpdateRoleInput) -> Result<RoleVi
             old.id,
             name,
             prefix,
-            input.description.trim(),
-            input.guidelines.trim(),
+            description,
+            guidelines,
             input.is_leader,
             now()
         ],
@@ -257,7 +263,7 @@ pub(crate) fn update(conn: &Connection, input: UpdateRoleInput) -> Result<RoleVi
     view(conn, role)
 }
 
-/// 归档岗位；仍负责未结束任务时为 conflict。
+/// 归档岗位；仍负责未结束任务时为 conflict。同时解除 Harness 绑定（原绑定记入活动 data）。
 pub(crate) fn archive(conn: &Connection, id: &str) -> Result<Role> {
     let role = get_active(conn, id)?;
     let open: u32 = conn.query_row(
@@ -274,7 +280,7 @@ pub(crate) fn archive(conn: &Connection, id: &str) -> Result<Role> {
     }
     let at = now();
     conn.execute(
-        "UPDATE roles SET archived_at = ?2, updated_at = ?2 WHERE id = ?1",
+        "UPDATE roles SET archived_at = ?2, updated_at = ?2, harness_id = NULL WHERE id = ?1",
         params![id, at],
     )?;
     event::record(
@@ -285,12 +291,13 @@ pub(crate) fn archive(conn: &Connection, id: &str) -> Result<Role> {
             role_id: Some(id),
             kind: EventKind::RoleArchived,
             summary: format!("归档岗位「{}」", role.name),
-            data: json!({ "code": role.code }),
+            data: json!({ "code": role.code, "previousHarnessId": role.harness_id }),
         },
     )?;
     Ok(Role {
         archived_at: Some(at.clone()),
         updated_at: at,
+        harness_id: None,
         ..role
     })
 }

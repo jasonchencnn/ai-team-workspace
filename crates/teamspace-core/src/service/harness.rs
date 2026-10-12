@@ -6,7 +6,7 @@ use rusqlite::{Connection, OptionalExtension, params};
 use serde_json::json;
 
 use super::event::{self, NewEvent};
-use super::team;
+use super::{MAX_NAME, team, text};
 use crate::error::{Error, Result};
 use crate::model::{
     CreateHarnessInput, EventKind, HarnessInstance, HealthCheck, HealthStatus, UpdateHarnessInput,
@@ -89,10 +89,8 @@ fn validate(
     model: Option<String>,
     profile: Option<String>,
 ) -> Result<Fields> {
-    let name = name.trim();
-    if name.is_empty() {
-        return Err(Error::invalid("Harness 名称不能为空"));
-    }
+    let name = text("Harness 名称", name, MAX_NAME, true)?;
+    let name = name.as_str();
     let executable = non_blank(executable);
     if let Some(path) = &executable
         && !Path::new(path).is_absolute()

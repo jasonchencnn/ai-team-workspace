@@ -12,6 +12,7 @@
  * - done → ready
  * - cancelled → todo
  *
- * 进入 ready 需满足就绪条件；进入 blocked 必须给出原因，离开 blocked 时清空原因。
+ * 进入 ready 或 doing（含 blocked → doing）需满足就绪条件；进入 blocked 必须给出原因，
+ * 离开 blocked 时清空原因。
  */
 export type TaskStatus = "todo" | "ready" | "doing" | "blocked" | "review" | "done" | "cancelled";

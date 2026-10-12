@@ -5,7 +5,7 @@
  */
 export type EventQuery = { teamId: string, 
 /**
- * 上一页返回的 `nextCursor`；缺省从最新开始。
+ * 上一页返回的 `nextCursor`（不透明字符串，原样传回）；缺省从最新开始。
  */
 cursor?: string | null, 
 /**

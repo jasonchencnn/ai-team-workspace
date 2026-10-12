@@ -450,3 +450,160 @@ fn unknown_task_is_not_found() {
     assert_kind(f.ts.get_task("nope"), ErrorKind::NotFound);
     assert_kind(f.move_to("nope", Ready), ErrorKind::NotFound);
 }
+
+// ---------------------------------------------------------------- 交叉审查（M1-11）
+
+#[test]
+fn doing_requires_readiness_including_from_blocked() {
+    let f = fixture();
+    let team = f.team("T");
+    let fe = f.role(&team.id, "role_frontend");
+    let t = f.readyable(&team.id, &fe, "a");
+    f.drive(&t.task.id, &[Ready, Doing, Blocked]);
+    // 受阻期间清空引用，恢复执行被拒绝，且 doing 不在可执行流转中。
+    let t = edit(&f, &f.ts.get_task(&t.task.id).unwrap(), vec![], vec![]).unwrap();
+    assert_eq!(t.task.status, Blocked);
+    assert_eq!(t.allowed_transitions, [Cancelled]);
+    let msg = assert_kind(f.move_to(&t.task.id, Doing), ErrorKind::Conflict);
+    assert!(msg.contains("至少需要一个文件引用"), "{msg}");
+    let t = edit(&f, &t, vec!["docs/spec.md"], vec![]).unwrap();
+    assert_eq!(t.allowed_transitions, [Ready, Doing, Cancelled]);
+    assert_eq!(f.move_to(&t.task.id, Doing).unwrap().task.status, Doing);
+
+    // ready → doing 时依赖被重新打开，同样被拒绝。
+    let dep = f.readyable(&team.id, &fe, "dep");
+    f.drive(&dep.task.id, path_to(Done));
+    let next = f
+        .try_task(
+            &team.id,
+            &fe,
+            "b",
+            Ready,
+            vec!["docs/spec.md"],
+            vec![dep.task.id.clone()],
+        )
+        .unwrap();
+    f.move_to(&dep.task.id, Ready).unwrap();
+    let next = f.ts.get_task(&next.task.id).unwrap();
+    assert_eq!(next.allowed_transitions, [Todo, Cancelled]);
+    assert_kind(f.move_to(&next.task.id, Doing), ErrorKind::Conflict);
+}
+
+#[test]
+fn missing_workspace_is_a_single_readiness_problem() {
+    let f = fixture();
+    let team = f.team("T");
+    let fe = f.role(&team.id, "role_frontend");
+    let t = f.readyable(&team.id, &fe, "a");
+    fs::remove_dir_all(&f.ws).unwrap();
+    let t = f.ts.get_task(&t.task.id).unwrap();
+    assert_eq!(t.readiness, ["工作区目录不存在或已移动"]);
+    assert!(t.file_refs.iter().all(|r| !r.exists));
+    let msg = assert_kind(f.move_to(&t.task.id, Ready), ErrorKind::Conflict);
+    assert!(msg.contains("工作区目录不存在或已移动"), "{msg}");
+}
+
+#[test]
+fn write_commands_return_the_same_detail_as_get_task() {
+    let f = fixture();
+    let team = f.team("T");
+    let fe = f.role(&team.id, "role_frontend");
+    f.touch("a.md");
+    let created = f
+        .try_task(&team.id, &fe, "a", Todo, vec!["a.md", "missing.md"], vec![])
+        .unwrap();
+    assert_eq!(
+        created
+            .file_refs
+            .iter()
+            .map(|r| r.exists)
+            .collect::<Vec<_>>(),
+        [true, false]
+    );
+    assert_eq!(created, f.ts.get_task(&created.task.id).unwrap());
+    let updated = edit(&f, &created, vec!["a.md"], vec![]).unwrap();
+    assert!(updated.readiness.is_empty());
+    assert_eq!(updated, f.ts.get_task(&created.task.id).unwrap());
+    let moved = f.move_to(&created.task.id, Ready).unwrap();
+    assert_eq!(moved, f.ts.get_task(&created.task.id).unwrap());
+}
+
+#[test]
+fn refs_and_dependencies_have_upper_limits() {
+    let f = fixture();
+    let team = f.team("T");
+    let fe = f.role(&team.id, "role_frontend");
+    let names: Vec<String> = (0..51).map(|i| format!("f{i}.md")).collect();
+    let refs = |n: usize| names[..n].iter().map(String::as_str).collect::<Vec<_>>();
+    let msg = assert_kind(
+        f.try_task(&team.id, &fe, "x", Todo, refs(51), vec![]),
+        ErrorKind::Invalid,
+    );
+    assert!(msg.contains("50"), "{msg}");
+    assert_eq!(
+        f.try_task(&team.id, &fe, "x", Todo, refs(50), vec![])
+            .unwrap()
+            .task
+            .file_refs
+            .len(),
+        50
+    );
+
+    let deps: Vec<String> = (0..21)
+        .map(|i| f.task(&team.id, &fe, &format!("d{i}")).task.id)
+        .collect();
+    let msg = assert_kind(
+        f.try_task(&team.id, &fe, "y", Todo, vec![], deps.clone()),
+        ErrorKind::Invalid,
+    );
+    assert!(msg.contains("20"), "{msg}");
+    let t = f
+        .try_task(&team.id, &fe, "y", Todo, vec![], deps[..20].to_vec())
+        .unwrap();
+    assert_eq!(t.task.depends_on.len(), 20);
+    assert_kind(edit(&f, &t, vec![], deps), ErrorKind::Invalid);
+}
+
+#[test]
+fn task_text_lengths_and_control_characters_are_checked() {
+    let f = fixture();
+    let team = f.team("T");
+    let fe = f.role(&team.id, "role_frontend");
+    let title = |t: &str| f.try_task(&team.id, &fe, t, Todo, vec![], vec![]);
+    assert_kind(title(&"标".repeat(201)), ErrorKind::Invalid);
+    assert_kind(title("a\u{0}b"), ErrorKind::Invalid);
+    let ok = title(&"标".repeat(200)).unwrap();
+
+    let long = f.ts.update_task(UpdateTaskInput {
+        task_id: ok.task.id.clone(),
+        title: "t".into(),
+        description: "x".repeat(20_001),
+        owner_role_id: fe.id.clone(),
+        file_refs: vec![],
+        depends_on: vec![],
+    });
+    assert_kind(long, ErrorKind::Invalid);
+    let multi_line =
+        f.ts.update_task(UpdateTaskInput {
+            task_id: ok.task.id.clone(),
+            title: "t".into(),
+            description: "第一行\n\t第二行".into(),
+            owner_role_id: fe.id.clone(),
+            file_refs: vec![],
+            depends_on: vec![],
+        })
+        .unwrap();
+    assert_eq!(multi_line.task.description, "第一行\n\t第二行");
+
+    let t = f.readyable(&team.id, &fe, "b");
+    f.drive(&t.task.id, &[Ready, Doing]);
+    let blocked = |reason: String| {
+        f.ts.change_task_status(ChangeTaskStatusInput {
+            task_id: t.task.id.clone(),
+            to: Blocked,
+            reason: Some(reason),
+        })
+    };
+    assert_kind(blocked("因".repeat(501)), ErrorKind::Invalid);
+    blocked("因".repeat(500)).unwrap();
+}

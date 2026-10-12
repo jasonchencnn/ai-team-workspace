@@ -264,3 +264,49 @@ fn bind_and_unbind_harness() {
     f.ts.archive_harness(&h1.id).unwrap();
     assert_kind(f.ts.bind_role_harness(&fe.id, &h1.id), ErrorKind::NotFound);
 }
+
+#[test]
+fn role_text_lengths_are_checked() {
+    let f = fixture();
+    let team = f.team("T");
+    assert_kind(
+        create(
+            &f,
+            &team.id,
+            new_role(&"岗".repeat(101), "role_x", "XX", false),
+        ),
+        ErrorKind::Invalid,
+    );
+    let mut long = new_role("X", "role_x", "XX", false);
+    long.guidelines = "x".repeat(20_001);
+    assert_kind(create(&f, &team.id, long), ErrorKind::Invalid);
+    let mut ctrl = new_role("X", "role_x", "XX", false);
+    ctrl.description = "a\u{1b}b".into();
+    assert_kind(create(&f, &team.id, ctrl), ErrorKind::Invalid);
+    let qa = f.role(&team.id, "role_qa");
+    let err = f.ts.update_role(UpdateRoleInput {
+        role_id: qa.id.clone(),
+        name: "QA".into(),
+        task_prefix: "QA".into(),
+        description: "x".repeat(20_001),
+        guidelines: String::new(),
+        is_leader: false,
+    });
+    assert_kind(err, ErrorKind::Invalid);
+}
+
+#[test]
+fn archiving_a_role_clears_its_harness_binding() {
+    let f = fixture();
+    let team = f.team("T");
+    let pm = f.role(&team.id, "role_product");
+    let h = f.harness(&team.id, "h", HarnessKind::Mock);
+    f.ts.bind_role_harness(&pm.id, &h.id).unwrap();
+    let archived = f.ts.archive_role(&pm.id).unwrap();
+    assert!(archived.harness_id.is_none());
+    let event = &f.ts.get_team_overview(&team.id).unwrap().recent_events[0];
+    assert_eq!(event.kind, EventKind::RoleArchived);
+    assert_eq!(event.data["previousHarnessId"], h.id.as_str());
+    // 已不被任何岗位引用，可以直接归档。
+    f.ts.archive_harness(&h.id).unwrap();
+}

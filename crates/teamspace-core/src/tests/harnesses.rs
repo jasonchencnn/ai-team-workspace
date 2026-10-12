@@ -143,3 +143,15 @@ fn harness_bound_only_to_archived_role_can_be_archived() {
     f.ts.archive_role(&pm.id).unwrap();
     f.ts.archive_harness(&h.id).unwrap();
 }
+
+#[test]
+fn harness_name_length_is_checked() {
+    let f = fixture();
+    let team = f.team("T");
+    assert_kind(
+        create(&f, &team.id, &"h".repeat(101), None),
+        ErrorKind::Invalid,
+    );
+    assert_kind(create(&f, &team.id, "a\tb\u{0}", None), ErrorKind::Invalid);
+    create(&f, &team.id, &"h".repeat(100), None).unwrap();
+}

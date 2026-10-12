@@ -12,7 +12,7 @@ use time::OffsetDateTime;
 use crate::error::{Error, Result};
 
 /// 当前 schema 版本。
-pub(crate) const SCHEMA_VERSION: i64 = 1;
+pub(crate) const SCHEMA_VERSION: i64 = 2;
 
 const SCHEMA_V1: &str = r#"
 CREATE TABLE teams (
@@ -119,12 +119,43 @@ CREATE INDEX events_team ON events (team_id, id);
 CREATE INDEX events_task ON events (task_id, id);
 "#;
 
-const MIGRATIONS: &[&str] = &[SCHEMA_V1];
+/// v2：活动记录增加自增序号 `seq` 作为排序与分页游标键（UUID v7 只保证毫秒级有序）。
+const SCHEMA_V2: &str = r#"
+CREATE TABLE events_v2 (
+    seq        INTEGER PRIMARY KEY,
+    id         TEXT NOT NULL UNIQUE,
+    team_id    TEXT NOT NULL REFERENCES teams (id),
+    task_id    TEXT REFERENCES tasks (id),
+    role_id    TEXT REFERENCES roles (id),
+    kind       TEXT NOT NULL,
+    actor      TEXT NOT NULL,
+    summary    TEXT NOT NULL,
+    data       TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+INSERT INTO events_v2 (id, team_id, task_id, role_id, kind, actor, summary, data, created_at)
+    SELECT id, team_id, task_id, role_id, kind, actor, summary, data, created_at
+    FROM events ORDER BY id;
+DROP TABLE events;
+ALTER TABLE events_v2 RENAME TO events;
+CREATE INDEX events_team ON events (team_id, seq);
+CREATE INDEX events_task ON events (task_id, seq);
+"#;
 
-/// 打开数据库，开启外键并迁移到当前版本。
+const MIGRATIONS: &[&str] = &[SCHEMA_V1, SCHEMA_V2];
+
+/// 打开数据库：WAL 日志、synchronous=NORMAL、开启外键，并迁移到当前版本。
 pub(crate) fn open(path: &Path) -> Result<Connection> {
     let mut conn = Connection::open(path)?;
     conn.busy_timeout(std::time::Duration::from_secs(5))?;
+    let mode: String =
+        conn.pragma_update_and_check(None, "journal_mode", "WAL", |row| row.get(0))?;
+    if !mode.eq_ignore_ascii_case("wal") {
+        return Err(Error::internal(format!(
+            "无法启用 WAL 日志模式（当前：{mode}）"
+        )));
+    }
+    conn.pragma_update(None, "synchronous", "NORMAL")?;
     conn.pragma_update(None, "foreign_keys", true)?;
     migrate(&mut conn)?;
     Ok(conn)
@@ -132,6 +163,11 @@ pub(crate) fn open(path: &Path) -> Result<Connection> {
 
 fn migrate(conn: &mut Connection) -> Result<()> {
     let version: i64 = conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
+    if version < 0 {
+        return Err(Error::internal(format!(
+            "数据库版本号异常（{version}），无法打开"
+        )));
+    }
     if version > SCHEMA_VERSION {
         return Err(Error::internal(format!(
             "数据库版本（{version}）高于当前程序支持的版本（{SCHEMA_VERSION}），请升级应用"
@@ -161,7 +197,7 @@ pub(crate) fn now() -> String {
     )
 }
 
-/// 新的 UUID v7（同进程内单调递增）。
+/// 新的 UUID v7（按毫秒时间有序；需要严格写入顺序时使用自增序号，如活动记录的 `seq`）。
 pub(crate) fn new_id() -> String {
     uuid::Uuid::now_v7().to_string()
 }
@@ -222,6 +258,59 @@ mod tests {
         }
         let err = open(&path).unwrap_err();
         assert_eq!(err.kind(), crate::ErrorKind::Internal);
+    }
+
+    #[test]
+    fn rejects_negative_version() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("t.db");
+        {
+            let conn = Connection::open(&path).unwrap();
+            conn.pragma_update(None, "user_version", -1).unwrap();
+        }
+        let err = open(&path).unwrap_err();
+        assert_eq!(err.kind(), crate::ErrorKind::Internal);
+        assert!(err.to_string().contains("-1"), "{err}");
+    }
+
+    #[test]
+    fn uses_wal_and_normal_sync() {
+        let dir = tempfile::tempdir().unwrap();
+        let conn = open(&dir.path().join("t.db")).unwrap();
+        let mode: String = conn
+            .pragma_query_value(None, "journal_mode", |r| r.get(0))
+            .unwrap();
+        assert_eq!(mode, "wal");
+        let sync: i64 = conn
+            .pragma_query_value(None, "synchronous", |r| r.get(0))
+            .unwrap();
+        assert_eq!(sync, 1, "NORMAL");
+    }
+
+    #[test]
+    fn v1_events_migrate_to_v2_in_id_order() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("t.db");
+        {
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch(SCHEMA_V1).unwrap();
+            conn.execute_batch(
+                "INSERT INTO teams VALUES ('t', 'T', '', '/w', 'a', 'a', NULL);
+                 INSERT INTO events VALUES ('e2', 't', NULL, NULL, 'team_created', 'human', 's2', '{}', 'b');
+                 INSERT INTO events VALUES ('e1', 't', NULL, NULL, 'team_created', 'human', 's1', '{}', 'a');
+                 PRAGMA user_version = 1;",
+            )
+            .unwrap();
+        }
+        let conn = open(&path).unwrap();
+        let rows: Vec<(i64, String)> = conn
+            .prepare("SELECT seq, id FROM events ORDER BY seq")
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(rows, vec![(1, "e1".to_owned()), (2, "e2".to_owned())]);
     }
 
     #[test]

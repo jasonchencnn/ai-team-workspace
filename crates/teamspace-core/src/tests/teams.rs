@@ -171,3 +171,28 @@ fn reopening_the_database_keeps_data() {
     let ts = Teamspace::open(&path, Box::new(FakeProbe)).unwrap();
     assert_eq!(ts.list_teams().unwrap(), vec![team]);
 }
+
+#[test]
+fn team_text_lengths_are_checked() {
+    let f = fixture();
+    let input = |name: String, description: String| CreateTeamInput {
+        name,
+        description,
+        workspace_path: f.ws.to_string_lossy().into_owned(),
+        roles: vec![],
+    };
+    assert_kind(
+        f.ts.create_team(input("名".repeat(101), String::new())),
+        ErrorKind::Invalid,
+    );
+    assert_kind(
+        f.ts.create_team(input("A\u{7}".into(), String::new())),
+        ErrorKind::Invalid,
+    );
+    assert_kind(
+        f.ts.create_team(input("A".into(), "x".repeat(20_001))),
+        ErrorKind::Invalid,
+    );
+    f.ts.create_team(input("名".repeat(100), "x".repeat(20_000)))
+        .unwrap();
+}

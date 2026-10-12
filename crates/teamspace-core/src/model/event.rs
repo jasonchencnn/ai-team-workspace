@@ -55,7 +55,7 @@ pub struct Event {
 #[ts(export)]
 pub struct EventQuery {
     pub team_id: String,
-    /// 上一页返回的 `nextCursor`；缺省从最新开始。
+    /// 上一页返回的 `nextCursor`（不透明字符串，原样传回）；缺省从最新开始。
     #[ts(optional = nullable)]
     pub cursor: Option<String>,
     /// 每页条数，默认 50，最大 200。

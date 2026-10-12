@@ -23,11 +23,12 @@ dependencies: Array<TaskSummary>,
  */
 dependents: Array<TaskSummary>, 
 /**
- * 当前可执行的状态流转（已排除不满足就绪条件的 ready）。
+ * 当前可执行的状态流转（不满足就绪条件时已排除 ready 和 doing）。
  */
 allowedTransitions: Array<TaskStatus>, 
 /**
- * 进入 ready 的未满足条件（中文）；为空表示满足。与当前状态无关，始终计算。
+ * 进入 ready / doing 的未满足条件（中文）；为空表示满足。与当前状态无关，始终计算。
+ * 工作区目录不存在时只有一条「工作区目录不存在或已移动」。
  */
 readiness: Array<string>, 
 /**

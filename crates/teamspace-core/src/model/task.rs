@@ -14,7 +14,8 @@ use super::{Event, RoleRef};
 /// - done → ready
 /// - cancelled → todo
 ///
-/// 进入 ready 需满足就绪条件；进入 blocked 必须给出原因，离开 blocked 时清空原因。
+/// 进入 ready 或 doing（含 blocked → doing）需满足就绪条件；进入 blocked 必须给出原因，
+/// 离开 blocked 时清空原因。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, TS)]
 #[serde(rename_all = "snake_case")]
 #[ts(export)]
@@ -218,9 +219,10 @@ pub struct TaskDetail {
     pub dependencies: Vec<TaskSummary>,
     /// 依赖本任务的任务（下游）。
     pub dependents: Vec<TaskSummary>,
-    /// 当前可执行的状态流转（已排除不满足就绪条件的 ready）。
+    /// 当前可执行的状态流转（不满足就绪条件时已排除 ready 和 doing）。
     pub allowed_transitions: Vec<TaskStatus>,
-    /// 进入 ready 的未满足条件（中文）；为空表示满足。与当前状态无关，始终计算。
+    /// 进入 ready / doing 的未满足条件（中文）；为空表示满足。与当前状态无关，始终计算。
+    /// 工作区目录不存在时只有一条「工作区目录不存在或已移动」。
     pub readiness: Vec<String>,
     /// 与本任务相关的活动，按时间倒序。
     pub events: Vec<Event>,
@@ -238,7 +240,9 @@ pub struct CreateTaskInput {
     pub owner_role_id: String,
     /// 只能是 todo 或 ready；ready 需满足就绪条件。
     pub status: TaskStatus,
+    /// 最多 50 个。
     pub file_refs: Vec<FileRef>,
+    /// 同团队任务 ID，最多 20 个。
     pub depends_on: Vec<String>,
 }
 
@@ -251,7 +255,9 @@ pub struct UpdateTaskInput {
     pub title: String,
     pub description: String,
     pub owner_role_id: String,
+    /// 最多 50 个。
     pub file_refs: Vec<FileRef>,
+    /// 同团队任务 ID，最多 20 个。
     pub depends_on: Vec<String>,
 }
 
@@ -262,7 +268,7 @@ pub struct UpdateTaskInput {
 pub struct ChangeTaskStatusInput {
     pub task_id: String,
     pub to: TaskStatus,
-    /// 进入 blocked 时必填（受阻原因），其他状态忽略。
+    /// 进入 blocked 时必填（受阻原因，最多 500 字），其他状态忽略。
     #[ts(optional = nullable)]
     pub reason: Option<String>,
 }

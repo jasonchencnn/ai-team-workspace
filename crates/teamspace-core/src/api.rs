@@ -6,6 +6,8 @@
 //! 参数约定：ID 参数在前端以 camelCase 传入（`team_id` → `teamId`）；结构体参数统一命名为
 //! `input`。所有命令失败时返回 [`crate::Error`]（前端收到 `ErrorPayload`）。
 //!
+//! 文件系统和外部进程访问（工作区文件存在性、Git、CLI）都在数据库锁之外完成。
+//!
 //! 所有写操作在同一事务内完成数据变更并追加一条 [`crate::model::Event`]（actor 为 human，中文摘要由后端生成）。
 
 use std::path::Path;
@@ -17,6 +19,7 @@ use crate::error::Result;
 use crate::model::*;
 use crate::probe::FILE_SEARCH_LIMIT;
 use crate::probe::SystemProbe;
+use crate::service::task::FileCheck;
 use crate::service::{event, harness, role, task, team};
 use crate::store;
 
@@ -231,25 +234,37 @@ impl Teamspace {
 
     /// 任务详情：依赖、下游、文件存在情况、相关活动、可执行的流转和就绪问题。
     pub fn get_task(&self, task_id: &str) -> Result<TaskDetail> {
-        task::detail(&self.lock(), task_id)
+        let (workspace, refs) = task::workspace_and_refs(&self.lock(), task_id)?;
+        let files = FileCheck::scan(Path::new(&workspace), &refs);
+        task::detail(&self.lock(), task_id, &files)
     }
 
     /// 创建任务：标题、负责岗位必填；初始状态只能是 todo 或 ready（ready 需满足就绪条件）；
-    /// 编号取负责岗位前缀的下一个序号；引用路径须为工作区内相对路径；依赖须为同团队任务且不成环。
-    pub fn create_task(&self, input: CreateTaskInput) -> Result<TaskDetail> {
-        self.write(|tx| task::create(tx, input))
+    /// 编号取负责岗位前缀的下一个序号；引用路径须为工作区内相对路径（最多 50 个）；
+    /// 依赖须为同团队任务（最多 20 个）且不成环。
+    pub fn create_task(&self, mut input: CreateTaskInput) -> Result<TaskDetail> {
+        input.file_refs = task::normalize_refs(input.file_refs)?;
+        let workspace = team::get_active(&self.lock(), &input.team_id)?.workspace_path;
+        let files = FileCheck::scan(Path::new(&workspace), &input.file_refs);
+        self.write(|tx| task::create(tx, input, &files))
     }
 
     /// 编辑任务内容（不改状态，编号不变）；保存依赖时拒绝成环并指出环路；
     /// 任务处于 ready 而修改后不再满足就绪条件时拒绝（conflict）。
-    pub fn update_task(&self, input: UpdateTaskInput) -> Result<TaskDetail> {
-        self.write(|tx| task::update(tx, input))
+    pub fn update_task(&self, mut input: UpdateTaskInput) -> Result<TaskDetail> {
+        input.file_refs = task::normalize_refs(input.file_refs)?;
+        let (workspace, _) = task::workspace_and_refs(&self.lock(), &input.task_id)?;
+        let files = FileCheck::scan(Path::new(&workspace), &input.file_refs);
+        self.write(|tx| task::update(tx, input, &files))
     }
 
-    /// 按流转规则变更状态：进入 ready 需满足就绪条件（有负责人、≥1 个存在于工作区的引用、
-    /// 所有依赖已完成）；进入 blocked 必须给出原因，离开 blocked 清空原因。
+    /// 按流转规则变更状态：进入 ready 或 doing（含 blocked → doing）需满足就绪条件
+    /// （负责岗位有效、≥1 个存在于工作区的引用、所有依赖已完成）；进入 blocked 必须给出原因，
+    /// 离开 blocked 清空原因。
     pub fn change_task_status(&self, input: ChangeTaskStatusInput) -> Result<TaskDetail> {
-        self.write(|tx| task::change_status(tx, input))
+        let (workspace, refs) = task::workspace_and_refs(&self.lock(), &input.task_id)?;
+        let files = FileCheck::scan(Path::new(&workspace), &refs);
+        self.write(|tx| task::change_status(tx, input, &files))
     }
 
     /// 在团队工作区中搜索文件（用于添加引用），返回相对路径，最多 50 条。

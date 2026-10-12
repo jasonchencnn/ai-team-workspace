@@ -6,6 +6,6 @@ import type { TaskStatus } from "./TaskStatus.js";
  */
 export type ChangeTaskStatusInput = { taskId: string, to: TaskStatus, 
 /**
- * 进入 blocked 时必填（受阻原因），其他状态忽略。
+ * 进入 blocked 时必填（受阻原因，最多 500 字），其他状态忽略。
  */
 reason?: string | null, };

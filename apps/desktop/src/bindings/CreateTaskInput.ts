@@ -13,4 +13,12 @@ ownerRoleId: string,
 /**
  * 只能是 todo 或 ready；ready 需满足就绪条件。
  */
-status: TaskStatus, fileRefs: Array<FileRef>, dependsOn: Array<string>, };
+status: TaskStatus, 
+/**
+ * 最多 50 个。
+ */
+fileRefs: Array<FileRef>, 
+/**
+ * 同团队任务 ID，最多 20 个。
+ */
+dependsOn: Array<string>, };

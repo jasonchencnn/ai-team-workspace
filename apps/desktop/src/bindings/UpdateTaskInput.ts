@@ -4,4 +4,12 @@ import type { FileRef } from "./FileRef.js";
 /**
  * 编辑任务（整体替换可编辑字段）。状态走 `change_task_status`。
  */
-export type UpdateTaskInput = { taskId: string, title: string, description: string, ownerRoleId: string, fileRefs: Array<FileRef>, dependsOn: Array<string>, };
+export type UpdateTaskInput = { taskId: string, title: string, description: string, ownerRoleId: string, 
+/**
+ * 最多 50 个。
+ */
+fileRefs: Array<FileRef>, 
+/**
+ * 同团队任务 ID，最多 20 个。
+ */
+dependsOn: Array<string>, };

@@ -120,3 +120,36 @@ fn events_are_scoped_to_team() {
         ErrorKind::NotFound,
     );
 }
+
+#[test]
+fn invalid_cursor_is_rejected() {
+    let f = fixture();
+    let team = f.team("T");
+    assert_kind(
+        f.ts.list_events(EventQuery {
+            team_id: team.id,
+            cursor: Some("not-a-cursor".into()),
+            limit: None,
+        }),
+        ErrorKind::Invalid,
+    );
+}
+
+#[test]
+fn events_keep_write_order_within_the_same_millisecond() {
+    let f = fixture();
+    let team = f.team("T");
+    for i in 0..30 {
+        f.harness(&team.id, &format!("h{i:02}"), HarnessKind::Mock);
+    }
+    let summaries: Vec<_> = page(&f, &team.id, None, Some(30))
+        .events
+        .into_iter()
+        .map(|e| e.summary)
+        .collect();
+    let expected: Vec<_> = (0..30)
+        .rev()
+        .map(|i| format!("注册 Harness「h{i:02}」"))
+        .collect();
+    assert_eq!(summaries, expected);
+}

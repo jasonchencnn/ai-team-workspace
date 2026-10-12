@@ -7,7 +7,7 @@ use rusqlite::{Connection, OptionalExtension, params};
 use serde_json::json;
 
 use super::event::{self, NewEvent};
-use super::{role, team};
+use super::{MAX_LONG_TEXT, MAX_REASON, MAX_TITLE, role, team, text};
 use crate::error::{Error, Result};
 use crate::model::{
     BoardColumn, ChangeTaskStatusInput, CreateTaskInput, EventKind, FileRef, FileRefView,
@@ -15,6 +15,11 @@ use crate::model::{
     UpdateTaskInput,
 };
 use crate::store::{enum_col, enum_str, new_id, non_blank, now};
+
+/// 每个任务的文件引用上限。
+pub(crate) const MAX_FILE_REFS: usize = 50;
+/// 每个任务的依赖上限。
+pub(crate) const MAX_DEPENDENCIES: usize = 20;
 
 // ---------------------------------------------------------------- 读取
 
@@ -152,22 +157,74 @@ pub(crate) fn board(conn: &Connection, query: &TaskBoardQuery) -> Result<TaskBoa
     })
 }
 
-pub(crate) fn detail(conn: &Connection, id: &str) -> Result<TaskDetail> {
+/// 在锁外预先完成的文件存在性检查结果（避免在全局锁和写事务内做文件系统 I/O）。
+///
+/// 未检查过的路径视为不存在。
+pub(crate) struct FileCheck {
+    workspace_ok: bool,
+    existing: HashSet<String>,
+}
+
+impl FileCheck {
+    /// 检查工作区目录与各引用文件是否存在。
+    pub(crate) fn scan(workspace: &Path, refs: &[FileRef]) -> Self {
+        let workspace_ok = workspace.is_dir();
+        let existing = if workspace_ok {
+            refs.iter()
+                .filter(|r| workspace.join(&r.path).exists())
+                .map(|r| r.path.clone())
+                .collect()
+        } else {
+            HashSet::new()
+        };
+        Self {
+            workspace_ok,
+            existing,
+        }
+    }
+
+    fn exists(&self, path: &str) -> bool {
+        self.workspace_ok && self.existing.contains(path)
+    }
+}
+
+/// 读取任务的工作区路径与文件引用（用于在锁外做 [`FileCheck`]）。
+pub(crate) fn workspace_and_refs(conn: &Connection, id: &str) -> Result<(String, Vec<FileRef>)> {
     let task = get(conn, id)?;
     let workspace = team::get_active(conn, &task.team_id)?.workspace_path;
-    let readiness = readiness(
+    Ok((workspace, task.file_refs))
+}
+
+/// 需要满足就绪条件才能进入的状态。
+fn needs_readiness(to: TaskStatus) -> bool {
+    matches!(to, TaskStatus::Ready | TaskStatus::Doing)
+}
+
+pub(crate) fn detail(conn: &Connection, id: &str, files: &FileCheck) -> Result<TaskDetail> {
+    let task = get(conn, id)?;
+    let problems = readiness(
         conn,
-        Path::new(&workspace),
         &task.owner_role_id,
         &task.file_refs,
         &task.depends_on,
+        files,
     )?;
+    build_detail(conn, task, problems, files)
+}
+
+/// 用已算好的就绪问题组装详情（不再重复计算就绪条件，也不做文件 I/O）。
+fn build_detail(
+    conn: &Connection,
+    task: Task,
+    readiness: Vec<String>,
+    files: &FileCheck,
+) -> Result<TaskDetail> {
     let allowed_transitions = task
         .status
         .next()
         .iter()
         .copied()
-        .filter(|to| *to != TaskStatus::Ready || readiness.is_empty())
+        .filter(|to| !needs_readiness(*to) || readiness.is_empty())
         .collect();
     let file_refs = task
         .file_refs
@@ -175,9 +232,10 @@ pub(crate) fn detail(conn: &Connection, id: &str) -> Result<TaskDetail> {
         .map(|r| FileRefView {
             path: r.path.clone(),
             anchor: r.anchor.clone(),
-            exists: Path::new(&workspace).join(&r.path).exists(),
+            exists: files.exists(&r.path),
         })
         .collect();
+    let id = task.id.as_str();
     Ok(TaskDetail {
         owner: role::role_ref(conn, &task.owner_role_id)?,
         file_refs,
@@ -201,8 +259,13 @@ pub(crate) fn detail(conn: &Connection, id: &str) -> Result<TaskDetail> {
 // ---------------------------------------------------------------- 规则
 
 /// 规范化文件引用：相对工作区、`/` 分隔、禁止绝对路径和 `..`；`a.md#x` 拆出锚点；去重。
+/// 最多 [`MAX_FILE_REFS`] 个。
 pub(crate) fn normalize_refs(refs: Vec<FileRef>) -> Result<Vec<FileRef>> {
-    let mut out: Vec<FileRef> = Vec::new();
+    if refs.len() > MAX_FILE_REFS {
+        return Err(Error::invalid(format!("文件引用最多 {MAX_FILE_REFS} 个")));
+    }
+    let mut out: Vec<FileRef> = Vec::with_capacity(refs.len());
+    let mut seen: HashSet<(String, Option<String>)> = HashSet::with_capacity(refs.len());
     for r in refs {
         let raw = r.path.trim().replace('\\', "/");
         let (raw_path, inline_anchor) = match raw.split_once('#') {
@@ -238,21 +301,24 @@ pub(crate) fn normalize_refs(refs: Vec<FileRef>) -> Result<Vec<FileRef>> {
             path: parts.join("/"),
             anchor,
         };
-        if !out.contains(&normalized) {
+        if seen.insert((normalized.path.clone(), normalized.anchor.clone())) {
             out.push(normalized);
         }
     }
     Ok(out)
 }
 
-/// 进入 READY 的未满足条件（中文）；为空表示就绪。
+/// 进入 ready / doing 的未满足条件（中文）；为空表示就绪。文件存在性来自预先完成的 [`FileCheck`]。
 pub(crate) fn readiness(
     conn: &Connection,
-    workspace: &Path,
     owner_role_id: &str,
     refs: &[FileRef],
     depends_on: &[String],
+    files: &FileCheck,
 ) -> Result<Vec<String>> {
+    if !files.workspace_ok {
+        return Ok(vec!["工作区目录不存在或已移动".to_owned()]);
+    }
     let mut problems = Vec::new();
     match role::role_ref(conn, owner_role_id) {
         Ok(owner) if owner.archived => {
@@ -265,7 +331,7 @@ pub(crate) fn readiness(
         problems.push("至少需要一个文件引用".to_owned());
     }
     for r in refs {
-        if !workspace.join(&r.path).exists() {
+        if !files.exists(&r.path) {
             problems.push(format!("引用的文件在工作区中不存在：{}", r.path));
         }
     }
@@ -282,16 +348,22 @@ pub(crate) fn readiness(
     Ok(problems)
 }
 
-/// 校验依赖：去重、不能依赖自身、须为同团队任务、不能成环（报出环路）。
+/// 校验依赖：最多 [`MAX_DEPENDENCIES`] 个、去重、不能依赖自身、须为同团队任务、不能成环（报出环路）。
 fn validate_deps(
     conn: &Connection,
     team_id: &str,
     task_id: Option<&str>,
     deps: Vec<String>,
 ) -> Result<Vec<String>> {
-    let mut out: Vec<String> = Vec::new();
+    if deps.len() > MAX_DEPENDENCIES {
+        return Err(Error::invalid(format!(
+            "依赖任务最多 {MAX_DEPENDENCIES} 个"
+        )));
+    }
+    let mut out: Vec<String> = Vec::with_capacity(deps.len());
+    let mut seen: HashSet<String> = HashSet::with_capacity(deps.len());
     for dep in deps {
-        if out.contains(&dep) {
+        if !seen.insert(dep.clone()) {
             continue;
         }
         if Some(dep.as_str()) == task_id {
@@ -380,11 +452,7 @@ fn next_key(conn: &Connection, team_id: &str, prefix: &str) -> Result<String> {
 }
 
 fn validate_title(title: &str) -> Result<String> {
-    let title = title.trim();
-    if title.is_empty() {
-        return Err(Error::invalid("任务标题不能为空"));
-    }
-    Ok(title.to_owned())
+    text("任务标题", title, MAX_TITLE, true)
 }
 
 /// 负责岗位：未归档且属于该团队。
@@ -436,26 +504,23 @@ fn not_ready(problems: &[String]) -> Error {
 
 // ---------------------------------------------------------------- 写入
 
-pub(crate) fn create(conn: &Connection, input: CreateTaskInput) -> Result<TaskDetail> {
+pub(crate) fn create(
+    conn: &Connection,
+    input: CreateTaskInput,
+    files: &FileCheck,
+) -> Result<TaskDetail> {
     let team = team::get_active(conn, &input.team_id)?;
     let title = validate_title(&input.title)?;
+    let description = text("任务描述", &input.description, MAX_LONG_TEXT, false)?;
     if !input.status.is_initial() {
         return Err(Error::invalid("新任务的状态只能是 TODO 或 READY"));
     }
     let owner = owner_in_team(conn, &team.id, &input.owner_role_id)?;
     let refs = normalize_refs(input.file_refs)?;
     let deps = validate_deps(conn, &team.id, None, input.depends_on)?;
-    if input.status == TaskStatus::Ready {
-        let problems = readiness(
-            conn,
-            Path::new(&team.workspace_path),
-            &owner.id,
-            &refs,
-            &deps,
-        )?;
-        if !problems.is_empty() {
-            return Err(not_ready(&problems));
-        }
+    let problems = readiness(conn, &owner.id, &refs, &deps, files)?;
+    if needs_readiness(input.status) && !problems.is_empty() {
+        return Err(not_ready(&problems));
     }
     let id = new_id();
     let key = next_key(conn, &team.id, &owner.task_prefix)?;
@@ -468,7 +533,7 @@ pub(crate) fn create(conn: &Connection, input: CreateTaskInput) -> Result<TaskDe
             team.id,
             key,
             title,
-            input.description.trim(),
+            description,
             enum_str(input.status),
             owner.id,
             now()
@@ -486,35 +551,32 @@ pub(crate) fn create(conn: &Connection, input: CreateTaskInput) -> Result<TaskDe
             data: json!({ "status": input.status, "ownerRoleId": owner.id }),
         },
     )?;
-    detail(conn, &id)
+    build_detail(conn, get(conn, &id)?, problems, files)
 }
 
-pub(crate) fn update(conn: &Connection, input: UpdateTaskInput) -> Result<TaskDetail> {
+pub(crate) fn update(
+    conn: &Connection,
+    input: UpdateTaskInput,
+    files: &FileCheck,
+) -> Result<TaskDetail> {
     let old = get(conn, &input.task_id)?;
     let team = team::get_active(conn, &old.team_id)?;
     let title = validate_title(&input.title)?;
+    let description = text("任务描述", &input.description, MAX_LONG_TEXT, false)?;
     let owner = owner_in_team(conn, &team.id, &input.owner_role_id)?;
     let refs = normalize_refs(input.file_refs)?;
     let deps = validate_deps(conn, &team.id, Some(&old.id), input.depends_on)?;
-    if old.status == TaskStatus::Ready {
-        let problems = readiness(
-            conn,
-            Path::new(&team.workspace_path),
-            &owner.id,
-            &refs,
-            &deps,
-        )?;
-        if !problems.is_empty() {
-            return Err(Error::conflict(format!(
-                "任务处于 READY，修改后不再满足就绪条件：{}",
-                problems.join("；")
-            )));
-        }
+    let problems = readiness(conn, &owner.id, &refs, &deps, files)?;
+    if old.status == TaskStatus::Ready && !problems.is_empty() {
+        return Err(Error::conflict(format!(
+            "任务处于 READY，修改后不再满足就绪条件：{}",
+            problems.join("；")
+        )));
     }
     conn.execute(
         "UPDATE tasks SET title = ?2, description = ?3, owner_role_id = ?4, updated_at = ?5
          WHERE id = ?1",
-        params![old.id, title, input.description.trim(), owner.id, now()],
+        params![old.id, title, description, owner.id, now()],
     )?;
     write_refs_and_deps(conn, &old.id, &refs, &deps)?;
     let mut summary = format!("编辑任务 {}「{title}」", old.key);
@@ -537,10 +599,14 @@ pub(crate) fn update(conn: &Connection, input: UpdateTaskInput) -> Result<TaskDe
             }),
         },
     )?;
-    detail(conn, &old.id)
+    build_detail(conn, get(conn, &old.id)?, problems, files)
 }
 
-pub(crate) fn change_status(conn: &Connection, input: ChangeTaskStatusInput) -> Result<TaskDetail> {
+pub(crate) fn change_status(
+    conn: &Connection,
+    input: ChangeTaskStatusInput,
+    files: &FileCheck,
+) -> Result<TaskDetail> {
     let task = get(conn, &input.task_id)?;
     let team = team::get_active(conn, &task.team_id)?;
     let (from, to) = (task.status, input.to);
@@ -552,20 +618,27 @@ pub(crate) fn change_status(conn: &Connection, input: ChangeTaskStatusInput) -> 
             to.label()
         )));
     }
-    if to == TaskStatus::Ready {
-        let problems = readiness(
-            conn,
-            Path::new(&team.workspace_path),
-            &task.owner_role_id,
-            &task.file_refs,
-            &task.depends_on,
-        )?;
-        if !problems.is_empty() {
-            return Err(not_ready(&problems));
-        }
+    let problems = readiness(
+        conn,
+        &task.owner_role_id,
+        &task.file_refs,
+        &task.depends_on,
+        files,
+    )?;
+    if needs_readiness(to) && !problems.is_empty() {
+        return Err(not_ready(&problems));
     }
     let reason = if to == TaskStatus::Blocked {
-        Some(non_blank(input.reason).ok_or_else(|| Error::invalid("请填写受阻原因"))?)
+        let reason = text(
+            "受阻原因",
+            input.reason.as_deref().unwrap_or_default(),
+            MAX_REASON,
+            false,
+        )?;
+        if reason.is_empty() {
+            return Err(Error::invalid("请填写受阻原因"));
+        }
+        Some(reason)
     } else {
         None
     };
@@ -588,7 +661,7 @@ pub(crate) fn change_status(conn: &Connection, input: ChangeTaskStatusInput) -> 
             data: json!({ "from": from, "to": to, "reason": reason }),
         },
     )?;
-    detail(conn, &task.id)
+    build_detail(conn, get(conn, &task.id)?, problems, files)
 }
 
 #[cfg(test)]
@@ -600,6 +673,19 @@ mod tests {
             path: path.to_owned(),
             anchor: None,
         }
+    }
+
+    #[test]
+    fn file_check_only_trusts_scanned_paths() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.md"), "x").unwrap();
+        let check = FileCheck::scan(dir.path(), &[r("a.md"), r("b.md")]);
+        assert!(check.exists("a.md"));
+        assert!(!check.exists("b.md"));
+        // 未检查过的路径（如锁外检查后数据被改动）一律视为不存在。
+        assert!(!check.exists("c.md"));
+        let gone = FileCheck::scan(&dir.path().join("missing"), &[r("a.md")]);
+        assert!(!gone.workspace_ok && !gone.exists("a.md"));
     }
 
     #[test]

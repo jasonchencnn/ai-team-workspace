@@ -4,7 +4,7 @@ use rusqlite::{Connection, OptionalExtension, params};
 use serde_json::json;
 
 use super::event::{self, NewEvent};
-use super::{role, task};
+use super::{MAX_LONG_TEXT, MAX_NAME, role, task, text};
 use crate::error::{Error, Result};
 use crate::model::{CreateTeamInput, EventKind, Team, TeamOverview, WorkspaceInfo};
 use crate::store::{new_id, now};
@@ -44,11 +44,7 @@ pub(crate) fn list(conn: &Connection) -> Result<Vec<Team>> {
 
 /// 校验团队名称（在探测工作区之前调用，尽早报错）。
 pub(crate) fn validate_name(name: &str) -> Result<String> {
-    let name = name.trim();
-    if name.is_empty() {
-        return Err(Error::invalid("团队名称不能为空"));
-    }
-    Ok(name.to_owned())
+    text("团队名称", name, MAX_NAME, true)
 }
 
 /// 创建团队及初始岗位。`workspace` 为已探测的工作区。
@@ -58,6 +54,7 @@ pub(crate) fn create(
     workspace: &WorkspaceInfo,
 ) -> Result<Team> {
     let name = validate_name(&input.name)?;
+    let description = text("团队描述", &input.description, MAX_LONG_TEXT, false)?;
     let taken: bool = conn.query_row(
         "SELECT EXISTS (SELECT 1 FROM teams WHERE name = ?1 AND archived_at IS NULL)",
         params![name],
@@ -71,7 +68,7 @@ pub(crate) fn create(
     conn.execute(
         "INSERT INTO teams (id, name, description, workspace_path, created_at, updated_at)
          VALUES (?1, ?2, ?3, ?4, ?5, ?5)",
-        params![id, name, input.description.trim(), workspace.path, at],
+        params![id, name, description, workspace.path, at],
     )?;
     let mut role_names = Vec::new();
     for new_role in input.roles {
