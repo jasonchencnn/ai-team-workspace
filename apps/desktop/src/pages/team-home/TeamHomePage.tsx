@@ -113,6 +113,7 @@ export function TeamHomePage() {
         {data.roles.length === 0 ? (
           <Panel className="th-panel">
             <EmptyState
+              bare
               title="还没有岗位"
               description="团队已创建，先建立岗位再派工。"
               action={
@@ -164,6 +165,7 @@ export function TeamHomePage() {
 
           {totalTasks === 0 ? (
             <EmptyState
+              bare
               title="团队已就绪，创建第一项任务"
               description="将任务分配给岗位，并关联已有需求文件。岗位当前绑定的 Harness 会在满足依赖后领取任务。"
               action={
