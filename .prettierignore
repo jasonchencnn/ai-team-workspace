@@ -4,3 +4,4 @@ coverage/
 apps/**/dist/
 apps/**/src-tauri/gen/
 pnpm-lock.yaml
+apps/desktop/src/bindings/

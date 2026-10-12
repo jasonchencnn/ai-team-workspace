@@ -11,6 +11,7 @@ export default tseslint.config(
       "**/*.d.mts",
       "apps/desktop/dist/**",
       "apps/desktop/src-tauri/gen/**",
+      "apps/desktop/src/bindings/**",
       "archive/**",
     ],
   },

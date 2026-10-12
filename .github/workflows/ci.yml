@@ -32,6 +32,8 @@ jobs:
           cache-dependency-path: pnpm-lock.yaml
       - run: pnpm install --frozen-lockfile
       - run: pnpm run check
+      - name: Generated bindings are committed
+        run: test -z "$(git status --porcelain -- apps/desktop/src/bindings)"
 
   secret-scan:
     name: ci / secret scan
