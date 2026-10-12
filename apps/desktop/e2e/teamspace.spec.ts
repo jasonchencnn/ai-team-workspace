@@ -85,7 +85,7 @@ test("创建团队：选择工作空间、保留默认岗位、保存后进入�
   await expect(page.locator(".tc-role__checkbox:checked")).toHaveCount(3);
   await shot(page, "create-team-workspace-detected");
 
-  await page.getByRole("button", { name: "保存岗位并配置 Harness" }).click();
+  await page.getByRole("button", { name: "创建团队并配置岗位" }).click();
   await expect(page).toHaveURL(/\/teams\/[^/]+\/roles$/);
   await expect(page.getByRole("heading", { name: "岗位与绑定" })).toBeVisible();
   await expect(page.getByRole("button", { name: /^前端开发\s*\/\s*未绑定$/ })).toBeVisible();

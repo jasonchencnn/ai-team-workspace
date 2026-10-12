@@ -30,6 +30,15 @@
   line-height: var(--line-height-body);
 }
 
+/* 选中岗位后的说明行：岗位标识 + 当前绑定，长标识不撑破面板 */
+.task-form__binding {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  color: var(--color-muted);
+  font-size: var(--font-size-caption);
+  line-height: var(--line-height-caption);
+}
+
 /* 关联文件 */
 .task-form__files {
   display: flex;
@@ -176,6 +185,21 @@
 
 .task-form__option:hover {
   background: var(--color-info-surface);
+}
+
+/* 已选依赖：留在列表里但置灰，说明它已被依赖，只是不能在这里取消。 */
+.task-form__option--on {
+  color: var(--color-muted);
+  cursor: default;
+}
+
+.task-form__option--on:hover {
+  background: transparent;
+}
+
+.task-form__option--on .task-form__option-key,
+.task-form__option--on .task-form__option-title {
+  color: var(--color-muted);
 }
 
 .task-form__option-key {

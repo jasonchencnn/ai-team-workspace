@@ -20,10 +20,11 @@ import type { TagTone } from "../../components/index.js";
 import { formatLocalDateTime } from "./formatLocalDateTime.js";
 import "./team-home.css";
 
+/** Harness 类型的中文展示名；mock 是测试用执行器，标注出来避免误当成真实执行环境。 */
 const HARNESS_LABEL: Record<HarnessKind, string> = {
   claude_code: "Claude Code",
   codex: "Codex",
-  mock: "Mock",
+  mock: "Mock（测试用）",
 };
 
 const HEALTH_TONE: Record<HealthStatus, TagTone> = {
@@ -47,6 +48,12 @@ const STATUS_TONE: Record<TaskStatus, TagTone> = {
   done: "success",
   cancelled: "neutral",
 };
+
+/** TODO / READY 等拉丁文标签前补空格，中文标签不加，避免出现「1 个TODO」这类挤在一起的排版。 */
+function formatTaskCount(count: number, label: string): string {
+  const latin = /^[\x20-\x7E]/.test(label);
+  return `${String(count)} 个${latin ? " " : ""}${label}`;
+}
 
 export function TeamHomePage() {
   const { teamId } = useParams();
@@ -99,7 +106,10 @@ export function TeamHomePage() {
         }
       />
 
-      <section className="th-roles" aria-label="岗位">
+      <section className="th-roles" aria-labelledby="th-roles-heading">
+        <h2 className="th-roles__heading" id="th-roles-heading">
+          岗位
+        </h2>
         {data.roles.length === 0 ? (
           <Panel className="th-panel">
             <EmptyState
@@ -124,21 +134,21 @@ export function TeamHomePage() {
                 {item.harness === null ? (
                   <p>未绑定 Harness · 暂不派工</p>
                 ) : (
-                  <p>
-                    当前绑定 {HARNESS_LABEL[item.harness.kind]}
-                    {item.harness.name === "" ? "" : ` · ${item.harness.name}`}
-                  </p>
+                  <>
+                    <p>
+                      当前绑定 {HARNESS_LABEL[item.harness.kind]}
+                      {item.harness.name === "" ? "" : ` · ${item.harness.name}`}
+                    </p>
+                    <div className="th-health">
+                      <Tag tone={HEALTH_TONE[item.harness.health.status]}>
+                        {HEALTH_LABEL[item.harness.health.status]}
+                      </Tag>
+                      {item.harness.health.detail ? (
+                        <span className="th-note">{item.harness.health.detail}</span>
+                      ) : null}
+                    </div>
+                  </>
                 )}
-                <div className="th-health">
-                  <Tag tone={HEALTH_TONE[item.harness?.health.status ?? "unknown"]}>
-                    {item.harness === null
-                      ? "未绑定 Harness"
-                      : HEALTH_LABEL[item.harness.health.status]}
-                  </Tag>
-                  {item.harness?.health.detail ? (
-                    <span className="th-note">{item.harness.health.detail}</span>
-                  ) : null}
-                </div>
                 {item.openTaskCount > 0 ? (
                   <p className="th-note">未结束任务 {item.openTaskCount}</p>
                 ) : null}
@@ -171,7 +181,7 @@ export function TeamHomePage() {
               <p className="th-note">
                 {activeCounts.length === 0
                   ? "暂无进行中的任务"
-                  : activeCounts.map((item) => `${String(item.count)} 个${item.label}`).join(" / ")}
+                  : activeCounts.map((item) => formatTaskCount(item.count, item.label)).join(" / ")}
               </p>
               {data.activeTasks.length === 0 ? (
                 <p className="th-note">当前没有执行中、受阻或待验收的任务。</p>
@@ -197,7 +207,6 @@ export function TeamHomePage() {
                   ))}
                 </ul>
               )}
-              <p className="th-note">联调任务将在前后端验收通过后开始。</p>
             </div>
           )}
         </Panel>
@@ -214,7 +223,9 @@ export function TeamHomePage() {
               <p className="th-note">工作区状态未知。</p>
             ) : (
               <div className="th-stack">
-                <p>路径：{data.workspace.path}</p>
+                <p className="th-path">
+                  路径：<span title={data.workspace.path}>{data.workspace.path}</span>
+                </p>
                 <p>
                   分支：{data.workspace.branch ?? "detached HEAD"} · 提交：
                   {data.workspace.commit ?? "暂无提交"}
@@ -226,14 +237,17 @@ export function TeamHomePage() {
             {data.recentEvents.length === 0 ? (
               <p className="th-note">暂无活动记录。</p>
             ) : (
-              <ul className="th-event-list">
-                {data.recentEvents.map((event) => (
-                  <li key={event.id} className="th-event">
-                    <span className="th-event__time">{formatLocalDateTime(event.createdAt)}</span>
-                    <span className="th-event__summary">{event.summary}</span>
-                  </li>
-                ))}
-              </ul>
+              <>
+                <p className="th-note">共 {String(data.recentEvents.length)} 条，最新的在最前。</p>
+                <ul className="th-event-list">
+                  {data.recentEvents.map((event) => (
+                    <li key={event.id} className="th-event">
+                      <span className="th-event__time">{formatLocalDateTime(event.createdAt)}</span>
+                      <span className="th-event__summary">{event.summary}</span>
+                    </li>
+                  ))}
+                </ul>
+              </>
             )}
           </div>
         </Panel>

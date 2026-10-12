@@ -19,6 +19,26 @@
   line-height: var(--line-height-caption);
 }
 
+/* 长路径按任意位置折行，完整值放在 title 里，不越出面板。 */
+.th-path {
+  overflow-wrap: anywhere;
+  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  font-size: var(--font-size-caption);
+  line-height: var(--line-height-caption);
+}
+
+/* 岗位区标题：页头是 h1、岗位卡片是 h3，中间补一层 h2 供读屏导航。 */
+.th-roles__heading {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
 /* 岗位卡片区 */
 .th-roles {
   display: grid;
@@ -26,16 +46,16 @@
   gap: 16px;
 }
 
+/* 卡片数少于轨道数时铺满整行，不留整列空白。 */
 @media (min-width: 768px) {
   .th-roles {
-    grid-template-columns: repeat(2, 1fr);
+    grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
   }
 }
 
-@media (min-width: 1280px) {
-  .th-roles {
-    grid-template-columns: repeat(4, 1fr);
-  }
+/* grid 项默认 min-width:auto，长内容会撑破轨道。 */
+.th-roles > * {
+  min-width: 0;
 }
 
 .th-role .ui-card__body {
@@ -126,13 +146,15 @@
   font-size: var(--font-size-caption);
 }
 
-/* 最近活动 */
+/* 最近活动：内核最多返回 10 条，长列表限高滚动，面板不被拉长 */
 .th-event-list {
   display: flex;
   flex-direction: column;
   gap: 8px;
+  max-height: 280px;
   margin: 0;
-  padding: 0;
+  padding: 0 4px 0 0;
+  overflow-y: auto;
   list-style: none;
 }
 
@@ -140,6 +162,8 @@
   display: flex;
   flex-direction: column;
   gap: 2px;
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 .th-event__time {

@@ -127,6 +127,7 @@ export function TaskFormPage() {
   const [fileInput, setFileInput] = useState("");
   const [dependsOn, setDependsOn] = useState<string[]>([]);
   const [initialStatus, setInitialStatus] = useState<TaskStatus>("todo");
+  const [submitted, setSubmitted] = useState(false);
 
   const rolesQuery = useQuery({
     queryKey: queryKeys.roles(teamId),
@@ -239,9 +240,7 @@ export function TaskFormPage() {
   );
   const dependencyOptions: TaskSummary[] = boardColumns.flatMap((column) => column.tasks);
   // 编辑时不能把自己列为依赖（否则必然成环）；这里只是不给选项，规则仍由后端判定。
-  const selectableDependencies = dependencyOptions.filter(
-    (task) => task.id !== taskId && !dependsOn.includes(task.id),
-  );
+  const dependencyChoices = dependencyOptions.filter((task) => task.id !== taskId);
   const dependencyById = new Map(dependencyOptions.map((task) => [task.id, task]));
 
   const addedPaths = new Set(fileRefs.map((ref) => ref.path));
@@ -279,6 +278,11 @@ export function TaskFormPage() {
 
   const submit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
+    setSubmitted(true);
+    if (title.trim() === "") {
+      // 标题为空时前端直接拦下，不发请求；错误走 InputField 的 error 通道。
+      return;
+    }
     saveMutation.mutate({
       title,
       description,
@@ -324,6 +328,7 @@ export function TaskFormPage() {
             label="任务名称"
             required
             value={title}
+            error={submitted && title.trim() === "" ? "请填写任务名称" : undefined}
             onChange={(event) => {
               setTitle(event.target.value);
             }}
@@ -379,7 +384,7 @@ export function TaskFormPage() {
               <option value="">请选择负责岗位</option>
               {roles.map((roleView) => (
                 <option key={roleView.role.id} value={roleView.role.id}>
-                  {roleView.role.name} / {roleView.role.code}
+                  {roleView.role.name}
                 </option>
               ))}
             </SelectField>
@@ -387,6 +392,7 @@ export function TaskFormPage() {
 
           {selectedRole !== undefined ? (
             <p className="task-form__binding">
+              岗位标识：{selectedRole.role.code} ·{" "}
               {selectedHarness === null ? (
                 <>未绑定 Harness · 暂不派工</>
               ) : (
@@ -443,8 +449,7 @@ export function TaskFormPage() {
             </div>
 
             <p className="ui-field__hint">
-              输入时实时搜索工作区文件；用 # 追加锚点（如
-              plans/signup.md#signup）。引用可访问，包含验收章节。
+              输入时实时搜索工作区文件；用 # 追加锚点可直达具体章节，引用文件需包含验收标准。
             </p>
 
             {searchPending ? (
@@ -571,28 +576,38 @@ export function TaskFormPage() {
                     title="本团队还没有任务"
                     description="先创建前置任务，再回来把它设为依赖。"
                   />
-                ) : selectableDependencies.length === 0 ? (
+                ) : dependencyChoices.length === 0 ? (
                   <p className="ui-field__hint">没有其他可添加的任务。</p>
                 ) : (
                   <ul className="task-form__options">
-                    {selectableDependencies.map((task) => (
-                      <li key={task.id}>
-                        <label className="task-form__option">
-                          <input
-                            type="checkbox"
-                            checked={false}
-                            onChange={(event) => {
-                              toggleDependency(task.id, event.target.checked);
-                            }}
-                          />
-                          <span className="task-form__option-key">{task.key}</span>
-                          <span className="task-form__option-title">{task.title}</span>
-                          <Tag tone={statusTone(task.status)}>
-                            {boardLabel.get(task.status) ?? labelOf(task.status)}
-                          </Tag>
-                        </label>
-                      </li>
-                    ))}
+                    {dependencyChoices.map((task) => {
+                      const alreadyOn = dependsOn.includes(task.id);
+                      return (
+                        <li key={task.id}>
+                          <label
+                            className={
+                              alreadyOn
+                                ? "task-form__option task-form__option--on"
+                                : "task-form__option"
+                            }
+                          >
+                            <input
+                              type="checkbox"
+                              checked={alreadyOn}
+                              disabled={alreadyOn}
+                              onChange={(event) => {
+                                toggleDependency(task.id, event.target.checked);
+                              }}
+                            />
+                            <span className="task-form__option-key">{task.key}</span>
+                            <span className="task-form__option-title">{task.title}</span>
+                            <Tag tone={statusTone(task.status)}>
+                              {boardLabel.get(task.status) ?? labelOf(task.status)}
+                            </Tag>
+                          </label>
+                        </li>
+                      );
+                    })}
                   </ul>
                 )}
               </fieldset>
