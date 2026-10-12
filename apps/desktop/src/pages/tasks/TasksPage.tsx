@@ -2,7 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 import { useState } from "react";
 import { Link, useNavigate, useParams } from "react-router";
 
-import { getTaskBoard, listRoles } from "../../api/commands.js";
+import { getTaskBoard, getTeamOverview, listRoles } from "../../api/commands.js";
 import { queryKeys } from "../../api/queryKeys.js";
 import {
   Button,
@@ -167,6 +167,13 @@ export function TasksPage() {
     enabled: teamId !== "",
   });
 
+  // 看板接口默认不含已取消任务，用概览的状态计数（共享缓存）判断团队是否有已取消任务。
+  const overview = useQuery({
+    queryKey: queryKeys.teamOverview(teamId),
+    queryFn: () => getTeamOverview(teamId),
+    enabled: teamId !== "",
+  });
+
   const createPath = `/teams/${teamId}/tasks/new`;
   const header = (
     <PageHeader title="任务面板" description="任务分派给岗位，详细要求保存在共享文件。" />
@@ -202,7 +209,21 @@ export function TasksPage() {
   const doneCount = columns.find((column) => column.status === "done")?.tasks.length ?? 0;
   const total = columns.reduce((sum, column) => sum + column.tasks.length, 0);
 
-  if (total === 0 && !showCancelled) {
+  const cancelledTotal =
+    overview.data?.taskCounts.find((entry) => entry.status === "cancelled")?.count ?? 0;
+  const onlyCancelled = total === 0 && !showCancelled && cancelledTotal > 0;
+
+  if (total === 0 && !showCancelled && overview.isPending) {
+    return (
+      <>
+        {header}
+        <div className="tasks-state">
+          <Spinner label="正在加载任务" />
+        </div>
+      </>
+    );
+  }
+  if (total === 0 && !showCancelled && !onlyCancelled) {
     return (
       <>
         {header}
@@ -278,7 +299,9 @@ export function TasksPage() {
         <Button onClick={() => void navigate(createPath)}>创建任务</Button>
       </div>
 
-      {view === "board" ? (
+      {onlyCancelled ? (
+        <p className="tasks-state">当前只有已取消的任务，勾选「显示已取消」查看。</p>
+      ) : view === "board" ? (
         <div
           className="task-board"
           style={{

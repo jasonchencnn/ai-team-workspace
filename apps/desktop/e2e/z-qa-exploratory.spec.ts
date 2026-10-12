@@ -521,14 +521,7 @@ test("10. 重新加载页面后状态保持", async ({ page }) => {
   await qaShot(page, "qa-25-reload-state-persistence");
 });
 
-test("11. [缺陷] 当团队所有任务均已取消时，看板因 total===0 进入空状态，导致「显示已取消」不可见", async ({
-  page,
-}) => {
-  test.fail(
-    true,
-    "缺陷：当团队所有任务均已取消时，TasksPage 计算 total === 0，触发 EmptyState 渲染，导致整个看板工具栏被隐藏，用户无法勾选「显示已取消」来查看或恢复已取消的任务。",
-  );
-
+test("11. 当团队所有任务均已取消时，看板保留工具栏并提示勾选「显示已取消」", async ({ page }) => {
   // 创建一个专属团队用于复现此缺陷
   await page.goto("/#/teams/new");
   await page.getByLabel("Team 名称").fill("缺陷复现-仅已取消团队");
@@ -559,4 +552,8 @@ test("11. [缺陷] 当团队所有任务均已取消时，看板因 total===0 �
   // 实际缺陷表现：页面渲染了 EmptyState，没有工具栏，显示已取消复选框不可见（预期超时失败）
   await qaShot(page, "qa-26-bug-all-cancelled-empty-state");
   await expect(page.getByLabel("显示已取消")).toBeVisible({ timeout: 2000 });
+  await expect(page.getByText("当前只有已取消的任务")).toBeVisible();
+  await expect(page.getByText("创建第一项任务")).toHaveCount(0);
+  await page.getByLabel("显示已取消").check();
+  await expect(page.getByRole("link", { name: /将被取消的唯一任务/ })).toBeVisible();
 });
