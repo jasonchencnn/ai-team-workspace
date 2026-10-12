@@ -5,6 +5,8 @@
 - 决策者：Human Owner（2026-09-21 明确确认）
 - 适用：AI Team Workspace local-first MVP
 
+> 平台门禁更新：第 10 项中 Ubuntu 同步验证的发布前要求，已由 Human 接受的 [ADR-0005](0005-macos-first-quality-and-release-gates.md) 替代；macOS 首发目标不变。
+
 ## 背景
 
 PRD 要求本地优先、可替换 Harness、并发隔离、权限门禁、重启恢复和完整审计。Figma 已覆盖核心状态，但审计明确要求在开发前冻结进程形态、持久化、安全存储、Adapter 契约、数据语义和平台优先级。

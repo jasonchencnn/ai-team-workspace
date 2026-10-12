@@ -4,6 +4,8 @@
 > 状态：Frozen  
 > 任何改变对象身份、所有权或聚合边界的实现必须新增 ADR。
 
+> 2026-10-10 已接受补充：[ADR-0007 第 1 条](../adr/0007-notification-resolution-and-policy-semantics-proposal.md)规定 Notification 与 Policy 使用同一主程序可信安装 Owner 身份端口；UUID 格式与 Role 排除不构成身份来源。第 2～7 条仍 Proposed，不改变本规格的其余边界。
+
 ## 1. 最高层事实归属
 
 ```text

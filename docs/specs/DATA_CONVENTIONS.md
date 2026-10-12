@@ -3,6 +3,10 @@
 > 对应节点：DEV-00-06  
 > 状态：Frozen
 
+> 2026-10-10 已接受身份补充见 [ADR-0007 第 1 条](../adr/0007-notification-resolution-and-policy-semantics-proposal.md)：安装 Owner 身份由主程序持久端口提供；旧通知 UUID 不自动采用为 Owner，既有历史 ID 不因本条改写。其余条款仍待决。
+
+安装身份记录及初始化标记须与数据库备份关联保留，恢复不得另造 Human ID；实际备份包/一致性恢复仍由 DEV-02-15 验收，本条不宣称已完成演练。
+
 ## 1. ID 规则
 
 | 类型 | 规则 | 示例/说明 |

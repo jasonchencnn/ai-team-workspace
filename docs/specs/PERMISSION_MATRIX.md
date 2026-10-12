@@ -2,6 +2,8 @@
 
 > 对应节点：DEV-00-05  
 > 状态：Frozen  
+
+> 2026-10-10 已接受补充：[ADR-0007 第 1 条](../adr/0007-notification-resolution-and-policy-semantics-proposal.md)仅确认通知/Policy 的可信 Owner 身份来源；actor 归因一致性不替代调用来源认证与执行点权限检查，不授权其余通知语义或扩大 Role/Harness 能力。
 > 决策原则：能力不等于权限；UI 可见性不等于授权；所有检查在控制面最终执行点重算。
 
 ## 1. 主体模型

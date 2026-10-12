@@ -346,7 +346,7 @@
     "note": "2026-09-21 第三轮审计整改后全量验证：所有 Node 原型目标有效；12 条 Hover 均指向有效组件变体。"
   },
   "auditRectification": {
-    "source": "PRD-Figma审计报告.md",
+    "source": "docs/archive/v1-planning/PRD-Figma审计报告.md",
     "date": "2026-09-21",
     "addedScreens": 20,
     "screenCount": 36,
