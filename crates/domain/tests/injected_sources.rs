@@ -1,7 +1,7 @@
-use domain::test_fixtures::{
+use teamspace_domain::test_fixtures::{
     DeterministicRandomSource, DeterministicUuidV7Source, FixedClock, FixtureSourceError,
 };
-use domain::{
+use teamspace_domain::{
     Clock, RandomSource, UtcTimestamp, UuidV7Generator, UuidV7GeneratorError, UuidV7Source,
     ValueObjectError,
 };
@@ -55,9 +55,10 @@ fn deterministic_random_source_resets_and_fails_stably_when_explicitly_exhausted
 
 #[test]
 fn deterministic_id_source_resets_and_fails_stably_when_explicitly_exhausted() {
-    let first = domain::UuidV7::from_timestamp_and_random(1, [0; 10]).expect("fixture ID is valid");
-    let second =
-        domain::UuidV7::from_timestamp_and_random(2, [1; 10]).expect("fixture ID is valid");
+    let first = teamspace_domain::UuidV7::from_timestamp_and_random(1, [0; 10])
+        .expect("fixture ID is valid");
+    let second = teamspace_domain::UuidV7::from_timestamp_and_random(2, [1; 10])
+        .expect("fixture ID is valid");
     let mut ids = DeterministicUuidV7Source::new(vec![first, second]);
 
     assert_eq!(ids.next_uuid_v7(), Ok(first));

@@ -6,3 +6,14 @@ publish = false
 
 [lib]
 path = "src/lib.rs"
+
+[dependencies]
+application = { path = "../application" }
+teamspace-domain = { path = "../domain" }
+tokio = { version = "1", features = ["rt"] }
+
+[target.'cfg(unix)'.dependencies]
+libc = "=0.2.189"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }

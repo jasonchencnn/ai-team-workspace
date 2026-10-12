@@ -1,8 +1,8 @@
-use domain::{
+use serde_json::{from_str, to_string};
+use teamspace_domain::{
     Actor, AdapterId, ExpectedVersion, HumanId, RoleId, RunId, TaskId, UtcTimestamp, UuidV7,
     ValueObjectError, Version,
 };
-use serde_json::{from_str, to_string};
 
 fn uuid(timestamp: u64, tail: u8) -> UuidV7 {
     UuidV7::from_timestamp_and_random(

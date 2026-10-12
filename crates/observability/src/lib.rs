@@ -93,12 +93,26 @@ impl Serialize for SafeText {
 
 /// A cloneable redaction policy shared by logs, errors, and Event metadata.
 ///
-/// Registered secrets are removed in plaintext, strict percent-encoded, hexadecimal,
+/// Registered secrets are removed in plaintext, once-percent-encoded, hexadecimal,
 /// and standard/URL-safe base64 forms. Sensitive field names are independently
 /// redacted by [`JsonSubscriber`], even when their values were not registered.
+///
+/// Under a single percent-encoding pass every registered byte may be written
+/// literally or as `%XX`, so a partly escaped and a fully escaped spelling both
+/// match. Only the hex digits inside an escape are case-insensitive (`%2d` and
+/// `%2D` are the same byte) while a byte written literally must equal the
+/// registered byte, so `Audit` is not `audit` and `audit%2donly%2faab` stays
+/// untouched. Hexadecimal spellings are compared digit by digit, which accepts
+/// every per-digit case mix without enumerating spellings and without rewriting
+/// text that is not the registered secret.
+///
+/// Matching is bounded: candidates are the occurrences of at most two anchor bytes
+/// and never start past `input.len() - min_len`, so each position is examined a
+/// constant number of times. Decoding is one pass only; a `%25` sequence is an
+/// ordinary byte here, because a multi-pass decoding policy is not decided.
 #[derive(Clone, Default)]
 pub struct Redactor {
-    dangerous_forms: Arc<Vec<String>>,
+    dangerous_forms: Arc<Vec<RedactionForm>>,
 }
 
 impl Redactor {
@@ -111,9 +125,9 @@ impl Redactor {
         let mut dangerous_forms = secrets
             .into_iter()
             .flat_map(|secret| derived_forms(secret.as_ref()))
-            .filter(|value| !value.is_empty())
+            .filter(|form| !form.is_empty())
             .collect::<Vec<_>>();
-        dangerous_forms.sort_by_key(|value| std::cmp::Reverse(value.len()));
+        dangerous_forms.sort_by_key(|form| std::cmp::Reverse(form.match_len()));
         dangerous_forms.dedup();
         Self {
             dangerous_forms: Arc::new(dangerous_forms),
@@ -124,7 +138,11 @@ impl Redactor {
     pub fn sanitize(&self, input: impl AsRef<str>) -> SafeText {
         let mut output = input.as_ref().to_owned();
         for dangerous in self.dangerous_forms.iter() {
-            output = output.replace(dangerous, REDACTED);
+            output = match dangerous {
+                RedactionForm::Exact(value) => output.replace(value.as_str(), REDACTED),
+                RedactionForm::Percent(form) => form.replace_in(&output),
+                RedactionForm::Hex(form) => form.replace_in(&output),
+            };
         }
         SafeText(output)
     }
@@ -569,25 +587,334 @@ fn is_sensitive_field(name: &str) -> bool {
     .any(|marker| normalized.contains(marker))
 }
 
-fn derived_forms(secret: &str) -> Vec<String> {
-    if secret.is_empty() {
-        return Vec::new();
+/// One registered dangerous form together with how it is matched.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum RedactionForm {
+    /// An exact substring, replaced like `str::replace` keeps doing.
+    Exact(String),
+    /// The once-percent-encoded form of one secret, matched by [`PercentForm`].
+    Percent(PercentForm),
+    /// The hexadecimal form of one secret, matched digit by digit by [`HexForm`].
+    Hex(HexForm),
+}
+
+impl RedactionForm {
+    /// The longest byte length this form can consume; longer forms are tried first.
+    fn match_len(&self) -> usize {
+        match self {
+            Self::Exact(value) => value.len(),
+            Self::Percent(form) => form.max_len,
+            Self::Hex(form) => form.digits.len(),
+        }
     }
-    let bytes = secret.as_bytes();
-    let hex = bytes
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect::<String>();
-    let percent = bytes
-        .iter()
-        .map(|byte| {
-            if byte.is_ascii_alphanumeric() {
-                char::from(*byte).to_string()
-            } else {
-                format!("%{byte:02X}")
-            }
+
+    fn is_empty(&self) -> bool {
+        match self {
+            Self::Exact(value) => value.is_empty(),
+            Self::Percent(form) => form.min_len == 0,
+            Self::Hex(form) => form.digits.is_empty(),
+        }
+    }
+}
+
+/// Bounded matcher for the once-percent-encoded form of one registered secret.
+///
+/// Every registered byte may be written literally or as `%XX`, so a partly escaped
+/// and a fully escaped spelling both match. Only the two hex digits inside an
+/// escape are case-insensitive; a literal byte must equal the registered byte, so
+/// `Audit` and `audit` stay distinct while an escaped byte still decodes to the
+/// registered case. Decoding is never recursive: `%25` is one ordinary byte here.
+///
+/// A registered `%` has two legal spellings that start with the *same* input
+/// byte, so the matcher cannot commit to one of them greedily; it carries the set
+/// of reachable positions instead. The reachable set after `i` matched bytes is
+/// indexed by `escaped ∈ 0..=i`, so layer `i` costs `O(i)` and all `n` layers
+/// cost `O(secret_len²)` time in `O(secret_len)` space per candidate position.
+/// That is the explicit bound this matcher relies on: every reachable state is
+/// inspected once, so neither an input full of `%` nor a long secret with many
+/// `%` bytes can make the work exponential. No spelling is enumerated, no input
+/// byte is folded to another case, and the candidate scan stops at
+/// `input.len() - min_len`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct PercentForm {
+    /// The registered bytes; each may appear literally or as `%XX`.
+    bytes: Vec<u8>,
+    /// Bytes a match consumes when no registered byte is escaped.
+    min_len: usize,
+    /// Bytes a match consumes when every registered byte is escaped.
+    max_len: usize,
+    /// Bytes that may start a match: the first registered byte, or `%`.
+    anchors: Vec<u8>,
+}
+
+impl PercentForm {
+    fn new(secret: &[u8]) -> Option<Self> {
+        let first = *secret.first()?;
+        let mut anchors = vec![first];
+        if first != b'%' {
+            anchors.push(b'%');
+        }
+        Some(Self {
+            bytes: secret.to_vec(),
+            min_len: secret.len(),
+            max_len: secret.len() * 3,
+            anchors,
         })
-        .collect::<String>();
+    }
+
+    /// Returns the matched byte length when the pattern matches at `start`.
+    ///
+    /// The length depends on how many registered bytes were escaped, so callers
+    /// splice with this value and never with `max_len`.
+    ///
+    /// A registered `%` may be written literally or as `%25`, and both spellings
+    /// begin with the same input byte, so neither branch can be tried first and
+    /// committed to. Every reachable position is therefore carried forward.
+    ///
+    /// After the first `i` registered bytes are matched, a spelling that escaped
+    /// `e` of them has consumed exactly `i + 2e` input bytes, so the reachable set
+    /// at layer `i` is the small index set `0..=i` and holds at most `i + 1`
+    /// positions. Layer `i` therefore costs `O(i)` and the `n` layers cost
+    /// `O(n²)` time in `O(n)` space — the explicit resource bound of this matcher.
+    /// Every state is inspected exactly once per layer, so a secret with many `%`
+    /// bytes and an input full of escape anchors cannot grow the work
+    /// exponentially, and no backtracking beyond one layer is ever needed.
+    ///
+    /// Only the two hex digits inside an escape are case-insensitive and only a
+    /// literal byte must equal the registered byte, so `Audit` is never `audit`
+    /// here. Decoding stays single-pass: `%25` consumes three bytes and yields one.
+    ///
+    /// The longest reachable match is returned, which is the safe splice point for
+    /// a redaction boundary: it never leaves a live spelling of the secret behind.
+    fn match_at(&self, input: &[u8], start: usize, reachable: &mut Reachability) -> Option<usize> {
+        let total = self.bytes.len();
+        reachable.begin();
+        for (index, byte) in self.bytes.iter().enumerate() {
+            let mut wrote = false;
+            for layer_index in 0..reachable.len() {
+                let escaped = reachable.at(layer_index);
+                let cursor = start + index + (escaped << 1);
+                if input.get(cursor) == Some(byte) {
+                    reachable.mark(escaped);
+                    wrote = true;
+                }
+                if input.get(cursor) == Some(&b'%')
+                    && let Some(high) = input.get(cursor + 1).copied().and_then(hex_digit_value)
+                    && let Some(low) = input.get(cursor + 2).copied().and_then(hex_digit_value)
+                    && (high << 4) | low == *byte
+                {
+                    reachable.mark(escaped + 1);
+                    wrote = true;
+                }
+            }
+            if !wrote {
+                return None;
+            }
+            reachable.commit();
+        }
+        reachable.longest(total)
+    }
+
+    /// Replaces every non-overlapping match with [`REDACTED`], left to right.
+    fn replace_in(&self, input: &str) -> String {
+        let mut reachable = Reachability::default();
+        replace_bounded_matches(input, &self.anchors, self.min_len, |start| {
+            self.match_at(input.as_bytes(), start, &mut reachable)
+        })
+    }
+}
+
+/// The reachable escape counts of one [`PercentForm::match_at`] layer.
+///
+/// Only states that are actually live are stored, in ascending order, so a layer
+/// costs `O(live)` rather than `O(i)`. That keeps the documented `O(n²)` worst
+/// case — a layer can never hold more than `i + 1` states — while making the
+/// common case, where a `%` byte has exactly one live spelling, linear overall.
+///
+/// Both buffers are allocated once per scan and reused for every candidate
+/// position, so a long input performs no per-candidate allocation.
+#[derive(Default)]
+struct Reachability {
+    current: Vec<usize>,
+    next: Vec<usize>,
+}
+
+impl Reachability {
+    /// Starts one candidate at escape count zero.
+    fn begin(&mut self) {
+        self.current.clear();
+        self.next.clear();
+        self.current.push(0);
+    }
+
+    fn len(&self) -> usize {
+        self.current.len()
+    }
+
+    fn at(&self, layer_index: usize) -> usize {
+        self.current[layer_index]
+    }
+
+    /// Records `escaped` for the next layer.
+    ///
+    /// Counts only ever arrive as `e` or `e + 1` while `current` is walked in
+    /// ascending order, so `next` stays sorted and a duplicate only has to be
+    /// dropped against the value just written.
+    fn mark(&mut self, escaped: usize) {
+        if self.next.last() == Some(&escaped) {
+            return;
+        }
+        self.next.push(escaped);
+    }
+
+    /// Promotes the collected counts to the current layer.
+    ///
+    /// The retired layer must be cleared here: leaving its counts behind would let
+    /// a stale escape count re-enter the next layer, which both matches the wrong
+    /// bytes and makes the buffer grow without bound.
+    fn commit(&mut self) {
+        std::mem::swap(&mut self.current, &mut self.next);
+        self.next.clear();
+    }
+
+    /// The longest spelling, i.e. the largest reachable escape count.
+    fn longest(&self, total: usize) -> Option<usize> {
+        self.current.last().map(|escaped| total + (escaped << 1))
+    }
+}
+
+/// Bounded matcher for the hexadecimal form of one registered secret.
+///
+/// The form is exactly `2 × secret_len` digit positions long and every position is
+/// compared by digit value, so each per-digit case mix matches exactly like the
+/// all-lower or all-upper spelling without building the `2^n` spellings. A window
+/// that is not the registered spelling is left byte-for-byte unchanged.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct HexForm {
+    /// One nibble per position, from the high nibble of each registered byte.
+    digits: Vec<u8>,
+    /// Bytes that may start a match: the first digit's byte spellings.
+    anchors: Vec<u8>,
+}
+
+impl HexForm {
+    fn new(secret: &[u8]) -> Option<Self> {
+        let mut digits = Vec::with_capacity(secret.len() * 2);
+        for byte in secret {
+            digits.push(byte >> 4);
+            digits.push(byte & 0x0f);
+        }
+        let first = *digits.first()?;
+        Some(Self {
+            digits,
+            anchors: hex_digit_spellings(first),
+        })
+    }
+
+    /// Returns the matched byte length when every digit matches at `start`.
+    fn match_at(&self, input: &[u8], start: usize) -> Option<usize> {
+        let end = start.checked_add(self.digits.len())?;
+        let window = input.get(start..end)?;
+        let matched = self
+            .digits
+            .iter()
+            .zip(window)
+            .all(|(expected, actual)| hex_digit_value(*actual) == Some(*expected));
+        matched.then_some(self.digits.len())
+    }
+
+    /// Replaces every non-overlapping match with [`REDACTED`], left to right.
+    fn replace_in(&self, input: &str) -> String {
+        replace_bounded_matches(input, &self.anchors, self.digits.len(), |start| {
+            self.match_at(input.as_bytes(), start)
+        })
+    }
+}
+
+/// Replaces every non-overlapping match of a bounded matcher with [`REDACTED`].
+///
+/// One left-to-right pass: candidates are the occurrences of `anchors` and never
+/// start past `input.len() - min_len`, the cursor never moves backwards, and every
+/// position is therefore examined a constant number of times.
+fn replace_bounded_matches(
+    input: &str,
+    anchors: &[u8],
+    min_len: usize,
+    mut match_at: impl FnMut(usize) -> Option<usize>,
+) -> String {
+    let bytes = input.as_bytes();
+    let mut output = String::with_capacity(input.len());
+    let mut copied = 0usize;
+    let mut search = 0usize;
+    while let Some((start, length)) =
+        find_bounded_match(bytes, search, anchors, min_len, &mut match_at)
+    {
+        output.push_str(&input[copied..start]);
+        output.push_str(REDACTED);
+        copied = start + length;
+        search = copied;
+    }
+    output.push_str(&input[copied..]);
+    output
+}
+
+/// First match at or after `from`, or `None` once no match can remain.
+fn find_bounded_match(
+    input: &[u8],
+    from: usize,
+    anchors: &[u8],
+    min_len: usize,
+    match_at: &mut impl FnMut(usize) -> Option<usize>,
+) -> Option<(usize, usize)> {
+    let last_start = input.len().checked_sub(min_len)?;
+    let mut search = from;
+    while search <= last_start {
+        let found = input[search..]
+            .iter()
+            .position(|byte| anchors.contains(byte))?;
+        let candidate = search + found;
+        if candidate > last_start {
+            return None;
+        }
+        if is_char_boundary(input, candidate)
+            && let Some(length) = match_at(candidate)
+        {
+            return Some((candidate, length));
+        }
+        search = candidate + 1;
+    }
+    None
+}
+
+fn hex_digit_value(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
+    }
+}
+
+/// The one or two bytes that spell a hex digit value.
+fn hex_digit_spellings(value: u8) -> Vec<u8> {
+    if value < 10 {
+        vec![b'0' + value]
+    } else {
+        vec![b'a' + value - 10, b'A' + value - 10]
+    }
+}
+
+fn is_char_boundary(input: &[u8], index: usize) -> bool {
+    input.get(index).is_some_and(|byte| (byte & 0xc0) != 0x80)
+}
+
+fn derived_forms(secret: &str) -> Vec<RedactionForm> {
+    let bytes = secret.as_bytes();
+    let (Some(percent), Some(hex)) = (PercentForm::new(bytes), HexForm::new(bytes)) else {
+        // An empty secret has no dangerous form: matching it would rewrite every
+        // position of every string the redactor sees.
+        return Vec::new();
+    };
     let standard_base64 = base64_encode(
         bytes,
         b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/",
@@ -597,15 +924,13 @@ fn derived_forms(secret: &str) -> Vec<String> {
         b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_",
     );
     vec![
-        secret.to_owned(),
-        hex.clone(),
-        hex.to_ascii_uppercase(),
-        percent.clone(),
-        percent.to_ascii_lowercase(),
-        standard_base64.clone(),
-        standard_base64.trim_end_matches('=').to_owned(),
-        url_base64.clone(),
-        url_base64.trim_end_matches('=').to_owned(),
+        RedactionForm::Percent(percent),
+        RedactionForm::Hex(hex),
+        RedactionForm::Exact(secret.to_owned()),
+        RedactionForm::Exact(standard_base64.clone()),
+        RedactionForm::Exact(standard_base64.trim_end_matches('=').to_owned()),
+        RedactionForm::Exact(url_base64.clone()),
+        RedactionForm::Exact(url_base64.trim_end_matches('=').to_owned()),
     ]
 }
 

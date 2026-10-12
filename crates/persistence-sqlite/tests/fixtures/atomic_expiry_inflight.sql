@@ -1,0 +1,10 @@
+-- Synthetic routing history; no adapter process or real credential is used.
+INSERT INTO harness_instances(id,team_id,harness_type,display_name,status,capabilities,version,created_at,updated_at) VALUES(X'01921389d31174628f80cb5f79ab0020',X'01921389d31174628f80cb5f79ab0001','MOCK','mock','ACTIVE','[]',1,1,1);
+INSERT INTO adapters(id,team_id,name,protocol_version,executable_path,manifest_json,version,created_at,updated_at) VALUES(X'01921389d31174628f80cb5f79ab0021',X'01921389d31174628f80cb5f79ab0001','mock','0','/synthetic/mock','{}',1,1,1);
+INSERT INTO bindings(id,team_id,role_id,harness_instance_id,adapter_id,status,binding_generation,version,configuration_snapshot,created_at,updated_at,effective_from) VALUES(X'01921389d31174628f80cb5f79ab0031',X'01921389d31174628f80cb5f79ab0001',X'01921389d31174628f80cb5f79ab0011',X'01921389d31174628f80cb5f79ab0020',X'01921389d31174628f80cb5f79ab0021','ACTIVE',1,1,'{}',1,1,1);
+UPDATE messages SET status='ROUTED',version=3,updated_at=3 WHERE id=X'01921389d31174628f80cb5f79ab0080';
+INSERT INTO delivery_attempts(id,team_id,message_id,attempt_number,target_role_id,target_binding_id,target_binding_generation,status,created_at) VALUES(X'01921389d31174628f80cb5f79ab00a0',X'01921389d31174628f80cb5f79ab0001',X'01921389d31174628f80cb5f79ab0080',1,X'01921389d31174628f80cb5f79ab0011',X'01921389d31174628f80cb5f79ab0031',1,'PENDING',3);
+UPDATE delivery_attempts SET status='IN_FLIGHT',started_at=3 WHERE id=X'01921389d31174628f80cb5f79ab00a0';
+UPDATE delivery_attempts SET status='FAILED',completed_at=4,error_code='MESSAGE_DELIVERY_FAILED',error_message='synthetic' WHERE id=X'01921389d31174628f80cb5f79ab00a0';
+INSERT INTO delivery_attempts(id,team_id,message_id,attempt_number,target_role_id,target_binding_id,target_binding_generation,status,created_at) VALUES(X'01921389d31174628f80cb5f79ab00a1',X'01921389d31174628f80cb5f79ab0001',X'01921389d31174628f80cb5f79ab0080',2,X'01921389d31174628f80cb5f79ab0011',X'01921389d31174628f80cb5f79ab0031',1,'PENDING',5);
+UPDATE delivery_attempts SET status='IN_FLIGHT',started_at=5 WHERE id=X'01921389d31174628f80cb5f79ab00a1';

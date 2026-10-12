@@ -1,0 +1,150 @@
+-- FC-03: a terminal Run is absorbing. STATE_MACHINES.md section 3 gives
+-- `SUCCEEDED` / `FAILED` / `TIMED_OUT` / `CANCELLED` no outgoing edge, so a
+-- finished attempt may only have its *own* status written back.
+--
+-- What `0001..0028` actually permitted, measured rather than assumed
+-- (reproduced by `probe/matrix_probe.sh`, log
+-- `docs/reviews/evidence/minimax-followup/FC-03/main/probe-v28-matrix.log`;
+-- the same rig at `0001..0026` is `probe-v26-matrix.log`):
+--
+--   from \ to   QUEUED STARTING RUNNING SUCCEEDED FAILED TIMED_OUT CANCELLED UNKNOWN
+--   QUEUED     self    ACCEPT   refuse   refuse   refuse   refuse   ACCEPT     refuse
+--   STARTING   refuse  self     ACCEPT  refuse   ACCEPT  ACCEPT  ACCEPT     ACCEPT
+--   RUNNING    refuse  refuse   self     ACCEPT  ACCEPT  ACCEPT  ACCEPT     ACCEPT
+--   UNKNOWN    refuse  refuse   ACCEPT  ACCEPT  ACCEPT  ACCEPT  ACCEPT     self
+--   SUCCEEDED  refuse  refuse   refuse   self     ACCEPT  ACCEPT  ACCEPT     refuse
+--   FAILED     refuse  refuse   refuse  ACCEPT    self    ACCEPT  ACCEPT     refuse
+--   TIMED_OUT  refuse  refuse   refuse  ACCEPT   ACCEPT   self    ACCEPT     refuse
+--   CANCELLED  refuse  refuse   refuse  ACCEPT   ACCEPT  ACCEPT   self       refuse
+--
+--   TOTAL off-diagonal: ACCEPTED=29 REFUSED=27
+--
+-- The 29 accepted cells are exactly the 17 frozen edges of section 3 plus the
+-- **12 terminal -> terminal cells** the independent audit measured writable on a
+-- real database (`MR-01`: "真库实测 SUCCEEDED -> FAILED 后行确实变为 FAILED").
+-- `0027` closes the 11 illegal cells whose source is non-terminal; `0012:142-145`
+-- closes the 16 terminal -> active cells. The 12 remaining cells had no guard at
+-- all, which is what this migration removes.
+--
+-- Decomposition of the 8x8 matrix, every number taken from the probe above:
+--
+--   64 cells total
+--    8 self-transitions      -- not transitions (STATE_MACHINES section 1 and
+--                               DATA_CONVENTIONS section 3: an UPDATE that
+--                               changes no status is not a state change)
+--   56 off-diagonal cells
+--     17 frozen legal edges  -- STATE_MACHINES section 3
+--     39 illegal off-diagonal
+--       11 non-terminal source -- refused by `0027`
+--       16 terminal -> active  -- refused by `0012:142-145`
+--       12 terminal -> terminal -- refused by **this migration**
+--
+-- `0027`'s header comment states "32 off-diagonal cells ... 0012 refused 8 ...
+-- remaining 24". Those three numbers are stale and do not describe the shipped
+-- triggers: the off-diagonal count is 56, `0012` refuses 16, and `0027` refuses
+-- 11. `0027` is already applied to released databases and its bytes are frozen,
+-- so it is left exactly as it is and the discrepancy is recorded here and in
+-- `docs/coordination/minimax-followup/FC-03-RESULT.md` instead.
+--
+-- Why this was not closed in `0027`: its comment gives a concrete reason -- a
+-- trigger refusing *every* terminal source returns its own message first, so
+-- `a_reviewed_run_keeps_its_verdict`
+-- (`run_lease_consistency_forward_migration.rs`) would stop proving that
+-- `runs_lease_review_consistency_update` refused anything. That reasoning was
+-- sound; the conclusion drawn from it -- that the cells must therefore stay open
+-- -- was not, and holding an illegal write open to preserve one error string
+-- traded a real defect for a cosmetic one.
+--
+-- How the shadowing is handled rather than hidden:
+--
+--   * SQLite runs `BEFORE` triggers in **reverse creation order** (measured, not
+--     assumed: two triggers on one table, the later-created one fires first), so
+--     this trigger is reached before both `0012`'s and `0027`'s on a status write
+--     and the message a caller sees for the terminal quadrant is this one.
+--   * The affected assertions were changed to state the stable **domain reason**
+--     -- a terminal Run has no outgoing edge -- together with the full row
+--     contents proving the refusal changed nothing, rather than to pin one
+--     trigger's string.
+--   * `0012` was **not** weakened. `the_pre_existing_terminal_resurrection_guard
+--     _still_bears_weight` in `tests/run_transition_integrity.rs` builds a
+--     database from `0001..0028` only and shows `0012` refusing terminal ->
+--     `RUNNING` with its own message there, so the older guard is proven to still
+--     be load-bearing rather than merely present.
+--   * An error string is not a frozen business edge. STATE_MACHINES section 3
+--     constrains *which* statuses a Run may hold next; it does not freeze which
+--     guard reports the refusal, and several of the strings in ERROR_CATALOG are
+--     mapped by the application layer (K3/K4), not by storage triggers.
+--
+-- Forward migration: `0001..0028` are never modified and no checksum drifts.
+--
+-- ---------------------------------------------------------------------------
+-- The guard.
+--
+-- One predicate, not twelve triggers: the frozen statement is a single rule --
+-- "a terminal Run has no outgoing edge" -- and twelve near-identical bodies would
+-- be twelve places for a mutation to hide. It deliberately covers the 16
+-- terminal -> active cells as well as the 12 terminal -> terminal ones, because
+-- both are the same frozen rule; splitting the quadrant to preserve one error
+-- message would be re-introducing the reason this migration exists.
+--
+-- `NEW.status IS NOT OLD.status` is what admits a same-status write-back, so the
+-- ordinary "business field update on a finished Run" path -- `failure_reason`, a
+-- diagnostic reference, `version` -- keeps working, exactly as `0027` does for
+-- the non-terminal quadrant.
+-- ---------------------------------------------------------------------------
+CREATE TRIGGER runs_terminal_status_integrity_update
+BEFORE UPDATE OF status ON runs
+FOR EACH ROW
+WHEN OLD.status IN ('SUCCEEDED', 'FAILED', 'TIMED_OUT', 'CANCELLED')
+     AND NEW.status IS NOT OLD.status
+BEGIN
+    SELECT RAISE(ABORT, 'Run terminal status violation');
+END;
+
+-- ---------------------------------------------------------------------------
+-- Creation axis: registered, not closed, and not claimed closed.
+--
+-- STATE_MACHINES section 3 has exactly one creation row, `create -> QUEUED`, and
+-- `runs_consistency_insert` (`0012:72-108`) does not constrain the status at
+-- all. A Run can therefore still be INSERTed directly as `SUCCEEDED`.
+--
+-- That is **not** repaired here and this migration makes no claim about it:
+--
+--   * A Run may be INSERTed outside `QUEUED` today, and
+--     `creating_a_run_outside_queued_is_still_possible_and_that_is_measured`
+--     keeps measuring that rather than assuming it.
+--   * Such rows are overwhelmingly **retained-history fixtures** in this crate's
+--     own tests, not a production creation command. DATA_CONVENTIONS section 5
+--     and section 6 require Run history to be retained, and DOMAIN_MODEL section
+--     5 requires a Run to be non-overwritable with retries creating a new one --
+--     a fixture that inserts an already-finished Run is expressing retained
+--     history, which the frozen specs permit.
+--   * A `BEFORE INSERT` guard requiring `NEW.status = 'QUEUED'` was measured
+--     against this crate and refuses every non-`QUEUED` insert in
+--     `crates/persistence-sqlite/tests/` (see the same measurement recorded in
+--     `0027`), most of them in files outside this package's write set. This
+--     package is **not** authorised to force every INSERT to `QUEUED`, so no such
+--     guard is added, and no fixture-only escape parameter is added to make
+--     fixtures pass either.
+--   * The frozen creation row describes the `task.claim` command, which runs in
+--     the application layer. Proving that production creation and retry actually
+--     go through `QUEUED` -- together with actor, version and Event/Outbox -- is
+--     the K3/K4 trusted execution chain's responsibility, not this migration's.
+--     **This package does not claim the application creation or retry path has
+--     been verified.**
+--
+-- ---------------------------------------------------------------------------
+-- Upgrade guard: deliberately absent, for the same reason as `0027`.
+--
+-- The trigger constrains statements, not rows. Every historical `runs` row is
+-- legal under it by construction -- the predicate is evaluated on `UPDATE` and
+-- no row is updated here -- so a `valid = 1` probe table would be a tautology
+-- (ADVERSARIAL_REVIEW_PLAYBOOK rule 5). The upgrade guarantee is asserted
+-- directly instead, by `upgrading_to_0029_preserves_every_existing_row` (a
+-- per-table before/after snapshot) and `a_failed_0029_upgrade_has_no_side_
+-- effects` (the trigger name is occupied, the migration fails, the snapshot is
+-- unchanged).
+--
+-- Compatibility: no table, column, index, default or constraint is altered;
+-- `0028` and every earlier migration keep their checksums; the package gains
+-- exactly one trigger.

@@ -2,9 +2,10 @@
 
 //! Frozen domain value objects shared by the control plane.
 //!
-//! These types deliberately model identity, time, optimistic-concurrency
-//! versions, and actor attribution only. They do not grant permissions or
-//! encode aggregate state transitions.
+//! This crate contains value objects and pure domain rules for identities,
+//! lifecycle transitions, permissions, idempotency and execution fencing.
+//! It performs no infrastructure I/O. The control plane must load trusted
+//! execution context and apply decisions atomically with their effects.
 
 use std::fmt;
 use std::num::NonZeroU64;
@@ -12,11 +13,96 @@ use std::str::FromStr;
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
+/// The Approval lifecycle state machine, frozen by `STATE_MACHINES.md` §7.
+pub mod approval_state_machine;
+/// One delivery attempt, frozen by `STATE_MACHINES.md` §5.
+pub mod attempt_state_machine;
+/// The Binding lifecycle state machine, frozen by `STATE_MACHINES.md` §4.
+pub mod binding_state_machine;
+/// §3 optimistic locking and §4 idempotency, frozen by `DATA_CONVENTIONS.md`.
+pub mod idempotency;
+/// The Message lifecycle state machine, frozen by `STATE_MACHINES.md` §5.
+pub mod message_state_machine;
+/// Outbox dispatch decisions, frozen by `ERROR_CATALOG.md` §11 and
+/// `TECH_STACK_AND_STANDARDS.md` §4.3.
+pub mod outbox_dispatch;
+/// §2 effective-permission intersection, frozen by `PERMISSION_MATRIX.md`.
+pub mod permission_intersection;
+/// §3 command permission matrix, frozen by `PERMISSION_MATRIX.md`.
+pub mod permission_matrix;
+/// Fencing generation, lease renewal and write admission, frozen by
+/// `TECH_STACK_AND_STANDARDS.md` §5.
+pub mod run_fencing;
+/// §11 automatic retry admission, frozen by `ERROR_CATALOG.md` §11.
+pub mod run_retry;
+/// The Run lifecycle state machine, frozen by `STATE_MACHINES.md` §3.
+pub mod run_state_machine;
+/// §3 Run cancellation and timeout decisions, frozen by `STATE_MACHINES.md` §3.
+pub mod run_termination;
 mod sources;
+/// The Task lifecycle state machine, frozen by `STATE_MACHINES.md` §2.
+pub mod task_state_machine;
 /// Deterministic sources reserved for tests and local development fixtures.
 pub mod test_fixtures;
 
+pub use approval_state_machine::{
+    APPROVAL_CREATE_TARGETS, APPROVAL_EDGES, ApprovalCommand, ApprovalCreation, ApprovalEdge,
+    ApprovalErrorCode, ApprovalEvent, ApprovalPrecondition, ApprovalRejection, ApprovalStatus,
+    ApprovalTransition, CREATE_PENDING_APPROVAL, creation_target as approval_creation_target,
+    rejection_code as approval_rejection_code, transition as approval_transition,
+};
+pub use attempt_state_machine::{
+    ATTEMPT_CREATE_TARGETS, ATTEMPT_EDGES, AttemptCommand, AttemptCreation, AttemptEdge,
+    AttemptRejection, AttemptStatus, AttemptTransition, CREATE_PENDING as CREATE_PENDING_ATTEMPT,
+    creation_target as attempt_creation_target, transition as attempt_transition,
+};
+pub use binding_state_machine::{
+    BINDING_EDGES, BindingCommand, BindingCreation, BindingEdge, BindingErrorCode, BindingEvent,
+    BindingPrecondition, BindingRejection, BindingStatus, BindingTransition, CREATE_PENDING_CHECK,
+    CREATE_TARGETS as BINDING_CREATE_TARGETS, creation_target as binding_creation_target,
+    rejection_code as binding_rejection_code, transition as binding_transition,
+};
+pub use message_state_machine::{
+    CREATE_DRAFT, CREATE_TARGETS as MESSAGE_CREATE_TARGETS, MESSAGE_EDGES, MessageCommand,
+    MessageCreation, MessageEdge, MessageErrorCode, MessageEvent, MessagePrecondition,
+    MessageRejection, MessageStatus, MessageTransition, creation_target as message_creation_target,
+    rejection_code as message_rejection_code, transition as message_transition,
+};
+pub use outbox_dispatch::{
+    DEFAULT_BACKOFF_BASE_MILLIS, DEFAULT_MAX_RETRIES, DeliveryFailure, DispatchDecision,
+    OutboxEntry, OutboxStatus, OutcomeDecision, RetryPolicy, decide_dispatch, decide_outcome,
+    decide_published, is_due,
+};
+pub use permission_intersection::{
+    CompoundFacts, DenialKeys, DenialReason, Layer, LayerVerdict, PermissionDecision,
+    PermissionErrorCode, PermissionRequest, evaluate_permission,
+};
+pub use permission_matrix::{
+    ActorKind, DiscriminatingFact, MATRIX, MatrixVerdict, PermissionAction, SimpleVerdict,
+    VerdictPair, matrix_verdict,
+};
+pub use run_fencing::{
+    Generation, HeartbeatDecision, LEASE_BEARING_STATUSES, LeaseRefusal, LeaseSnapshot,
+    RenewalDecision, RunWrite, RunWriteRefusal, WriteDecision, decide_heartbeat, decide_renewal,
+    decide_write,
+};
+pub use run_retry::{RetryDecision, RetryLimit, RunFailure, decide_retry};
+pub use run_state_machine::{
+    CREATE_QUEUED, RUN_EDGES, ReconcileOutcome, RunCommand, RunCreation, RunEdge, RunErrorCode,
+    RunEvent, RunPrecondition, RunRejection, RunStatus, RunTransition,
+    rejection_code as run_rejection_code, transition as run_transition,
+};
+pub use run_termination::{
+    CancelDecision, CancelObservation, ExecutionObservation, ReconcileEvidence, TimeoutDecision,
+    decide_cancel, decide_timeout,
+};
 pub use sources::{Clock, RandomSource, UuidV7Generator, UuidV7GeneratorError, UuidV7Source};
+pub use task_state_machine::{
+    CREATE_READY, CREATE_TODO, TASK_CREATIONS, TASK_EDGES, TaskCommand, TaskCreation, TaskEdge,
+    TaskErrorCode, TaskEvent, TaskPrecondition, TaskRejection, TaskStatus, TaskTransition,
+    creation_target as task_creation_target, rejection_code as task_rejection_code,
+    transition as task_transition,
+};
 
 /// A parse or validation error for a domain value object.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -27,6 +113,8 @@ pub enum ValueObjectError {
     TimestampOutOfRange,
     /// The timestamp is not canonical UTC RFC 3339 with millisecond precision.
     InvalidRfc3339Millis,
+    /// A required string field is empty, over-long, or has disallowed characters.
+    EmptyField,
     /// A version cannot be zero.
     ZeroVersion,
     /// Incrementing the version would overflow.
@@ -39,6 +127,7 @@ impl fmt::Display for ValueObjectError {
             Self::InvalidUuidV7 => "expected a canonical UUIDv7",
             Self::TimestampOutOfRange => "timestamp is outside the RFC 3339 range",
             Self::InvalidRfc3339Millis => "expected UTC RFC 3339 with milliseconds",
+            Self::EmptyField => "expected a non-empty field within its length bound",
             Self::ZeroVersion => "version must start at 1",
             Self::VersionOverflow => "version cannot be incremented further",
         };
@@ -54,7 +143,7 @@ pub struct UuidV7([u8; 16]);
 
 impl UuidV7 {
     /// Creates a UUIDv7 from a UTC Unix timestamp in milliseconds and 74 bits
-    /// of caller-provided randomness. The leading two bits of `random[1]` are
+    /// of caller-provided randomness. The leading two bits of `random[2]` are
     /// ignored because UUIDv7 reserves them for the RFC 4122 variant.
     pub fn from_timestamp_and_random(
         timestamp_millis: u64,
