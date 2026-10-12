@@ -24,8 +24,9 @@ pnpm run check
 | 路径 | 内容 |
 |---|---|
 | `apps/desktop` | Tauri 桌面应用：React 界面与 Rust 宿主 |
-| `crates/` | Rust 代码；M1 起由 `teamspace-core` 取代旧 crate |
+| `crates/` | Rust 内核 `teamspace-core`（M1 建立） |
 | `packages/design-tokens` | 来自 Figma 的颜色、字号、间距等设计 Token |
+| `archive/` | 重置前的旧代码、旧工具和冻结规格，不参与构建，见 `archive/README.md` |
 | `design/` | 界面设计说明与 Figma 节点索引 |
 | `docs/PLAN.md` | 计划与进度（唯一权威来源） |
 | `docs/DECISIONS.md` | 决策记录 |

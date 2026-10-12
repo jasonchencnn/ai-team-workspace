@@ -15,6 +15,8 @@
 | D7 | 每个 Run 使用独立 git worktree 和分支；验收通过后由 Human 确认合并 | 并行执行互不覆盖，合并权留给 Human |
 | D8 | Leader 通过 Teamspace MCP 编排团队（M4）；换绑、权限调整、合并到主分支只能由 Human 执行 | V2 核心体验：Human 主要与 Leader 对话，Leader 不能给自己扩权 |
 | D9 | 保留密钥扫描（`.gitleaks.toml`）、依赖审计（`.github/cargo-deny.toml`）和依赖安全更新（`.github/dependabot.yml`）配置 | 安全底线，日常零成本 |
+| D10 | 旧代码、旧工具和冻结规格移入仓库内的 `archive/codex-era/`，不参与构建和 CI，需要时取回 | Human 要求归档入仓，保留以后取用的可能 |
+| D11 | 项目在 GitHub 公开（`jasonchencnn/ai-team-workspace`）；任何可能产生 GitHub 费用的操作先与 Human 协商 | Human 指定；公开仓库使用标准运行器的 CI 免费 |
 
 ## 沿用的原始产品原则
 

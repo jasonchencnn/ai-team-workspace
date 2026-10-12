@@ -13,4 +13,3 @@ tauri-build = "=2.6.3"
 
 [dependencies]
 tauri = "=2.11.6"
-security = { path = "../../../crates/security" }
