@@ -17,7 +17,7 @@
 | D9 | 保留密钥扫描（`.gitleaks.toml`）、依赖审计（`.github/cargo-deny.toml`）和依赖安全更新（`.github/dependabot.yml`）配置 | 安全底线，日常零成本 |
 | D10 | 旧代码、旧工具和冻结规格移入仓库内的 `archive/codex-era/`，不参与构建和 CI，需要时取回 | Human 要求归档入仓，保留以后取用的可能 |
 | D11 | 项目在 GitHub 公开（`jasonchencnn/ai-team-workspace`）；任何可能产生 GitHub 费用的操作先与 Human 协商 | Human 指定；公开仓库使用标准运行器的 CI 免费 |
-| D12 | 调整 D1：总指挥负责拆解、派工、审查、合并和集成，原则上不独自实现；任务按工作强度派给子 agent（Opus / Sonnet / Haiku），Codex 做交叉审查，MiniMax 不参与开发，编制见 `docs/PLAN.md` 第 8 节 | Human 指定：一个 Team 不由一个执行者替代，不同强度的工作用不同模型；Codex 消耗 Human 额度，已获同意 |
+| D12 | 调整 D1：总指挥负责拆解、派工、审查、合并和集成，原则上不独自实现；任务按工作强度派给 Claude 子 agent（Opus / Sonnet / Haiku）和 MiniMax M3.1（MiniMax Code CLI，约一半功能开发和交叉审查），Codex 不参与，编制见 `docs/PLAN.md` 第 8 节 | Human 指定：一个 Team 不由一个执行者替代，不同强度的工作用不同模型；Claude 账号额度有限；Codex 账号即将到期 |
 
 ## 沿用的原始产品原则
 
