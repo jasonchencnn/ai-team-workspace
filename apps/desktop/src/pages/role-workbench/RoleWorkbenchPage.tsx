@@ -5,6 +5,7 @@ import { getRoleWorkbench, listTaskStatuses, openRolePath } from "../../api/comm
 import { queryKeys } from "../../api/queryKeys.js";
 import type { HarnessInstance } from "../../bindings/HarnessInstance.js";
 import type { RoleFileEntry } from "../../bindings/RoleFileEntry.js";
+import type { Run } from "../../bindings/Run.js";
 import type { TaskStatus } from "../../bindings/TaskStatus.js";
 import type { TaskSummary } from "../../bindings/TaskSummary.js";
 import {
@@ -28,6 +29,7 @@ import {
 } from "../harness-detail/harnessFormat.js";
 import { splitJournalLine, useRevealRoleFolder } from "../roles/roleFolder.js";
 import { roleBindingPath } from "../roles/rolesNav.js";
+import { runStatusTone } from "../task-detail/run/runUi.js";
 import { statusTone } from "../tasks/taskUi.js";
 import { formatLocalDateTime } from "../team-home/formatLocalDateTime.js";
 import "./role-workbench.css";
@@ -158,6 +160,14 @@ function WorkbenchView({ teamId, roleId, onBack }: WorkbenchViewProps) {
 
       <div className="rw-columns">
         <div className="rw-column">
+          <RecentRuns
+            teamId={teamId}
+            runs={data.recentRuns}
+            onOpen={(taskId) => {
+              void navigate(`/teams/${teamId}/tasks/${taskId}`);
+            }}
+          />
+
           <RecentTasks
             teamId={teamId}
             tasks={data.recentTasks}
@@ -307,6 +317,53 @@ function WorkbenchView({ teamId, roleId, onBack }: WorkbenchViewProps) {
         </div>
       </div>
     </div>
+  );
+}
+
+interface RecentRunsProps {
+  teamId: string;
+  runs: Run[];
+  onOpen: (taskId: string) => void;
+}
+
+/** 「最近执行」：执行次数、Harness、状态与开始时间，点行进任务详情。 */
+function RecentRuns({ runs, onOpen }: RecentRunsProps) {
+  const now = Date.now();
+  return (
+    <Panel className="rw-panel">
+      <h2 className="rw-panel__title">最近执行</h2>
+      {runs.length === 0 ? (
+        <EmptyState
+          bare
+          title="暂无执行"
+          description="任务派给这个岗位后，每次执行都会出现在这里。"
+        />
+      ) : (
+        <ul className="rw-run-list">
+          {runs.map((run) => (
+            <li key={run.id}>
+              <button
+                type="button"
+                className="rw-run-row"
+                onClick={() => {
+                  onOpen(run.taskId);
+                }}
+              >
+                <span className="rw-run-row__key">
+                  第 {String(run.attempt)} 次 · {run.taskKey}
+                </span>
+                <span className="rw-run-row__title" title={run.taskKey}>
+                  {run.harness.name}
+                </span>
+                <Tag tone={runStatusTone[run.status]}>{run.statusLabel}</Tag>
+                <span className="rw-run-row__time">{formatRelative(run.startedAt, now)}</span>
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+      <p className="rw-note">点击进入任务详情，可查看这次执行的完整进度与改动。</p>
+    </Panel>
   );
 }
 

@@ -9,6 +9,7 @@ import {
   Button,
   Card,
   ErrorBanner,
+  Modal,
   PageHeader,
   Panel,
   Spinner,
@@ -17,6 +18,9 @@ import {
 } from "../../components/index.js";
 import type { TaskStatus } from "../../bindings/TaskStatus.js";
 import type { TaskSummary } from "../../bindings/TaskSummary.js";
+import { RunExecutionArea } from "./run/RunExecutionArea.js";
+import { isRunActive } from "./run/useRunEvents.js";
+import { useTaskRuns } from "./run/useTaskRuns.js";
 import { formatTime, statusTone } from "../tasks/taskUi.js";
 import "./task-detail.css";
 
@@ -26,6 +30,7 @@ export function TaskDetailPage() {
   const queryClient = useQueryClient();
   const [blockingOpen, setBlockingOpen] = useState(false);
   const [reason, setReason] = useState("");
+  const [takeoverOpen, setTakeoverOpen] = useState(false);
 
   const detail = useQuery({
     queryKey: queryKeys.task(teamId, taskId),
@@ -42,6 +47,7 @@ export function TaskDetailPage() {
     queryFn: () => listRoles(teamId),
     enabled: teamId !== "",
   });
+  const runApi = useTaskRuns(teamId, taskId);
 
   const statusLabel = (status: TaskStatus) =>
     statuses.data?.find((info) => info.status === status)?.label ?? status;
@@ -92,7 +98,47 @@ export function TaskDetailPage() {
 
   const { task, owner, fileRefs, dependencies, dependents, allowedTransitions, readiness, events } =
     detail.data;
-  const harness = roles.data?.find((view) => view.role.id === owner.id)?.harness ?? null;
+  const roleProblems = detail.data.runProblems;
+  // runProblems 与 readiness 有重叠（同一句话可能两边都有）。这里只补充 readiness 没覆盖的
+  // 「不能开始执行」原因（如未绑定 Harness），避免同一条原因在页面上出现两次。
+  const extraRunProblems = roleProblems.filter((problem) => !readiness.includes(problem));
+  const ownerView = roles.data?.find((view) => view.role.id === owner.id);
+  const harness = ownerView?.harness ?? null;
+  const run = runApi.run;
+  const active = isRunActive(run);
+
+  // 页头按钮随执行状态切换：执行中是「人工接管」「取消执行」，其余是「开始执行」。
+  // 能否开始以后端的 runProblems 为准，不可用时把原因显示在下面。
+  const runHeaderActions = active ? (
+    <>
+      <Button
+        variant="neutral"
+        disabled={runApi.busy}
+        onClick={() => {
+          setTakeoverOpen(true);
+        }}
+      >
+        人工接管
+      </Button>
+      <Button
+        variant="neutral"
+        loading={runApi.busy}
+        disabled={runApi.busy}
+        onClick={runApi.cancelRun}
+      >
+        取消执行
+      </Button>
+    </>
+  ) : (
+    <Button
+      loading={runApi.busy}
+      disabled={runApi.busy || roleProblems.length > 0}
+      title={roleProblems.length === 0 ? undefined : `还不能开始执行：${roleProblems.join("；")}`}
+      onClick={runApi.startRun}
+    >
+      {run === null ? "开始执行" : "重新执行"}
+    </Button>
+  );
 
   const requestTransition = (to: TaskStatus) => {
     transition.reset();
@@ -132,9 +178,37 @@ export function TaskDetailPage() {
         actions={
           <>
             {backButton}
+            {runHeaderActions}
             <Button onClick={() => void navigate(`${boardPath}/${task.id}/edit`)}>编辑</Button>
           </>
         }
+      />
+
+      {run === null && roleProblems.length === 0 ? (
+        <p className="task-detail__hint">准备就绪后即可派给「{owner.name}」执行。</p>
+      ) : null}
+      {roleProblems.length > 0 && !active && extraRunProblems.length > 0 ? (
+        <Card title="还不能开始执行" tone="warning">
+          <ul className="task-detail__readiness">
+            {extraRunProblems.map((problem) => (
+              <li key={problem}>{problem}</li>
+            ))}
+          </ul>
+        </Card>
+      ) : null}
+
+      <RunExecutionArea
+        teamId={teamId}
+        taskKey={task.key}
+        taskTitle={task.title}
+        roleName={owner.name}
+        roleFolder={ownerView?.folder ?? null}
+        fileRefs={task.fileRefs}
+        api={runApi}
+        allowedTransitions={allowedTransitions}
+        onRequestTakeover={() => {
+          setTakeoverOpen(true);
+        }}
       />
 
       <div className="task-detail">
@@ -167,7 +241,7 @@ export function TaskDetailPage() {
             )}
           </section>
 
-          <section className="task-detail__section">
+          <section className="task-detail__section" id="task-status-actions">
             <h2>状态操作</h2>
             {task.status === "blocked" && task.blockedReason !== null ? (
               <p className="task-detail__muted">受阻原因：{task.blockedReason}</p>
@@ -182,7 +256,11 @@ export function TaskDetailPage() {
               </Card>
             ) : null}
             {allowedTransitions.length === 0 ? (
-              <p className="task-detail__muted">当前没有可执行的状态操作。</p>
+              <p className="task-detail__muted">
+                {active
+                  ? "执行进行中，暂不能变更任务状态；可以「取消执行」或「人工接管」后再改。"
+                  : "当前没有可执行的状态操作。"}
+              </p>
             ) : (
               <div className="task-detail__actions">
                 {allowedTransitions.map((to) => (
@@ -283,6 +361,51 @@ export function TaskDetailPage() {
           ) : null}
         </Panel>
       </div>
+
+      {takeoverOpen && run !== null ? (
+        <Modal
+          title="人工接管"
+          description={`${task.key} ${task.title} · 第 ${String(run.attempt)} 次执行 · ${run.harness.name}`}
+          onClose={() => {
+            setTakeoverOpen(false);
+          }}
+          actions={
+            <>
+              <Button
+                loading={runApi.busy}
+                disabled={runApi.busy}
+                onClick={() => {
+                  setTakeoverOpen(false);
+                  runApi.takeoverRun();
+                }}
+              >
+                确认接管
+              </Button>
+              <Button
+                variant="subtle"
+                disabled={runApi.busy}
+                onClick={() => {
+                  setTakeoverOpen(false);
+                }}
+              >
+                取消
+              </Button>
+            </>
+          }
+        >
+          <p className="run-takeover__text">
+            接管会停止这条执行：Agent 进程结束，待确认的权限请求被撤销，Agent
+            不再改动任何文件。任务保持执行中， 由你在执行目录里自己继续处理。
+          </p>
+          <p className="run-takeover__text run-takeover__text--muted">
+            已经产生的改动会保留。接管后可以重新执行第 {String(run.attempt + 1)}{" "}
+            次，也可以直接把任务提交验收。
+          </p>
+          <p className="run-takeover__path" title={run.execDir}>
+            执行目录：{run.execDir}
+          </p>
+        </Modal>
+      ) : null}
     </>
   );
 }

@@ -1,8 +1,8 @@
-import { useQuery } from "@tanstack/react-query";
-import { useState } from "react";
+import { useQueries, useQuery } from "@tanstack/react-query";
+import { useMemo, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router";
 
-import { getTaskBoard, getTeamOverview, listRoles } from "../../api/commands.js";
+import { getRoleWorkbench, getTaskBoard, getTeamOverview, listRoles } from "../../api/commands.js";
 import { queryKeys } from "../../api/queryKeys.js";
 import {
   Button,
@@ -15,8 +15,10 @@ import {
 } from "../../components/index.js";
 import type { BoardColumn } from "../../bindings/BoardColumn.js";
 import type { RoleView } from "../../bindings/RoleView.js";
+import type { Run } from "../../bindings/Run.js";
 import type { TaskStatus } from "../../bindings/TaskStatus.js";
 import type { TaskSummary } from "../../bindings/TaskSummary.js";
+import { runBadge } from "../task-detail/run/runUi.js";
 import { formatTime, statusTone } from "./taskUi.js";
 import "./tasks.css";
 
@@ -106,10 +108,12 @@ function TaskCard({
   task,
   teamId,
   roleViews,
+  badge,
 }: {
   task: TaskSummary;
   teamId: string;
   roleViews: RoleView[] | undefined;
+  badge: ReturnType<typeof runBadge>;
 }) {
   const harness = roleViews?.find((view) => view.role.id === task.owner.id)?.harness ?? null;
   const dependencyOrBinding =
@@ -129,6 +133,7 @@ function TaskCard({
             <span className="task-card__name">
               {task.key} {task.title}
             </span>
+            {badge === null ? null : <Tag tone={badge.tone}>{badge.label}</Tag>}
             {task.status === "todo" || task.status === "ready" ? (
               <Tag tone={statusTone[task.status]}>{task.status === "todo" ? "TODO" : "READY"}</Tag>
             ) : null}
@@ -173,6 +178,40 @@ export function TasksPage() {
     queryFn: () => getTeamOverview(teamId),
     enabled: teamId !== "",
   });
+
+  // 卡片上的「执行中 / 等待你确认」来自岗位工作台里的最近执行（同一岗位的执行都带 taskId）。
+  // 只有执行中的任务需要，所以只查这些任务所属岗位的工作台。
+  const doingOwnerIds = useMemo(() => {
+    const ids = new Set<string>();
+    for (const column of board.data?.columns ?? []) {
+      if (column.status !== "doing") {
+        continue;
+      }
+      for (const task of column.tasks) {
+        ids.add(task.owner.id);
+      }
+    }
+    return [...ids];
+  }, [board.data]);
+  const workbenches = useQueries({
+    queries: doingOwnerIds.map((roleId) => ({
+      queryKey: [...queryKeys.roles(teamId), "workbench", roleId] as const,
+      queryFn: () => getRoleWorkbench(roleId),
+      enabled: teamId !== "",
+    })),
+  });
+  const runByTask = useMemo(() => {
+    const map = new Map<string, Run>();
+    for (const result of workbenches) {
+      for (const run of result.data?.recentRuns ?? []) {
+        const previous = map.get(run.taskId);
+        if (previous === undefined || previous.attempt < run.attempt) {
+          map.set(run.taskId, run);
+        }
+      }
+    }
+    return map;
+  }, [workbenches]);
 
   const createPath = `/teams/${teamId}/tasks/new`;
   const header = (
@@ -318,7 +357,13 @@ export function TasksPage() {
                 {column.title} {column.tasks.length}
               </h2>
               {column.tasks.map((task) => (
-                <TaskCard key={task.id} task={task} teamId={teamId} roleViews={roles.data} />
+                <TaskCard
+                  key={task.id}
+                  task={task}
+                  teamId={teamId}
+                  roleViews={roles.data}
+                  badge={runBadge(runByTask.get(task.id))}
+                />
               ))}
             </section>
           ))}

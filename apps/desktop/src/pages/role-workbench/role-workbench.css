@@ -115,6 +115,7 @@
 
 /* 最近任务：编号、标题、状态、更新时间 */
 .rw-task-list,
+.rw-run-list,
 .rw-file-list,
 .rw-journal {
   display: flex;
@@ -126,6 +127,7 @@
 }
 
 .rw-task-row,
+.rw-run-row,
 .rw-file-row {
   display: grid;
   align-items: center;
@@ -143,21 +145,28 @@
   grid-template-columns: max-content minmax(0, 1fr) max-content max-content;
 }
 
+.rw-run-row {
+  grid-template-columns: max-content minmax(0, 1fr) max-content max-content;
+}
+
 .rw-file-row {
   grid-template-columns: auto minmax(0, 1fr) max-content;
 }
 
 .rw-task-row:hover,
+.rw-run-row:hover,
 .rw-file-row:hover {
   background: var(--color-canvas);
 }
 
-.rw-task-row__key {
+.rw-task-row__key,
+.rw-run-row__key {
   color: var(--color-brand);
   font-size: var(--font-size-caption);
 }
 
 .rw-task-row__title,
+.rw-run-row__title,
 .rw-file-row__name {
   min-width: 0;
   overflow-wrap: anywhere;
