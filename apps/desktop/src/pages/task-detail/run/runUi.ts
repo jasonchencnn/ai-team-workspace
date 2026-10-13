@@ -6,6 +6,7 @@ import type { FileChangeKind } from "../../../bindings/FileChangeKind.js";
 import type { PermissionOption } from "../../../bindings/PermissionOption.js";
 import type { Run } from "../../../bindings/Run.js";
 import type { RunStatus } from "../../../bindings/RunStatus.js";
+import type { RunUpdate } from "../../../bindings/RunUpdate.js";
 import type { RunUpdateBody } from "../../../bindings/RunUpdateBody.js";
 
 /** 执行状态对应的胶囊颜色。 */
@@ -265,6 +266,69 @@ export function execDirLabel(run: Run): string {
   return run.isolation === "worktree"
     ? `Worktree：${run.execDir}`
     : `原地：普通文件夹 ${run.execDir}`;
+}
+
+/**
+ * 执行目录的标题行文案。Git worktree 要带上分支名（`Git worktree · 分支 teamspace/XX-001-r1`），
+ * 分支名由后端的 `run.branch` 提供；原地执行只说明是普通文件夹。
+ */
+export function execDirTitle(run: Run): string {
+  return run.isolation === "worktree"
+    ? `Git worktree · 分支 ${run.branch ?? "—"}`
+    : "原地：普通文件夹";
+}
+
+/** 已被人工接管的执行在状态胶囊上显示「已被接管」，覆盖后端的「已取消」。 */
+export function runDisplayStatus(run: Run): { label: string; tone: TagTone } {
+  if (run.takenOver) {
+    return { label: "已被接管", tone: "info" };
+  }
+  return { label: run.statusLabel, tone: runStatusTone[run.status] };
+}
+
+/**
+ * 中断后的续接能力说明：
+ * - 有会话且 Agent 声明支持 loadSession → 「支持续接（loadSession）」；
+ * - 会话都没建立 → 说明中断发生得太早；
+ * - 其余 → Agent 不支持 loadSession。
+ */
+export function resumeCapabilityText(run: Run): string {
+  if (run.canResume) {
+    return "支持续接（loadSession）";
+  }
+  if (run.sessionId === null) {
+    return "不支持续接（会话尚未建立）";
+  }
+  return "不支持续接（Agent 未提供 loadSession）";
+}
+
+/** 不支持续接时的原因说明，用于置灰按钮的 title。 */
+export function noResumeReason(run: Run): string {
+  if (run.sessionId === null) {
+    return "这次执行在会话建立前就中断了，没有可续接的会话";
+  }
+  return `${run.harness.name} 不支持续接会话（loadSession）`;
+}
+
+/**
+ * 中断前最后一条有意义的事件：最近一次工具调用或 Agent 消息摘要。
+ * 只回看最后 6 条，避免为了一句摘要去翻整段长文本；没有则返回 null。
+ */
+export function lastEventSummary(updates: RunUpdate[]): string | null {
+  for (const update of [...updates].reverse().slice(0, 6)) {
+    const body = update.body;
+    if (body.type === "tool_call") {
+      return `${toolKindName(body.kind)}：${body.title}`;
+    }
+    if (body.type === "message" && body.role === "agent") {
+      const line = body.text
+        .split("\n")
+        .map((item) => item.trim())
+        .find((item) => item !== "");
+      return line === undefined ? null : `Agent 消息：${line}`;
+    }
+  }
+  return null;
 }
 
 /** Harness 的显示文案：预设标签 + ACP。 */

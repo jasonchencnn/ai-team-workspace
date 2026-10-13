@@ -27,6 +27,12 @@ interface RunProgressStreamProps {
 }
 
 export function RunProgressStream({ run, updates, loading, roleName }: RunProgressStreamProps) {
+  // Teamspace 生成的任务说明是第一条用户消息，正文很长；默认折叠成一行，
+  // 让 Agent 的消息、计划与工具调用能在首屏看到。
+  const briefId = updates.find(
+    (update) => update.body.type === "message" && update.body.role === "user",
+  )?.id;
+
   return (
     <div className="run-stream">
       {updates.length === 0 ? (
@@ -35,7 +41,13 @@ export function RunProgressStream({ run, updates, loading, roleName }: RunProgre
         </p>
       ) : (
         updates.map((update) => (
-          <UpdateRow key={update.id} update={update} run={run} roleName={roleName} />
+          <UpdateRow
+            key={update.id}
+            update={update}
+            run={run}
+            roleName={roleName}
+            isBrief={update.id === briefId}
+          />
         ))
       )}
       {loading && updates.length > 0 ? (
@@ -51,13 +63,15 @@ interface UpdateRowProps {
   update: RunUpdate;
   run: Run;
   roleName: string;
+  /** 是否是 Teamspace 生成的任务说明（第一条用户消息）。 */
+  isBrief: boolean;
 }
 
-function UpdateRow({ update, run, roleName }: UpdateRowProps) {
+function UpdateRow({ update, run, roleName, isBrief }: UpdateRowProps) {
   const body = update.body;
   switch (body.type) {
     case "message":
-      return <MessageRow body={body} roleName={roleName} run={run} />;
+      return <MessageRow body={body} roleName={roleName} run={run} isBrief={isBrief} />;
     case "plan":
       return <PlanCard entries={body.entries} />;
     case "tool_call":
@@ -73,7 +87,20 @@ function UpdateRow({ update, run, roleName }: UpdateRowProps) {
 
 type MessageBody = Extract<RunUpdateBody, { type: "message" }>;
 
-function MessageRow({ body, roleName, run }: { body: MessageBody; roleName: string; run: Run }) {
+function MessageRow({
+  body,
+  roleName,
+  run,
+  isBrief,
+}: {
+  body: MessageBody;
+  roleName: string;
+  run: Run;
+  isBrief: boolean;
+}) {
+  if (isBrief) {
+    return <TaskBrief body={body} />;
+  }
   const who =
     body.role === "agent" ? `${roleName} · ${run.harness.name}` : messageRoleName(body.role);
   return (
@@ -86,6 +113,33 @@ function MessageRow({ body, roleName, run }: { body: MessageBody; roleName: stri
         <p className="run-msg__text">{body.text}</p>
       </div>
     </div>
+  );
+}
+
+/** Teamspace 生成的任务说明：默认折叠为一行，点「展开」显示全文。 */
+function TaskBrief({ body }: { body: MessageBody }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <section className={`run-brief${open ? " run-brief--open" : ""}`}>
+      <div className="run-brief__head">
+        <span className="run-brief__title">任务说明（由 Teamspace 生成）</span>
+        <button
+          type="button"
+          className="run-brief__toggle"
+          aria-expanded={open}
+          onClick={() => {
+            setOpen(!open);
+          }}
+        >
+          {open ? "收起" : "展开"}
+        </button>
+      </div>
+      {open ? (
+        <p className="run-brief__text">{body.text}</p>
+      ) : (
+        <p className="run-brief__hint">点「展开」查看完整说明，Agent 的进展在下方。</p>
+      )}
+    </section>
   );
 }
 

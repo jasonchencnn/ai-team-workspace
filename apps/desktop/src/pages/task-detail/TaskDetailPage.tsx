@@ -107,8 +107,17 @@ export function TaskDetailPage() {
   const run = runApi.run;
   const active = isRunActive(run);
 
-  // 页头按钮随执行状态切换：执行中是「人工接管」「取消执行」，其余是「开始执行」。
+  // 页头按钮随执行状态切换：执行中是「人工接管」「取消执行」。
+  // 失败、已中断、已接管、成功这四种状态，执行区面板里已经带了主操作（重试 / 续接 / 重新执行），
+  // 页头再放一次会出现两个主按钮，所以这里只留「返回任务面板」和「编辑」。
   // 能否开始以后端的 runProblems 为准，不可用时把原因显示在下面。
+  const outcomeHasActions =
+    run !== null &&
+    !active &&
+    (run.status === "succeeded" ||
+      run.status === "failed" ||
+      run.status === "interrupted" ||
+      run.takenOver);
   const runHeaderActions = active ? (
     <>
       <Button
@@ -129,7 +138,7 @@ export function TaskDetailPage() {
         取消执行
       </Button>
     </>
-  ) : (
+  ) : outcomeHasActions ? null : (
     <Button
       loading={runApi.busy}
       disabled={runApi.busy || roleProblems.length > 0}
@@ -179,7 +188,9 @@ export function TaskDetailPage() {
           <>
             {backButton}
             {runHeaderActions}
-            <Button onClick={() => void navigate(`${boardPath}/${task.id}/edit`)}>编辑</Button>
+            <Button variant="neutral" onClick={() => void navigate(`${boardPath}/${task.id}/edit`)}>
+              编辑
+            </Button>
           </>
         }
       />

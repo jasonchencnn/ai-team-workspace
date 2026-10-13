@@ -13,11 +13,12 @@ import { RunOutcome } from "./RunOutcome.js";
 import { RunProgressStream } from "./RunProgressStream.js";
 import { RunSidePanel } from "./RunSidePanel.js";
 import {
+  execDirTitle,
   formatDuration,
   formatLocal,
   hasEnded,
+  runDisplayStatus,
   runElapsedSeconds,
-  runStatusTone,
 } from "./runUi.js";
 import { isRunActive, useRunUpdates } from "./useRunEvents.js";
 import type { TaskRunsApi } from "./useTaskRuns.js";
@@ -85,6 +86,7 @@ export function RunExecutionArea({
 
   const elapsed = runElapsedSeconds(run, now);
   const ended = hasEnded(run);
+  const status = runDisplayStatus(run);
 
   const goReview = () => {
     const target = document.getElementById("task-status-actions");
@@ -107,7 +109,7 @@ export function RunExecutionArea({
         <div className="run-info__cell">
           <span className="run-info__label">执行目录</span>
           <span className="run-info__value run-info__value--path" title={run.execDir}>
-            {run.isolation === "worktree" ? "Worktree：" : "原地：普通文件夹"}
+            {execDirTitle(run)}
             <span className="run-info__sub">{run.execDir}</span>
           </span>
         </div>
@@ -122,9 +124,9 @@ export function RunExecutionArea({
         </div>
         <div className="run-info__cell run-info__cell--status">
           <span className="run-info__label">状态</span>
-          <Tag tone={runStatusTone[run.status]}>
+          <Tag tone={status.tone}>
             <span className="run-info__dot" aria-hidden="true" />
-            {run.statusLabel}
+            {status.label}
           </Tag>
         </div>
       </Panel>
@@ -168,6 +170,7 @@ export function RunExecutionArea({
               roleName={roleName}
               taskKey={taskKey}
               taskTitle={taskTitle}
+              updates={updates}
               changedOpen={changedOpen}
               onToggleChanged={() => {
                 setChangedOpen(!changedOpen);

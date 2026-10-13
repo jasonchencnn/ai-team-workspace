@@ -435,6 +435,10 @@ test("[mock:fail]：执行失败，任务受阻并写明原因；「重试」再
   await expect(failed).toContainText("任务状态：已受阻");
   await expect(statusLine(page)).toContainText("受阻");
   await expect(page.getByText(/受阻原因：执行失败：/)).toBeVisible();
+  // 面板里已有「重试」，页头不再重复放主按钮
+  await expect(
+    page.locator(".ui-page-header").getByRole("button", { name: "重新执行" }),
+  ).toHaveCount(0);
   await shot(page, "run-failed");
 
   // 重试：创建第 2 次执行（Mock 仍然失败）
@@ -483,6 +487,15 @@ test("[mock:hang] 取消执行：已取消，任务回到 READY；任务面板�
 
   // 执行中：进度流、取消与接管按钮
   await expect(page.locator(".run-progress")).toBeVisible();
+
+  // 任务说明默认折叠为一行，点开才显示全文，Agent 消息仍在下方可见
+  const brief = page.locator(".run-brief");
+  await expect(brief).toContainText("任务说明（由 Teamspace 生成）");
+  await brief.getByRole("button", { name: "展开" }).click();
+  await expect(brief.locator(".run-brief__text")).toBeVisible();
+  await brief.getByRole("button", { name: "收起" }).click();
+  await expect(brief.locator(".run-brief__text")).toHaveCount(0);
+
   await expect(page.locator(".run-msg--agent").first()).toContainText("收到任务", {
     timeout: TIMEOUT,
   });
@@ -544,6 +557,17 @@ test("[mock:hang] 人工接管：确认弹窗，已接管显示执行目录，�
   await expect(taken).toContainText("已由你接管");
   await expect(taken.locator(".run-execdir__path")).toHaveText(plain);
   await expect(taken).toContainText("原地执行，这个目录就是工作空间本身");
+  await expect(taken).toContainText("接管后任务状态");
+  await expect(taken.locator(".run-outcome__state-list")).toContainText("已有改动原样保留");
+  await expect(taken.locator(".run-outcome__next")).toContainText("处理完后，返回执行");
+  // 被接管的执行在信息条与历次记录里都显示「已被接管」
+  await expect(infoStrip(page)).toContainText("已被接管");
+  await expect(page.locator(".run-side__panel", { hasText: "历次执行记录" })).toContainText(
+    "已被接管",
+  );
+  await expect(
+    page.locator(".ui-page-header").getByRole("button", { name: "重新执行" }),
+  ).toHaveCount(0);
   await expect(statusLine(page)).toContainText("执行中");
   await shot(page, "takeover-done");
 
@@ -627,6 +651,17 @@ test("已中断（可续接）：续接会话后继续并完成", async ({ page 
   await expect(interrupted).toBeVisible({ timeout: TIMEOUT });
   await expect(interrupted).toContainText("执行已中断");
   await expect(interrupted).toContainText("支持续接会话");
+  await expect(interrupted.locator(".run-outcome__alert")).toContainText(
+    "应用重启，与 Agent 的会话已丢失",
+  );
+  await expect(interrupted.locator(".run-outcome__info")).toContainText("中断时间");
+  await expect(interrupted.locator(".run-outcome__info")).toContainText("最后事件");
+  await expect(interrupted.locator(".run-outcome__info")).toContainText("已有改动");
+  await expect(interrupted.locator(".run-outcome__info")).toContainText("续接能力");
+  await expect(interrupted.locator(".run-outcome__legend")).toContainText("标记为失败");
+  await expect(
+    page.locator(".ui-page-header").getByRole("button", { name: "重新执行" }),
+  ).toHaveCount(0);
   await expect(statusLine(page)).toContainText("执行中");
   for (const name of ["续接会话", "重新执行", "人工接管", "标记为失败"]) {
     await expect(interrupted.getByRole("button", { name })).toBeVisible();
@@ -708,7 +743,7 @@ test("Git 工作空间：worktree 隔离，分支 teamspace/<编号>-r1，原工
   const readme = readFileSync(join(gitWs, "README.md"), "utf8");
 
   await startRun(page);
-  await expect(infoStrip(page)).toContainText("Worktree：");
+  await expect(infoStrip(page)).toContainText("Git worktree");
   const success = page.locator(".run-outcome--success");
   await expect(success).toBeVisible({ timeout: TIMEOUT });
   await expect(success.locator(".run-outcome__facts")).toContainText("Worktree 分支");
@@ -740,7 +775,7 @@ test("Git 工作空间：人工接管后显示 worktree 分支与执行目录", 
   await expect(page.locator(".run-msg--agent").first()).toContainText("正在长时间处理", {
     timeout: TIMEOUT,
   });
-  await expect(infoStrip(page)).toContainText("Worktree：");
+  await expect(infoStrip(page)).toContainText("Git worktree");
 
   await page.getByRole("button", { name: "人工接管", exact: true }).click();
   await page.getByRole("dialog").getByRole("button", { name: "确认接管" }).click();
@@ -752,10 +787,10 @@ test("Git 工作空间：人工接管后显示 worktree 分支与执行目录", 
   await shot(page, "git-takeover");
 });
 
-// 已知缺陷（M2-05 页面）：Git 执行时执行信息条只显示「Worktree：」加目录路径，没有分支名；
-// 分支名只在人工接管后的区块里出现。修复后此用例会失败，届时去掉 test.fail()。
-test("Git 工作空间：执行信息条显示 worktree 分支名（已知缺陷）", async ({ page }) => {
-  test.fail();
+// Git 执行时，执行信息条直接显示 worktree 分支名（不再只显示「Git worktree」加路径）。
+test("Git 工作空间：执行信息条显示 worktree 分支名", async ({ page }) => {
   const ref = await openTask(page, "Git 整理文档");
-  await expect(infoStrip(page)).toContainText(`teamspace/${ref.key}-r1`, { timeout: 3_000 });
+  await expect(infoStrip(page)).toContainText(`Git worktree · 分支 teamspace/${ref.key}-r1`, {
+    timeout: 3_000,
+  });
 });

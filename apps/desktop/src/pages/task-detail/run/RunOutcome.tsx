@@ -3,13 +3,18 @@
 // 能否续接、能否接管全部以后端为准，界面不自己判断业务规则，所有操作都由上层回调发起。
 import { Button, Card, Tag } from "../../../components/index.js";
 import type { Run } from "../../../bindings/Run.js";
+import type { RunUpdate } from "../../../bindings/RunUpdate.js";
 import {
+  execDirTitle,
   failureAdvice,
   failureKindLabel,
   fileChangeLabel,
   fileChangeTone,
   formatDuration,
   formatLocal,
+  lastEventSummary,
+  noResumeReason,
+  resumeCapabilityText,
   runElapsedSeconds,
 } from "./runUi.js";
 
@@ -67,7 +72,7 @@ function RunFacts({ run }: { run: Run }) {
       <div>
         <dt>执行目录</dt>
         <dd title={run.execDir}>
-          {run.isolation === "worktree" ? "Worktree 分支" : "原地：普通文件夹"}
+          {run.isolation === "worktree" ? `Worktree 分支 ${run.branch ?? "—"}` : "原地：普通文件夹"}
         </dd>
       </div>
     </dl>
@@ -79,6 +84,8 @@ export interface RunOutcomeProps {
   roleName: string;
   taskKey: string;
   taskTitle: string;
+  /** 这次执行的进度条目：中断面板用它说明「中断前最后一条事件」。 */
+  updates: RunUpdate[];
   /** 「查看改动」是否展开。 */
   changedOpen: boolean;
   onToggleChanged: () => void;
@@ -270,6 +277,7 @@ function FailureOutcome({
 
 function InterruptedOutcome({
   run,
+  updates,
   taskKey,
   taskTitle,
   busy,
@@ -278,6 +286,7 @@ function InterruptedOutcome({
   onMarkFailed,
   onTakeover,
 }: RunOutcomeProps) {
+  const lastEvent = lastEventSummary(updates);
   return (
     <section className="run-outcome run-outcome--interrupted">
       <header className="run-outcome__head">
@@ -285,30 +294,54 @@ function InterruptedOutcome({
         <Tag tone="warning">{run.statusLabel}</Tag>
       </header>
       <Subtitle run={run} taskKey={taskKey} taskTitle={taskTitle} />
-      <p className="run-outcome__muted">
-        应用退出或重启时这次执行仍在进行，Agent 进程已不在，任务保持执行中。
-      </p>
-      {run.canResume ? (
-        <p className="run-outcome__note">
-          {run.harness.name} 支持续接会话，可以接着上次的上下文继续执行。
+
+      <section className="run-outcome__alert">
+        <h4 className="run-outcome__alert-title">⚠ 应用重启，与 Agent 的会话已丢失</h4>
+        <p className="run-outcome__alert-text">
+          应用退出或重启时这次执行仍在进行，Agent 进程已不在，任务保持执行中。
+          {run.canResume
+            ? `${run.harness.name} 支持续接会话，可以接着上次的上下文继续执行。`
+            : "这次执行已经无法回到 Agent 进程，需要你决定继续还是结束。"}
         </p>
-      ) : (
-        <p className="run-outcome__note">
-          {run.sessionId === null
-            ? "执行在会话建立前就中断了，没有可续接的会话，只能重新执行。"
-            : `${run.harness.name} 不支持续接会话（loadSession），只能重新执行。`}
-        </p>
-      )}
+      </section>
+
+      <dl className="run-outcome__facts run-outcome__info">
+        <div>
+          <dt>中断时间</dt>
+          <dd>{formatLocal(run.endedAt ?? run.startedAt)}</dd>
+        </div>
+        <div>
+          <dt>最后事件</dt>
+          <dd>{lastEvent ?? "没有记录到工具调用或消息。"}</dd>
+        </div>
+        <div>
+          <dt>已有改动</dt>
+          <dd>
+            {String(run.changedFiles.length)} 个文件 · {execDirTitle(run)}
+          </dd>
+        </div>
+        <div>
+          <dt>续接能力</dt>
+          <dd>
+            {run.harness.name} · {resumeCapabilityText(run)}
+          </dd>
+        </div>
+      </dl>
 
       <div className="run-outcome__actions">
-        {run.canResume ? (
-          <Button variant="primary" onClick={onResume} loading={busy} disabled={busy}>
-            续接会话
-          </Button>
-        ) : null}
+        <Button
+          variant="primary"
+          onClick={onResume}
+          loading={busy}
+          disabled={busy || !run.canResume}
+          title={run.canResume ? undefined : noResumeReason(run)}
+        >
+          续接会话
+        </Button>
         <Button
           variant={run.canResume ? "neutral" : "primary"}
           onClick={onStartNewRun}
+          loading={busy}
           disabled={busy}
         >
           重新执行
@@ -320,9 +353,18 @@ function InterruptedOutcome({
           标记为失败
         </Button>
       </div>
-      <p className="run-outcome__note">
-        「标记为失败」会把任务转为受阻，之后可以重新执行或换绑 Harness。
-      </p>
+
+      <ul className="run-outcome__legend">
+        <li>
+          「续接会话」：{run.canResume ? resumeCapabilityText(run) : noResumeReason(run)}
+          ，接着上次的上下文继续，不新建执行记录。
+        </li>
+        <li>
+          「重新执行」：新建第 {String(run.attempt + 1)}{" "}
+          次执行，这次中断的执行记为失败，已产生的改动保留。
+        </li>
+        <li>「标记为失败」：把任务转为受阻，之后可以重新执行或换绑 Harness。</li>
+      </ul>
     </section>
   );
 }
@@ -372,23 +414,41 @@ function TakeoverOutcome({
         >
           在 Finder 中打开
         </Button>
-        <Button onClick={onStartNewRun} loading={busy} disabled={busy}>
-          结束接管并重新执行
-        </Button>
-        <Button
-          variant="subtle"
-          onClick={onSubmitReview}
-          loading={busy}
-          disabled={busy || !canSubmitReview}
-          title={canSubmitReview ? undefined : "任务当前不允许流转到「待验收」"}
-        >
-          直接提交验收
-        </Button>
       </div>
-      <p className="run-outcome__note">
-        处理完成后可以重新执行第 {String(run.attempt + 1)} 次（由「{roleName}
-        」继续），也可以直接把任务提交验收。
-      </p>
+
+      <section className="run-outcome__state">
+        <p className="run-outcome__label">接管后任务状态</p>
+        <ul className="run-outcome__state-list">
+          <li>任务保持「执行中」，由你在执行目录里处理；岗位与 Harness 绑定不变。</li>
+          <li>Agent 已停止，待确认的权限请求被撤销，不再写入任何文件。</li>
+          <li>
+            已有改动原样保留：
+            {String(run.changedFiles.length)} 个文件，不自动回滚，也不合并回基线分支。
+          </li>
+        </ul>
+      </section>
+
+      <section className="run-outcome__next">
+        <h4 className="run-outcome__next-title">处理完后，返回执行</h4>
+        <p className="run-outcome__next-text">
+          可以重新执行第 {String(run.attempt + 1)} 次（由「{roleName}
+          」继续），也可以直接把任务提交验收。
+        </p>
+        <div className="run-outcome__actions">
+          <Button onClick={onStartNewRun} loading={busy} disabled={busy}>
+            结束接管并重新执行
+          </Button>
+          <Button
+            variant="subtle"
+            onClick={onSubmitReview}
+            loading={busy}
+            disabled={busy || !canSubmitReview}
+            title={canSubmitReview ? undefined : "任务当前不允许流转到「待验收」"}
+          >
+            直接提交验收
+          </Button>
+        </div>
+      </section>
     </section>
   );
 }

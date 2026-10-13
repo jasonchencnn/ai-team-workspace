@@ -4,7 +4,7 @@ import { Tag } from "../../../components/index.js";
 import type { FileRef } from "../../../bindings/FileRef.js";
 import type { Run } from "../../../bindings/Run.js";
 import { Panel } from "../../../components/index.js";
-import { fileChangeLabel, fileChangeTone, formatRelativeStart, runStatusTone } from "./runUi.js";
+import { fileChangeLabel, fileChangeTone, formatRelativeStart, runDisplayStatus } from "./runUi.js";
 
 interface PermissionRulesProps {
   run: Run;
@@ -102,6 +102,7 @@ function RunHistory({ runs, selectedRunId, onSelect }: RunHistoryProps) {
         <ul className="run-history">
           {runs.map((run) => {
             const selected = run.id === selectedRunId;
+            const status = runDisplayStatus(run);
             return (
               <li key={run.id}>
                 <button
@@ -114,11 +115,11 @@ function RunHistory({ runs, selectedRunId, onSelect }: RunHistoryProps) {
                 >
                   <div className="run-history__head">
                     <span className="run-history__attempt">第 {String(run.attempt)} 次执行</span>
-                    <Tag tone={runStatusTone[run.status]}>{run.statusLabel}</Tag>
+                    <Tag tone={status.tone}>{status.label}</Tag>
                   </div>
                   <p className="run-history__meta">
                     {run.harness.name} · {formatRelativeStart(run.startedAt)} 起
-                    {run.takenOver ? " · 人工接管" : run.status === "cancelled" ? " · 已取消" : ""}
+                    {run.takenOver || run.status !== "cancelled" ? "" : " · 已取消"}
                   </p>
                 </button>
               </li>
