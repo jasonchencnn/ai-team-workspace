@@ -167,6 +167,13 @@
   color: var(--color-muted);
 }
 
+/* 普通文件夹工作区：用文件夹名代替分支名 */
+.topbar__folder {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .topbar__commit {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
 }

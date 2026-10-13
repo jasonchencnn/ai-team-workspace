@@ -25,6 +25,7 @@ import {
   capabilityLabels,
   commandLine,
   formatDateTime,
+  handshakeDetailTone,
   healthLabel,
   healthTone,
   isTestHarness,
@@ -179,7 +180,11 @@ function HarnessEntry({ instance, boundRoles, onOpenDetail }: HarnessEntryProps)
       </div>
 
       {handshake.status === "unknown" && handshake.detail === null ? null : (
-        <p className="acp-entry__detail">{handshake.detail ?? "尚未握手。"}</p>
+        <p
+          className={`acp-entry__detail acp-entry__detail--${handshakeDetailTone(handshake.status)}`}
+        >
+          {handshake.detail ?? "尚未握手。"}
+        </p>
       )}
 
       <p className="acp-entry__command">

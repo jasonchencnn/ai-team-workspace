@@ -21,7 +21,9 @@ const NAV_ENTRIES: NavEntry[] = [
   { label: "团队空间", to: "", end: true, alsoMatch: (path) => WORKBENCH_PATH.test(path) },
   { label: "任务面板", to: "/tasks" },
   { label: "共享文件", note: "M3 提供" },
-  { label: "岗位与绑定", to: "/roles" },
+  // 岗位工作台在 /roles 之下，但按 Figma 属于「团队空间」，
+  // 因此这里必须 end 精确匹配，不能让前缀匹配把工作台也点亮。
+  { label: "岗位与绑定", to: "/roles", end: true },
   { label: "待我处理", note: "M5 提供" },
 ];
 

@@ -477,11 +477,20 @@
   margin-left: auto;
 }
 
+/* 握手说明行：默认灰色（常规信息），需要登录才用警告色，异常用危险色 */
 .acp-entry__detail {
-  color: var(--color-warning);
+  color: var(--color-muted);
   font-size: var(--font-size-caption);
   line-height: var(--line-height-caption);
   overflow-wrap: anywhere;
+}
+
+.acp-entry__detail--warning {
+  color: var(--color-warning);
+}
+
+.acp-entry__detail--danger {
+  color: var(--color-danger);
 }
 
 /* 启动命令用等宽字体，长命令行按任意位置折行 */

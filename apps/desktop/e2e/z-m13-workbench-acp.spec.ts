@@ -3,7 +3,7 @@
 // 使用独立的临时工作空间（普通文件夹），Node 侧直接写过程文件；文件名 z- 开头，排在其他用例之后。
 import { mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { type Locator, type Page, expect, test } from "@playwright/test";
@@ -143,6 +143,10 @@ test("ACP 接入：新建 Mock 接入后握手为已连接，显示协议版本�
   await expect(entry).toContainText(/ACP v\d+/);
   await expect(entry).toContainText("teamspace-mock-agent");
   await expect(entry).toContainText("暂未被任何岗位绑定");
+  // 握手成功是常规信息：说明行用灰色，不用警告色
+  await expect(entry.locator(".acp-entry__detail--muted")).toContainText("握手成功");
+  await expect(entry.locator(".acp-entry__detail--warning")).toHaveCount(0);
+  await expect(entry.locator(".acp-entry__detail--danger")).toHaveCount(0);
   await shot(page, "acp-mock-connected", entry);
 
   await entry.getByRole("button", { name: "编辑" }).click();
@@ -169,7 +173,9 @@ test("ACP 接入：自定义 ACP Agent 指向不存在的命令，握手异常�
   const entry = acpEntry(page, BAD);
   await expect(entry).toBeVisible();
   await expect(entry.locator(".ui-tag", { hasText: "异常" })).toBeVisible();
-  await expect(entry.locator(".acp-entry__detail")).toContainText("启动命令不存在或不可执行");
+  await expect(entry.locator(".acp-entry__detail--danger")).toContainText(
+    "启动命令不存在或不可执行",
+  );
   await expect(entry.locator(".acp-entry__code")).toHaveText(BAD_COMMAND);
   await shot(page, "acp-custom-error", entry);
 });
@@ -211,7 +217,19 @@ test("岗位工作台：从团队空间进入，显示岗位信息、绑定与�
 }) => {
   await openWorkbenchFromHome(page, ROLE_BOUND);
 
-  await expect(page.locator(".rw-crumbs")).toContainText(TEAM);
+  await expect(page.locator(".topbar__crumbs")).toContainText(TEAM);
+  await expect(page.locator(".topbar__crumbs")).toContainText(ROLE_BOUND);
+
+  // 侧边导航：工作台属于「团队空间」，不点亮「岗位与绑定」
+  const nav = page.locator(".sidebar__nav");
+  await expect(nav.locator(".nav-item--active")).toHaveText(["团队空间"]);
+
+  // 顶栏：普通文件夹工作区显示「工作区 <文件夹名>」，完整路径放在 title
+  const topbarBranch = page.locator(".topbar__branch");
+  await expect(topbarBranch.locator(".topbar__branch-label")).toHaveText("工作区");
+  await expect(topbarBranch.locator(".topbar__folder")).toHaveText(basename(workspace));
+  await expect(topbarBranch).toHaveAttribute("title", workspace);
+
   await expect(page.locator(".rw-meta")).toContainText(prefixBound);
   await expect(page.locator(".rw-meta")).toContainText("普通岗位");
 
@@ -222,6 +240,12 @@ test("岗位工作台：从团队空间进入，显示岗位信息、绑定与�
   await expect(binding.locator(".rw-fact", { hasText: "Agent 版本" })).toContainText(
     "teamspace-mock-agent",
   );
+  // 握手成功是常规信息：说明行用灰色，不用警告色
+  await expect(binding.locator(".rw-note--muted")).toContainText("握手成功");
+  await expect(binding.locator(".rw-note--warning")).toHaveCount(0);
+  await expect(binding.locator(".rw-note--danger")).toHaveCount(0);
+  // 换绑说明的措辞
+  await expect(binding).toContainText("进行中的任务完成后生效");
 
   const folder = page.locator(".rw-panel", {
     has: page.getByRole("heading", { name: "岗位文件夹" }),

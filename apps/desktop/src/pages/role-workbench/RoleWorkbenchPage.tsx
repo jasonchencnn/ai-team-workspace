@@ -1,7 +1,7 @@
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { useNavigate, useParams } from "react-router";
 
-import { getRoleWorkbench, listTaskStatuses, listTeams, openRolePath } from "../../api/commands.js";
+import { getRoleWorkbench, listTaskStatuses, openRolePath } from "../../api/commands.js";
 import { queryKeys } from "../../api/queryKeys.js";
 import type { HarnessInstance } from "../../bindings/HarnessInstance.js";
 import type { RoleFileEntry } from "../../bindings/RoleFileEntry.js";
@@ -20,6 +20,7 @@ import {
 import {
   agentVersion,
   formatRelative,
+  handshakeDetailTone,
   healthLabel,
   healthTone,
   isTestHarness,
@@ -76,10 +77,6 @@ function WorkbenchView({ teamId, roleId, onBack }: WorkbenchViewProps) {
     queryFn: () => getRoleWorkbench(roleId),
   });
 
-  // 团队名只用于面包屑；与顶栏共用同一份缓存，没有数据时先省略这一级。
-  const teams = useQuery({ queryKey: queryKeys.teams, queryFn: listTeams });
-  const teamName = teams.data?.find((team) => team.id === teamId)?.name;
-
   // 任务状态显示名一律来自后端。
   const statuses = useQuery({ queryKey: queryKeys.taskStatuses, queryFn: listTaskStatuses });
   const statusLabel = new Map((statuses.data ?? []).map((item) => [item.status, item.label]));
@@ -127,18 +124,6 @@ function WorkbenchView({ teamId, roleId, onBack }: WorkbenchViewProps) {
 
   return (
     <div className="rw-page">
-      <nav className="rw-crumbs" aria-label="当前位置">
-        <span>工作空间</span>
-        {teamName === undefined ? null : (
-          <>
-            <span aria-hidden="true">/</span>
-            <span>{teamName}</span>
-          </>
-        )}
-        <span aria-hidden="true">/</span>
-        <span aria-current="page">{role.name}</span>
-      </nav>
-
       <PageHeader
         title={role.name}
         actions={
@@ -429,14 +414,16 @@ function BindingBody({ harness, onChange }: BindingBodyProps) {
         </div>
       </dl>
       {harness.handshake.detail === null ? null : (
-        <p className="rw-note rw-note--warn">{harness.handshake.detail}</p>
+        <p className={`rw-note rw-note--${handshakeDetailTone(harness.handshake.status)}`}>
+          {harness.handshake.detail}
+        </p>
       )}
       <div className="rw-actions">
         <Button variant="neutral" onClick={onChange}>
           换绑 Harness
         </Button>
       </div>
-      <p className="rw-note">点击后进入「岗位与绑定」更换；选中中的任务完成后生效。</p>
+      <p className="rw-note">点击后进入「岗位与绑定」更换；进行中的任务完成后生效。</p>
     </>
   );
 }

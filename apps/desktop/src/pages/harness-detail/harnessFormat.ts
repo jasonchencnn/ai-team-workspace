@@ -121,6 +121,23 @@ export function healthTone(status: HandshakeStatus): TagTone {
   return HEALTH_TONES[status];
 }
 
+/**
+ * 握手说明行的语气：已连接与未检查是常规信息，用灰色；
+ * 需要登录才用警告色，启动失败等异常用危险色。
+ * 避免「握手成功」这类正常说明被渲染成警告，看起来像出了问题。
+ */
+export function handshakeDetailTone(status: HandshakeStatus): "muted" | "warning" | "danger" {
+  switch (status) {
+    case "needs_auth":
+      return "warning";
+    case "error":
+      return "danger";
+    case "connected":
+    case "unknown":
+      return "muted";
+  }
+}
+
 /** 握手得到的 Agent 名称与版本，如 `claude-code-acp 0.9.2`；没有时为 null。 */
 export function agentVersion(handshake: Handshake): string | null {
   const agent = handshake.agent;

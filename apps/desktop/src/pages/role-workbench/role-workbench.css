@@ -1,25 +1,10 @@
-/* 岗位工作台：面包屑 + 页头元信息 + 左（任务、日志）右（绑定、文件夹、文件）两栏。
-   颜色、字号、间距、圆角只使用 theme.css 的变量。 */
+/* 岗位工作台：页头元信息 + 左（任务、日志）右（绑定、文件夹、文件）两栏。
+   颜色、字号、间距、圆角只使用 theme.css 的变量。面包屑由顶栏统一提供。 */
 
 .rw-page {
   display: flex;
   flex-direction: column;
   gap: var(--space-section);
-}
-
-/* 顶栏只有「工作空间 / 团队」两级，第三级岗位名在这里补上。 */
-.rw-crumbs {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 8px;
-  color: var(--color-muted);
-  font-size: var(--font-size-caption);
-  line-height: var(--line-height-caption);
-}
-
-.rw-crumbs [aria-current="page"] {
-  color: var(--color-ink);
 }
 
 .rw-meta {
@@ -103,8 +88,13 @@
   overflow-wrap: anywhere;
 }
 
-.rw-note--warn {
+/* 握手说明行：默认灰色（常规信息），需要登录才用警告色，异常用危险色 */
+.rw-note--warning {
   color: var(--color-warning);
+}
+
+.rw-note--danger {
+  color: var(--color-danger);
 }
 
 .rw-actions {
