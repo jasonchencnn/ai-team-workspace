@@ -64,7 +64,7 @@ export function RoleDetail({
       <header className="role-detail__header">
         <h2 className="role-detail__title">{role.name}</h2>
         <p className="role-detail__meta">
-          岗位标识 {role.code} · 创建于 {formatDate(role.createdAt)}
+          岗位标识 {role.code}（自动生成） · 创建于 {formatDate(role.createdAt)}
         </p>
       </header>
 
@@ -97,7 +97,7 @@ export function RoleDetail({
         <InputField
           label="编号前缀"
           required
-          hint="2–4 位大写字母；修改不影响已有任务编号。"
+          hint="2–4 位大写字母或数字，以字母开头；修改不影响已有任务编号。"
           value={taskPrefix}
           onChange={(event) => {
             setTaskPrefix(event.target.value);

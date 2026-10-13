@@ -67,7 +67,7 @@
   gap: 8px;
 }
 
-.tc-role__head {
+.tc-role__leader {
   display: flex;
   align-items: center;
   gap: 8px;
@@ -81,18 +81,49 @@
   cursor: pointer;
 }
 
-/* 岗位代码保留在标题里（Figma 原稿即如此），但降为次要灰色说明字，不与岗位名同权重。 */
-.tc-role__code {
-  color: var(--color-muted);
-  font-size: var(--font-size-caption);
-  font-weight: 400;
-  line-height: var(--line-height-caption);
-  overflow-wrap: anywhere;
-}
-
 .tc-role__fields {
   padding-top: 12px;
   border-top: 1px solid var(--color-line);
+}
+
+/* 「从示例添加」展开后的示例列表：名称与说明一行，按钮靠右。 */
+.tc-examples {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.tc-example-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.tc-example {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--color-line);
+}
+
+.tc-example:last-child {
+  border-bottom: none;
+}
+
+.tc-example__info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.tc-example__name {
+  font-weight: 600;
 }
 
 .tc-footer {
