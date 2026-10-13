@@ -20,6 +20,7 @@
 | D12 | 调整 D1：总指挥负责拆解、派工、审查、合并和集成，原则上不独自实现；任务按工作强度派给 Claude 子 agent（Opus / Sonnet / Haiku）和 MiniMax M3.1（MiniMax Code CLI，约一半功能开发和交叉审查），Codex 不参与，编制见 `docs/PLAN.md` 第 8 节 | Human 指定：一个 Team 不由一个执行者替代，不同强度的工作用不同模型；Claude 账号额度有限；Codex 账号即将到期 |
 | D13 | 调整 D5：Harness 接入以 ACP（Agent Client Protocol）为标准协议，Teamspace 做 ACP 客户端；会话创建/恢复/取消、权限请求、异步执行进度都走 ACP。Claude Code、Codex 经开源适配器接入，MiniMax Code、Gemini CLI 原生接入；任何支持 ACP 的工具通过「启动命令 + 参数 + 配置档案」加入，平台不为单一厂商写专门代码 | Human 指出 PRD 6.7 要求统一 Adapter、任何 Harness 可接入；ACP 是现成标准，避免重走 Codex 时期自定义协议的老路 |
 | D14 | 每个岗位在工作空间内有专属文件夹 `Teamspace/<岗位名>/`：岗位说明、工作日志（Teamspace 自动记录派工、状态变化、执行摘要；Harness 执行时追加进展）、过程文件；更换 Harness 时新执行者先读此文件夹 | Human 提出，便于换绑时了解岗位进程 |
+| D15 | 执行隔离：Git 工作空间每次执行使用独立 worktree 与分支（D7）；普通文件夹原地执行，写入本岗位文件夹与任务引用文件自动批准，其他位置的写入与命令执行转交 Human 确认，同一文件夹同时只运行一个执行 | Human 选择；视频素材等大文件夹复制成本过高 |
 
 ## 沿用的原始产品原则
 
