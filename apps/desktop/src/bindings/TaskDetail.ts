@@ -2,6 +2,7 @@
 import type { Event } from "./Event.js";
 import type { FileRefView } from "./FileRefView.js";
 import type { RoleRef } from "./RoleRef.js";
+import type { Run } from "./Run.js";
 import type { Task } from "./Task.js";
 import type { TaskStatus } from "./TaskStatus.js";
 import type { TaskSummary } from "./TaskSummary.js";
@@ -23,7 +24,8 @@ dependencies: Array<TaskSummary>,
  */
 dependents: Array<TaskSummary>, 
 /**
- * 当前可执行的状态流转（不满足就绪条件时已排除 ready 和 doing）。
+ * 当前可执行的状态流转（不满足就绪条件时已排除 ready 和 doing；有活动执行时为空，
+ * 需先取消或接管执行）。
  */
 allowedTransitions: Array<TaskStatus>, 
 /**
@@ -34,4 +36,12 @@ readiness: Array<string>,
 /**
  * 与本任务相关的活动，按时间倒序。
  */
-events: Array<Event>, };
+events: Array<Event>, 
+/**
+ * 最近一次执行；从未执行过为 `null`。全部执行见 `list_runs`。
+ */
+latestRun: Run | null, 
+/**
+ * 现在点「开始执行」会被拒绝的原因（中文）；为空表示可以开始（`start_run`）。
+ */
+runProblems: Array<string>, };

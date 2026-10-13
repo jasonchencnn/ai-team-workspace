@@ -30,7 +30,7 @@ fn acp_client_handshakes_with_mock_agent_process() {
     assert_eq!(agent.name, "teamspace-mock-agent");
     assert_eq!(agent.version.as_deref(), Some(env!("CARGO_PKG_VERSION")));
     assert!(hs.auth_methods.is_empty());
-    assert!(!hs.capabilities.unwrap().load_session);
+    assert!(hs.capabilities.unwrap().load_session);
 }
 
 #[test]

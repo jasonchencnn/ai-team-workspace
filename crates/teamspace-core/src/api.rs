@@ -15,8 +15,9 @@
 //! 也会同步一次，从而为迁移前已有的岗位补建文件夹。文件写入失败不回滚已提交的数据，失败原因记入
 //! 岗位视图的 `folderProblem` 并记录一条 `role_folder_error` 活动。
 
+use std::ops::Deref;
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, MutexGuard};
+use std::sync::{Arc, Mutex, MutexGuard};
 
 use rusqlite::Connection;
 
@@ -26,6 +27,8 @@ use crate::model::*;
 use crate::probe::FILE_SEARCH_LIMIT;
 use crate::probe::SystemProbe;
 use crate::role_folder;
+use crate::run::{Mode, Stop};
+use crate::service::run::{self as run_svc, Ending, NewRun};
 use crate::service::task::FileCheck;
 use crate::service::{event, folder, harness, role, task, team, workspace};
 use crate::store;
@@ -69,8 +72,24 @@ pub const COMMANDS: &[&str] = &[
     "update_task",
     "change_task_status",
     "search_workspace_files",
+    "start_run",
+    "cancel_run",
+    "resume_run",
+    "mark_run_failed",
+    "takeover_run",
+    "open_run_dir",
+    "get_run",
+    "list_runs",
+    "list_run_updates",
+    "respond_permission",
     "list_events",
 ];
+
+/// 执行事件的 Tauri 事件名，载荷为 [`RunEvent`]（见 [`Teamspace::set_run_listener`]）。
+pub const RUN_EVENT: &str = "teamspace:run";
+
+/// 岗位工作台「最近执行」的条数。
+pub const WORKBENCH_RUN_LIMIT: u32 = 5;
 
 /// 岗位工作台「最近任务」的条数。
 pub const WORKBENCH_TASK_LIMIT: usize = 8;
@@ -105,16 +124,41 @@ impl HostConfig {
     }
 }
 
-/// 内核入口：持有 SQLite 存储和系统探测实现。
+/// 内核入口：持有 SQLite 存储、系统探测实现和执行引擎（见 [`Core`]）。
 ///
 /// 数据库连接由互斥锁保护；写命令在单个事务中执行。系统探测（Git、ACP 握手）在锁外进行，
-/// 避免慢操作阻塞其他命令。
+/// 避免慢操作阻塞其他命令。执行（Run）由后台线程驱动，与命令共享同一个 [`Core`]。
+///
+/// drop 时（或调用 [`Teamspace::shutdown`]）终止所有执行中的 Agent 进程，并把这些执行标记为已中断。
 pub struct Teamspace {
+    core: Arc<Core>,
+}
+
+/// 内核共享状态：命令与执行线程共用。
+pub struct Core {
     conn: Mutex<Connection>,
-    probe: Box<dyn SystemProbe>,
-    config: HostConfig,
+    pub(crate) probe: Box<dyn SystemProbe>,
+    pub(crate) config: HostConfig,
     /// 串行化岗位文件夹的文件 I/O（与数据库锁分开），避免并发同步重复追加日志或抢同一个文件夹名。
     folder_io: Mutex<()>,
+    /// 应用数据目录（数据库所在目录），worktree 建在其下的 `worktrees/`。
+    pub(crate) data_dir: PathBuf,
+    /// 执行引擎状态。
+    pub(crate) runs: crate::run::Runs,
+}
+
+impl Deref for Teamspace {
+    type Target = Core;
+
+    fn deref(&self) -> &Core {
+        &self.core
+    }
+}
+
+impl Drop for Teamspace {
+    fn drop(&mut self) {
+        self.core.shutdown_runs();
+    }
 }
 
 impl Teamspace {
@@ -124,20 +168,48 @@ impl Teamspace {
     }
 
     /// 打开数据库，并使用宿主程序提供的配置（如内置 Mock Agent 的启动命令）。
+    ///
+    /// 打开时把上次退出时仍在进行的执行标记为已中断（任务保持执行中，可续接、重新执行或标记失败）。
     pub fn open_with(
         db_path: &Path,
         probe: Box<dyn SystemProbe>,
         config: HostConfig,
     ) -> Result<Self> {
-        Ok(Self {
+        let data_dir = db_path
+            .parent()
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| PathBuf::from("."));
+        let core = Arc::new(Core {
             conn: Mutex::new(store::open(db_path)?),
             probe,
             config,
             folder_io: Mutex::new(()),
-        })
+            data_dir,
+            runs: crate::run::Runs::default(),
+        });
+        core.recover_runs()?;
+        Ok(Self { core })
     }
 
-    fn lock(&self) -> MutexGuard<'_, Connection> {
+    /// 设置执行事件的接收者（宿主程序把事件推给前端，见 [`RUN_EVENT`]）。回调在执行线程中调用，
+    /// 应尽快返回。
+    pub fn set_run_listener(&self, listener: impl Fn(&RunEvent) + Send + Sync + 'static) {
+        self.core.runs.set_listener(Arc::new(listener));
+    }
+
+    /// 调整执行引擎的超时设置（宿主程序与测试用）。
+    pub fn set_run_settings(&self, settings: crate::run::RunSettings) {
+        self.core.runs.set_settings(settings);
+    }
+
+    /// 终止所有执行中的 Agent 进程并把这些执行标记为已中断（应用退出时调用；drop 时也会调用）。
+    pub fn shutdown(&self) {
+        self.core.shutdown_runs();
+    }
+}
+
+impl Core {
+    pub(crate) fn lock(&self) -> MutexGuard<'_, Connection> {
         // 持锁线程 panic 时事务已回滚，连接仍可用。
         self.conn
             .lock()
@@ -145,7 +217,7 @@ impl Teamspace {
     }
 
     /// 在单个事务中执行写操作；出错时回滚。
-    fn write<T>(&self, f: impl FnOnce(&Connection) -> Result<T>) -> Result<T> {
+    pub(crate) fn write<T>(&self, f: impl FnOnce(&Connection) -> Result<T>) -> Result<T> {
         let mut conn = self.lock();
         let tx = conn.transaction()?;
         let value = f(&tx)?;
@@ -155,7 +227,7 @@ impl Teamspace {
 
     /// 同步团队全部岗位的文件夹（见模块说明）。调用时不得持有数据库锁：读计划和写回结果各短暂
     /// 加锁一次，文件 I/O 在锁外进行。同步本身的失败只体现在 `folderProblem`，不让命令失败。
-    fn sync_role_folders(&self, team_id: &str) {
+    pub(crate) fn sync_role_folders(&self, team_id: &str) {
         let _io = self
             .folder_io
             .lock()
@@ -184,20 +256,49 @@ impl Teamspace {
         role::view(&conn, role::get_active(&conn, role_id)?)
     }
 
+    /// 规范化工作空间目录并实时探测：目录须存在；是 Git 仓库（或其子目录）时附带分支与提交。
+    /// 返回的 `path` 始终是规范化后的所选目录本身。
+    pub(crate) fn inspect(&self, path: &str) -> Result<WorkspaceInfo> {
+        let dir = workspace::resolve(path)?;
+        let mut info = self.probe.inspect_workspace(&dir)?;
+        info.path = workspace::display(&dir);
+        Ok(info)
+    }
+
+    /// 实例的启动信息；Mock 预设使用宿主注入的命令。
+    pub(crate) fn launch_for(
+        &self,
+        preset: AcpPreset,
+        command: &str,
+        args: &[String],
+        env_profile: Option<&str>,
+    ) -> std::result::Result<AgentLaunch, String> {
+        if preset == AcpPreset::Mock {
+            let cmd = self
+                .config
+                .mock_agent
+                .as_ref()
+                .ok_or_else(|| "当前宿主程序没有提供内置 Mock Agent".to_owned())?;
+            return Ok(AgentLaunch {
+                command: cmd.program.display().to_string(),
+                args: cmd.args.clone(),
+                env_profile: None,
+            });
+        }
+        Ok(AgentLaunch {
+            command: command.to_owned(),
+            args: args.to_vec(),
+            env_profile: env_profile.map(str::to_owned),
+        })
+    }
+}
+
+impl Teamspace {
     // ---------------------------------------------------------------- 团队
 
     /// 列出未归档团队，按创建时间升序。
     pub fn list_teams(&self) -> Result<Vec<Team>> {
         team::list(&self.lock())
-    }
-
-    /// 规范化工作空间目录并实时探测：目录须存在；是 Git 仓库（或其子目录）时附带分支与提交。
-    /// 返回的 `path` 始终是规范化后的所选目录本身。
-    fn inspect(&self, path: &str) -> Result<WorkspaceInfo> {
-        let dir = workspace::resolve(path)?;
-        let mut info = self.probe.inspect_workspace(&dir)?;
-        info.path = workspace::display(&dir);
-        Ok(info)
     }
 
     /// 创建团队及初始岗位：名称必填且在未归档团队中唯一；工作空间为任意已存在的目录
@@ -372,12 +473,14 @@ impl Teamspace {
             }
             _ => Vec::new(),
         };
+        let recent_runs = run_svc::recent_for_role(&self.lock(), role_id, WORKBENCH_RUN_LIMIT)?;
         Ok(RoleWorkbench {
             view,
             folder,
             recent_tasks,
             task_count,
             recent_files,
+            recent_runs,
         })
     }
 
@@ -495,33 +598,18 @@ impl Teamspace {
     /// 体现在 `handshake` 中（`error` / `needs_auth` 与中文说明）。握手在数据库锁外进行。
     pub fn check_harness(&self, harness_id: &str) -> Result<HarnessInstance> {
         let instance = harness::get_active(&self.lock(), harness_id)?;
-        let mut handshake = match self.launch_for(&instance) {
+        let launch = self.launch_for(
+            instance.preset,
+            &instance.command,
+            &instance.args,
+            instance.env_profile.as_deref(),
+        );
+        let mut handshake = match launch {
             Ok(launch) => self.probe.handshake(&launch),
             Err(message) => Handshake::error(message),
         };
         handshake.checked_at = Some(store::now());
         self.write(|tx| harness::save_handshake(tx, harness_id, &handshake))
-    }
-
-    /// 实例的启动信息；Mock 预设使用宿主注入的命令。
-    fn launch_for(&self, instance: &HarnessInstance) -> std::result::Result<AgentLaunch, String> {
-        if instance.preset == AcpPreset::Mock {
-            let cmd = self
-                .config
-                .mock_agent
-                .as_ref()
-                .ok_or_else(|| "当前宿主程序没有提供内置 Mock Agent".to_owned())?;
-            return Ok(AgentLaunch {
-                command: cmd.program.display().to_string(),
-                args: cmd.args.clone(),
-                env_profile: None,
-            });
-        }
-        Ok(AgentLaunch {
-            command: instance.command.clone(),
-            args: instance.args.clone(),
-            env_profile: instance.env_profile.clone(),
-        })
     }
 
     // ---------------------------------------------------------------- 任务
@@ -588,6 +676,331 @@ impl Teamspace {
         )?;
         files.truncate(FILE_SEARCH_LIMIT);
         Ok(files)
+    }
+
+    // ---------------------------------------------------------------- 执行
+
+    /// 开始执行任务（D13 / D15）：任务须为 READY 或受阻（重试；清除受阻原因），或执行中且最近一次执行
+    /// 已中断或人工接管（重新执行；已中断的那次记为失败）；须满足就绪条件，负责岗位已绑定 Harness 且
+    /// 握手状态不是 error；同一任务、同一个普通文件夹同时只能有一个活动执行。不满足时为 conflict，
+    /// 原因同 `TaskDetail.runProblems`。
+    ///
+    /// 任务转为执行中，返回状态为 queued 的执行；之后由后台准备执行目录（Git 工作空间新建 worktree，
+    /// 普通文件夹原地）、启动 Agent、建立会话、发送任务说明，进度与状态通过执行事件推送
+    /// （[`RUN_EVENT`]），也可用 `get_run` / `list_run_updates` 读取。
+    pub fn start_run(&self, task_id: &str) -> Result<Run> {
+        let (workspace, refs) = task::workspace_and_refs(&self.lock(), task_id)?;
+        let files = FileCheck::scan(Path::new(&workspace), &refs);
+        let info = self
+            .inspect(&workspace)
+            .map_err(|err| Error::conflict(format!("工作空间不可用：{err}")))?;
+        let isolation = if info.git.is_some() {
+            RunIsolation::Worktree
+        } else {
+            RunIsolation::InPlace
+        };
+        let mut registry = self.runs.registry();
+        let run = self.write(|tx| {
+            let task = task::get(tx, task_id)?;
+            let problems = run_svc::start_problems(tx, &task, &files)?;
+            if !problems.is_empty() {
+                return Err(Error::conflict(format!(
+                    "不能开始执行：{}",
+                    problems.join("；")
+                )));
+            }
+            if let Some(prev) = run_svc::latest_for_task(tx, task_id)?
+                && prev.status == RunStatus::Interrupted
+            {
+                let failure = "执行中断后已重新执行".to_owned();
+                run_svc::end(
+                    tx,
+                    &prev.id,
+                    RunStatus::Failed,
+                    &Ending {
+                        failure: Some(failure.clone()),
+                        failure_kind: Some(FailureKind::Interrupted),
+                        summary: prev.summary.clone(),
+                        changed_files: prev.changed_files.clone(),
+                        tool_call_count: prev.tool_call_count,
+                        ..Ending::default()
+                    },
+                )?;
+                run_svc::status_update(tx, &prev.id, RunStatus::Failed, Some(failure))?;
+            }
+            let owner = role::get_active(tx, &task.owner_role_id)?;
+            let instance = harness::get_active(tx, owner.harness_id.as_deref().unwrap_or_default())?;
+            let attempt = run_svc::next_attempt(tx, task_id)?;
+            let exec_dir = match isolation {
+                RunIsolation::InPlace => workspace.clone(),
+                RunIsolation::Worktree => self
+                    .data_dir
+                    .join("worktrees")
+                    .join(&task.team_id)
+                    .join(format!("{}-r{attempt}", task.key))
+                    .display()
+                    .to_string(),
+            };
+            let run = run_svc::insert(
+                tx,
+                NewRun {
+                    task: &task,
+                    harness: HarnessSnapshot {
+                        harness_id: instance.id.clone(),
+                        name: instance.name.clone(),
+                        preset: instance.preset,
+                        command: instance.command.clone(),
+                        args: instance.args.clone(),
+                    },
+                    workspace: &workspace,
+                    exec_dir: &exec_dir,
+                    isolation,
+                },
+            )?;
+            if task.status != TaskStatus::Doing {
+                run_svc::move_task(tx, task_id, TaskStatus::Doing, None, Actor::Human, "开始执行")?;
+            }
+            let how = match isolation {
+                RunIsolation::Worktree => "Git worktree",
+                RunIsolation::InPlace => "原地执行",
+            };
+            run_svc::record_event(
+                tx,
+                &run,
+                Actor::Human,
+                EventKind::RunStarted,
+                format!(
+                    "{} 开始第 {} 次执行（Harness「{}」，{how}）",
+                    run.task_key, run.attempt, run.harness.name
+                ),
+                serde_json::json!({ "runId": run.id, "attempt": run.attempt, "isolation": isolation }),
+            )?;
+            run_svc::status_update(tx, &run.id, RunStatus::Queued, None)?;
+            Ok(run)
+        })?;
+        self.core
+            .spawn_driver(&mut registry, run.clone(), Mode::Start);
+        drop(registry);
+        self.sync_role_folders(&run.team_id);
+        self.emit_run(&run.id);
+        Ok(run)
+    }
+
+    /// 取消活动执行：通知 Agent（`session/cancel`），撤销待确认的权限请求，宽限期（默认 10 秒）内
+    /// Agent 未结束则整组终止进程。等执行结束后返回（状态 cancelled，任务回到 READY）。
+    /// 执行不在活动中时为 conflict。
+    pub fn cancel_run(&self, run_id: &str) -> Result<Run> {
+        let run = run_svc::get(&self.lock(), run_id)?;
+        if !run.status.is_active() || !self.stop_run(run_id, Stop::Cancel) {
+            return Err(Error::conflict(format!(
+                "执行已结束（{}），无需取消",
+                run.status.label()
+            )));
+        }
+        run_svc::get(&self.lock(), run_id)
+    }
+
+    /// 人工接管：停止执行（活动执行先取消，已中断的执行直接结束），执行记为 cancelled 并标注
+    /// `takenOver`，任务保持执行中，由 Human 在执行目录（`execDir`，可用 `open_run_dir` 打开）中处理；
+    /// 之后可再次 `start_run`，或把任务直接提交验收（`change_task_status` → review）。
+    /// 其他状态为 conflict。
+    pub fn takeover_run(&self, run_id: &str) -> Result<Run> {
+        let run = run_svc::get(&self.lock(), run_id)?;
+        if run.status.is_active() && self.stop_run(run_id, Stop::Takeover) {
+            return run_svc::get(&self.lock(), run_id);
+        }
+        if run.status != RunStatus::Interrupted {
+            return Err(Error::conflict(format!(
+                "执行已结束（{}），不能接管",
+                run.status.label()
+            )));
+        }
+        self.write(|tx| {
+            let failure = "人工接管".to_owned();
+            run_svc::end(
+                tx,
+                run_id,
+                RunStatus::Cancelled,
+                &Ending {
+                    failure: Some(failure.clone()),
+                    summary: run.summary.clone(),
+                    changed_files: run.changed_files.clone(),
+                    tool_call_count: run.tool_call_count,
+                    taken_over: true,
+                    ..Ending::default()
+                },
+            )?;
+            run_svc::status_update(tx, run_id, RunStatus::Cancelled, Some(failure))?;
+            run_svc::record_event(
+                tx,
+                &run,
+                Actor::Human,
+                EventKind::RunFinished,
+                format!(
+                    "{} 第 {} 次执行已停止，人工接管（{}）",
+                    run.task_key, run.attempt, run.harness.name
+                ),
+                serde_json::json!({ "runId": run.id, "attempt": run.attempt,
+                                    "status": RunStatus::Cancelled, "takenOver": true }),
+            )
+        })?;
+        self.sync_role_folders(&run.team_id);
+        self.emit_run(run_id);
+        run_svc::get(&self.lock(), run_id)
+    }
+
+    /// 续接已中断的执行：Agent 支持 `loadSession` 且会话已建立时，重新启动 Agent 并用 `session/load`
+    /// 续接原会话，再发一条「继续」提示；任务须仍在执行中。不支持时为 conflict（请重新执行）。
+    pub fn resume_run(&self, run_id: &str) -> Result<Run> {
+        let run = run_svc::get(&self.lock(), run_id)?;
+        if run.status != RunStatus::Interrupted {
+            return Err(Error::conflict(format!(
+                "只有已中断的执行可以续接（当前：{}）",
+                run.status.label()
+            )));
+        }
+        if run.session_id.is_none() {
+            return Err(Error::conflict(
+                "执行在会话建立前就中断了，无法续接，请重新执行",
+            ));
+        }
+        if !run.can_resume {
+            return Err(Error::conflict(format!(
+                "Harness「{}」不支持续接会话（loadSession），请重新执行",
+                run.harness.name
+            )));
+        }
+        if !Path::new(&run.exec_dir).is_dir() {
+            return Err(Error::conflict(format!(
+                "执行目录已不存在：{}，请重新执行",
+                run.exec_dir
+            )));
+        }
+        let mut registry = self.runs.registry();
+        let reopened = self.write(|tx| {
+            let task = task::get(tx, &run.task_id)?;
+            if task.status != TaskStatus::Doing {
+                return Err(Error::conflict(format!(
+                    "任务 {} 已不在执行中（{}），无法续接",
+                    task.key,
+                    task.status.label()
+                )));
+            }
+            let workspace = run_svc::workspace_of(tx, run_id)?;
+            if run.isolation == RunIsolation::InPlace
+                && let Some(busy) = run_svc::active_in_place(tx, &workspace)?
+            {
+                return Err(Error::conflict(format!(
+                    "工作空间（普通文件夹）正在执行 {}：同一文件夹同时只能运行一个执行",
+                    busy.task_key
+                )));
+            }
+            run_svc::reopen(tx, run_id)?;
+            run_svc::status_update(tx, run_id, RunStatus::Queued, Some("续接会话".to_owned()))?;
+            run_svc::record_event(
+                tx,
+                &run,
+                Actor::Human,
+                EventKind::RunResumed,
+                format!("{} 续接第 {} 次执行", run.task_key, run.attempt),
+                serde_json::json!({ "runId": run.id, "attempt": run.attempt }),
+            )?;
+            run_svc::get(tx, run_id)
+        })?;
+        self.core
+            .spawn_driver(&mut registry, reopened.clone(), Mode::Resume);
+        drop(registry);
+        self.sync_role_folders(&run.team_id);
+        self.emit_run(run_id);
+        Ok(reopened)
+    }
+
+    /// 把已中断的执行标记为失败：任务转为受阻（「执行失败：执行中断后由 Human 标记为失败」）。
+    pub fn mark_run_failed(&self, run_id: &str) -> Result<Run> {
+        let run = run_svc::get(&self.lock(), run_id)?;
+        if run.status != RunStatus::Interrupted {
+            return Err(Error::conflict(format!(
+                "只有已中断的执行可以标记为失败（当前：{}）",
+                run.status.label()
+            )));
+        }
+        self.write(|tx| {
+            let failure = "执行中断后由 Human 标记为失败".to_owned();
+            run_svc::end(
+                tx,
+                run_id,
+                RunStatus::Failed,
+                &Ending {
+                    failure: Some(failure.clone()),
+                    failure_kind: Some(FailureKind::Interrupted),
+                    summary: run.summary.clone(),
+                    changed_files: run.changed_files.clone(),
+                    tool_call_count: run.tool_call_count,
+                    ..Ending::default()
+                },
+            )?;
+            run_svc::status_update(tx, run_id, RunStatus::Failed, Some(failure.clone()))?;
+            if task::get(tx, &run.task_id)?.status == TaskStatus::Doing {
+                run_svc::move_task(
+                    tx,
+                    &run.task_id,
+                    TaskStatus::Blocked,
+                    Some(format!("{}{failure}", run_svc::FAILED_PREFIX)),
+                    Actor::Human,
+                    "",
+                )?;
+            }
+            run_svc::record_event(
+                tx,
+                &run,
+                Actor::Human,
+                EventKind::RunFinished,
+                format!(
+                    "{} 第 {} 次执行失败（{}）",
+                    run.task_key, run.attempt, run.harness.name
+                ),
+                serde_json::json!({ "runId": run.id, "attempt": run.attempt,
+                                    "status": RunStatus::Failed, "failure": failure }),
+            )
+        })?;
+        self.sync_role_folders(&run.team_id);
+        self.emit_run(run_id);
+        run_svc::get(&self.lock(), run_id)
+    }
+
+    /// 在 Finder 中打开执行目录（worktree 或原地执行的工作空间）；目录不存在时为 not_found。
+    pub fn open_run_dir(&self, run_id: &str) -> Result<()> {
+        let run = run_svc::get(&self.lock(), run_id)?;
+        let dir = Path::new(&run.exec_dir);
+        if !dir.is_dir() {
+            return Err(Error::not_found(format!(
+                "执行目录不存在：{}",
+                run.exec_dir
+            )));
+        }
+        self.probe.reveal_path(dir)
+    }
+
+    /// 单个执行记录。
+    pub fn get_run(&self, run_id: &str) -> Result<Run> {
+        run_svc::get(&self.lock(), run_id)
+    }
+
+    /// 任务的全部执行，最近的在前。
+    pub fn list_runs(&self, task_id: &str) -> Result<Vec<Run>> {
+        run_svc::list_for_task(&self.lock(), task_id)
+    }
+
+    /// 执行进度增量读取：返回 `cursor` 之后新增或被更新的条目（见 [`RunUpdatePage`]）。
+    pub fn list_run_updates(&self, input: RunUpdateQuery) -> Result<RunUpdatePage> {
+        self.run_updates(&input)
+    }
+
+    /// 回应等待 Human 确认的权限请求：`optionId` 须是该请求的选项之一；请求不存在或已处理为
+    /// not_found，执行已结束为 conflict。返回最新的执行记录。
+    pub fn respond_permission(&self, input: RespondPermissionInput) -> Result<Run> {
+        self.decide_permission(&input.run_id, &input.request_id, &input.option_id)?;
+        run_svc::get(&self.lock(), &input.run_id)
     }
 
     // ---------------------------------------------------------------- 活动

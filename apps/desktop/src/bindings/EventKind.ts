@@ -3,4 +3,4 @@
 /**
  * 活动种类。
  */
-export type EventKind = "team_created" | "role_created" | "role_updated" | "role_archived" | "role_harness_bound" | "role_harness_unbound" | "harness_created" | "harness_updated" | "harness_archived" | "harness_checked" | "task_created" | "task_updated" | "task_status_changed" | "role_folder_error";
+export type EventKind = "team_created" | "role_created" | "role_updated" | "role_archived" | "role_harness_bound" | "role_harness_unbound" | "harness_created" | "harness_updated" | "harness_archived" | "harness_checked" | "task_created" | "task_updated" | "task_status_changed" | "role_folder_error" | "run_started" | "run_finished" | "run_interrupted" | "run_resumed";

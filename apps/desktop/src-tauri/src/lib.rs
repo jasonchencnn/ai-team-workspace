@@ -2,9 +2,9 @@
 
 mod commands;
 
-use tauri::Manager;
+use tauri::{Emitter, Manager};
 use teamspace_core::system_probe::LocalProbe;
-use teamspace_core::{HostConfig, Teamspace};
+use teamspace_core::{HostConfig, RUN_EVENT, Teamspace};
 
 /// 同时生成命令名常量与 `generate_handler!`，保证二者不会漂移。
 macro_rules! register_commands {
@@ -49,6 +49,16 @@ register_commands!(
     update_task,
     change_task_status,
     search_workspace_files,
+    start_run,
+    cancel_run,
+    resume_run,
+    mark_run_failed,
+    takeover_run,
+    open_run_dir,
+    get_run,
+    list_runs,
+    list_run_updates,
+    respond_permission,
     list_events,
     pick_workspace_folder,
 );
@@ -66,11 +76,23 @@ pub fn run() -> tauri::Result<()> {
             let config = HostConfig::with_current_exe_mock_agent();
             let teamspace = Teamspace::open_with(&db_path, Box::new(LocalProbe::new()), config)
                 .map_err(|err| format!("无法打开数据库 {}：{err}", db_path.display()))?;
+            // 执行事件（状态变化、新进度、权限请求）推送给前端。
+            let handle = app.handle().clone();
+            teamspace.set_run_listener(move |event| {
+                let _ = handle.emit(RUN_EVENT, event);
+            });
             app.manage(teamspace);
             Ok(())
         })
         .invoke_handler(handler())
-        .run(tauri::generate_context!())
+        .build(tauri::generate_context!())?
+        .run(|app, event| {
+            // 退出时终止执行中的 Agent 进程，执行标记为已中断（下次打开可续接或重新执行）。
+            if let tauri::RunEvent::Exit = event {
+                app.state::<Teamspace>().shutdown();
+            }
+        });
+    Ok(())
 }
 
 #[cfg(test)]

@@ -2,6 +2,7 @@
 // 类型全部来自 ts-rs 生成的 bindings；失败时 Promise 以 ErrorPayload（{ kind, message }）拒绝。
 // 业务规则（流转、就绪条件等）以后端返回为准，这里不做任何校验。
 import { invoke } from "@tauri-apps/api/core";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 
 import type { AcpPresetInfo } from "../bindings/AcpPresetInfo.js";
 import type { ChangeTaskStatusInput } from "../bindings/ChangeTaskStatusInput.js";
@@ -14,11 +15,16 @@ import type { EventPage } from "../bindings/EventPage.js";
 import type { EventQuery } from "../bindings/EventQuery.js";
 import type { FileSearchQuery } from "../bindings/FileSearchQuery.js";
 import type { HarnessInstance } from "../bindings/HarnessInstance.js";
+import type { RespondPermissionInput } from "../bindings/RespondPermissionInput.js";
 import type { Role } from "../bindings/Role.js";
 import type { RoleFolder } from "../bindings/RoleFolder.js";
 import type { RoleTemplate } from "../bindings/RoleTemplate.js";
 import type { RoleView } from "../bindings/RoleView.js";
 import type { RoleWorkbench } from "../bindings/RoleWorkbench.js";
+import type { Run } from "../bindings/Run.js";
+import type { RunEvent } from "../bindings/RunEvent.js";
+import type { RunUpdatePage } from "../bindings/RunUpdatePage.js";
+import type { RunUpdateQuery } from "../bindings/RunUpdateQuery.js";
 import type { SuggestTaskPrefixInput } from "../bindings/SuggestTaskPrefixInput.js";
 import type { TaskBoard } from "../bindings/TaskBoard.js";
 import type { TaskBoardQuery } from "../bindings/TaskBoardQuery.js";
@@ -161,6 +167,49 @@ export const changeTaskStatus = (input: ChangeTaskStatusInput) =>
 /** 在团队工作区中搜索文件，返回相对路径（最多 50 条）。 */
 export const searchWorkspaceFiles = (input: FileSearchQuery) =>
   invoke<string[]>("search_workspace_files", { input });
+
+// ---------------------------------------------------------------- 执行
+
+/** 执行事件的名称（与 crates/teamspace-core 的 RUN_EVENT 一致）。 */
+export const RUN_EVENT = "teamspace:run";
+
+/** 订阅执行事件（状态变化、新进度、权限请求）；返回取消订阅的函数。 */
+export const onRunEvent = (handler: (event: RunEvent) => void): Promise<UnlistenFn> =>
+  listen<RunEvent>(RUN_EVENT, (event) => {
+    handler(event.payload);
+  });
+
+/** 开始执行任务（READY、受阻，或中断 / 人工接管后重新执行）；返回 queued 状态的执行。 */
+export const startRun = (taskId: string) => invoke<Run>("start_run", { taskId });
+
+/** 取消活动执行，等执行结束后返回（任务回到 READY）。 */
+export const cancelRun = (runId: string) => invoke<Run>("cancel_run", { runId });
+
+/** 续接已中断的执行（Agent 支持 loadSession 时）。 */
+export const resumeRun = (runId: string) => invoke<Run>("resume_run", { runId });
+
+/** 把已中断的执行标记为失败（任务转为受阻）。 */
+export const markRunFailed = (runId: string) => invoke<Run>("mark_run_failed", { runId });
+
+/** 人工接管：停止执行，任务保持执行中，由你在执行目录中处理。 */
+export const takeoverRun = (runId: string) => invoke<Run>("takeover_run", { runId });
+
+/** 在 Finder 中打开执行目录。 */
+export const openRunDir = (runId: string) => invoke<null>("open_run_dir", { runId });
+
+/** 单个执行记录。 */
+export const getRun = (runId: string) => invoke<Run>("get_run", { runId });
+
+/** 任务的全部执行，最近的在前。 */
+export const listRuns = (taskId: string) => invoke<Run[]>("list_runs", { taskId });
+
+/** 执行进度增量读取：按 id 合并、按 seq 排序；用 nextCursor 继续读取。 */
+export const listRunUpdates = (input: RunUpdateQuery) =>
+  invoke<RunUpdatePage>("list_run_updates", { input });
+
+/** 回应等待确认的权限请求。 */
+export const respondPermission = (input: RespondPermissionInput) =>
+  invoke<Run>("respond_permission", { input });
 
 // ---------------------------------------------------------------- 活动
 

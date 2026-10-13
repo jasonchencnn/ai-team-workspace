@@ -93,6 +93,8 @@ pub struct RoleWorkbench {
     /// `过程文件/` 下最近修改的文件（递归，跳过隐藏文件与目录、符号链接和 Teamspace 生成的
     /// `过程文件/README.md`），按修改时间倒序，最多 10 条；文件夹不存在时为空。
     pub recent_files: Vec<RoleFileEntry>,
+    /// 该岗位最近的执行（任何状态），按开始时间倒序，最多 5 条；活动执行在其中。
+    pub recent_runs: Vec<super::Run>,
 }
 
 /// 任务等处引用岗位时使用的简要信息（岗位可能已归档）。

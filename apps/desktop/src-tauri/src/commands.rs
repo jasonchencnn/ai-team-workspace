@@ -195,6 +195,62 @@ pub fn list_events(ts: State<'_, Teamspace>, input: EventQuery) -> Result<EventP
     ts.list_events(input)
 }
 
+#[tauri::command(async)]
+pub fn start_run(ts: State<'_, Teamspace>, task_id: &str) -> Result<Run, Error> {
+    ts.start_run(task_id)
+}
+
+#[tauri::command(async)]
+pub fn cancel_run(ts: State<'_, Teamspace>, run_id: &str) -> Result<Run, Error> {
+    ts.cancel_run(run_id)
+}
+
+#[tauri::command(async)]
+pub fn resume_run(ts: State<'_, Teamspace>, run_id: &str) -> Result<Run, Error> {
+    ts.resume_run(run_id)
+}
+
+#[tauri::command(async)]
+pub fn mark_run_failed(ts: State<'_, Teamspace>, run_id: &str) -> Result<Run, Error> {
+    ts.mark_run_failed(run_id)
+}
+
+#[tauri::command(async)]
+pub fn takeover_run(ts: State<'_, Teamspace>, run_id: &str) -> Result<Run, Error> {
+    ts.takeover_run(run_id)
+}
+
+#[tauri::command(async)]
+pub fn open_run_dir(ts: State<'_, Teamspace>, run_id: &str) -> Result<(), Error> {
+    ts.open_run_dir(run_id)
+}
+
+#[tauri::command(async)]
+pub fn get_run(ts: State<'_, Teamspace>, run_id: &str) -> Result<Run, Error> {
+    ts.get_run(run_id)
+}
+
+#[tauri::command(async)]
+pub fn list_runs(ts: State<'_, Teamspace>, task_id: &str) -> Result<Vec<Run>, Error> {
+    ts.list_runs(task_id)
+}
+
+#[tauri::command(async)]
+pub fn list_run_updates(
+    ts: State<'_, Teamspace>,
+    input: RunUpdateQuery,
+) -> Result<RunUpdatePage, Error> {
+    ts.list_run_updates(input)
+}
+
+#[tauri::command(async)]
+pub fn respond_permission(
+    ts: State<'_, Teamspace>,
+    input: RespondPermissionInput,
+) -> Result<Run, Error> {
+    ts.respond_permission(input)
+}
+
 /// 打开系统文件夹对话框；取消返回 `None`，否则返回所选目录的工作区信息。
 #[tauri::command(async)]
 pub fn pick_workspace_folder(

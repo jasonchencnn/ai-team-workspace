@@ -4,6 +4,7 @@
 //! 假实现。实现不得读取或保存任何密钥，也不得让 Harness 执行任务；对 Agent 只允许 ACP 握手
 //! （`initialize`），不发送 prompt。
 
+use std::ffi::OsString;
 use std::path::Path;
 
 use crate::acp::AgentLaunch;
@@ -46,4 +47,10 @@ pub trait SystemProbe: Send + Sync {
     /// 在系统文件管理器（macOS 为 Finder）中打开已存在的路径（内核已校验）：目录直接打开，
     /// 文件则打开所在目录并选中该文件。打开失败时返回 internal 错误。
     fn reveal_path(&self, path: &Path) -> Result<()>;
+
+    /// 启动执行用的 Agent 进程和 Git worktree 操作时使用的 PATH（补全后的）。默认为进程继承的 PATH；
+    /// [`crate::system_probe::LocalProbe`] 返回与 [`SystemProbe::locate_command`] 一致的补全 PATH。
+    fn command_path_env(&self) -> OsString {
+        std::env::var_os("PATH").unwrap_or_default()
+    }
 }

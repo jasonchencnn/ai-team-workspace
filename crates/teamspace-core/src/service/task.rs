@@ -231,13 +231,19 @@ fn build_detail(
     readiness: Vec<String>,
     files: &FileCheck,
 ) -> Result<TaskDetail> {
-    let allowed_transitions = task
-        .status
-        .next()
-        .iter()
-        .copied()
-        .filter(|to| !needs_readiness(*to) || readiness.is_empty())
-        .collect();
+    let latest_run = super::run::latest_for_task(conn, &task.id)?;
+    let running = latest_run.as_ref().is_some_and(|r| r.status.is_active());
+    let allowed_transitions = if running {
+        Vec::new()
+    } else {
+        task.status
+            .next()
+            .iter()
+            .copied()
+            .filter(|to| !needs_readiness(*to) || readiness.is_empty())
+            .collect()
+    };
+    let run_problems = super::run::start_problems(conn, &task, files)?;
     let file_refs = task
         .file_refs
         .iter()
@@ -264,6 +270,8 @@ fn build_detail(
         allowed_transitions,
         readiness,
         events: event::for_task(conn, id)?,
+        latest_run,
+        run_problems,
         task,
     })
 }
@@ -621,6 +629,12 @@ pub(crate) fn change_status(
 ) -> Result<TaskDetail> {
     let task = get(conn, &input.task_id)?;
     let team = team::get_active(conn, &task.team_id)?;
+    if let Some(run) = super::run::active_for_task(conn, &task.id)? {
+        return Err(Error::conflict(format!(
+            "任务 {} 正在执行（第 {} 次），请先取消执行或人工接管",
+            task.key, run.attempt
+        )));
+    }
     let (from, to) = (task.status, input.to);
     if !from.can_transition_to(to) {
         return Err(Error::conflict(format!(

@@ -23,14 +23,25 @@ pub enum EventKind {
     TaskStatusChanged,
     /// 岗位文件夹（`Teamspace/<岗位>/`）写入失败；同一问题只记录一次。
     RoleFolderError,
+    /// 开始执行任务（含重新执行）。
+    RunStarted,
+    /// 执行结束：成功、失败、取消或人工接管（`data.status`、`data.summary`、`data.changedFiles`、`data.failure`）。
+    /// 写入岗位工作日志时带上执行摘要与改动文件。
+    RunFinished,
+    /// 应用退出或重启时执行仍在进行，已标记为中断。
+    RunInterrupted,
+    /// 续接已中断的执行。
+    RunResumed,
 }
 
-/// 操作者。M1 只有 Human；后续里程碑会加入岗位 / Harness。
+/// 操作者：Human，或 Teamspace 自己（执行引擎根据 Agent 的结果做的状态变化）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "snake_case")]
 #[ts(export)]
 pub enum Actor {
     Human,
+    /// Teamspace 执行引擎（执行成功转待验收、失败回到 READY、重启时标记中断等）。
+    System,
 }
 
 /// 活动记录。每次变更写一条，只追加不修改。

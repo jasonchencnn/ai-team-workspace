@@ -2,6 +2,7 @@
 import type { RoleFileEntry } from "./RoleFileEntry.js";
 import type { RoleFolder } from "./RoleFolder.js";
 import type { RoleView } from "./RoleView.js";
+import type { Run } from "./Run.js";
 import type { TaskSummary } from "./TaskSummary.js";
 
 /**
@@ -28,4 +29,8 @@ taskCount: number,
  * `过程文件/` 下最近修改的文件（递归，跳过隐藏文件与目录、符号链接和 Teamspace 生成的
  * `过程文件/README.md`），按修改时间倒序，最多 10 条；文件夹不存在时为空。
  */
-recentFiles: Array<RoleFileEntry>, };
+recentFiles: Array<RoleFileEntry>, 
+/**
+ * 该岗位最近的执行（任何状态），按开始时间倒序，最多 5 条；活动执行在其中。
+ */
+recentRuns: Array<Run>, };

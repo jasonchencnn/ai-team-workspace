@@ -4,6 +4,7 @@ mod events;
 mod folders;
 mod harnesses;
 mod roles;
+mod runs;
 mod tasks;
 mod teams;
 mod workbench;

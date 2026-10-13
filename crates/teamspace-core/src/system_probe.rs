@@ -239,7 +239,7 @@ fn relative_path(root: &Path, path: &Path) -> String {
 ///
 /// `GIT_TERMINAL_PROMPT=0` 不做交互式凭据提问，避免远程仓库查询把界面卡住；`GIT_CONFIG_NOSYSTEM=1`
 /// 忽略系统级 `/etc/gitconfig`，免得机器上装的代理、模板仓库等全局设置影响只读查询的结果。
-fn git_env(command: &mut Command) -> &mut Command {
+pub(crate) fn git_env(command: &mut Command) -> &mut Command {
     command
         .stdin(Stdio::null())
         .env("GIT_TERMINAL_PROMPT", "0")
@@ -317,6 +317,10 @@ impl SystemProbe for LocalProbe {
 
     fn handshake(&self, launch: &AgentLaunch) -> Handshake {
         self.handshake_with(launch, self.path_dirs(), self.handshake_timeout)
+    }
+
+    fn command_path_env(&self) -> std::ffi::OsString {
+        path_env(self.path_dirs())
     }
 
     /// 用系统自带命令打开（macOS `open`、Windows `explorer`、其他平台 `xdg-open`），不加插件。
@@ -640,7 +644,7 @@ fn inherited_path_dirs() -> Vec<PathBuf> {
 }
 
 /// 在 `dirs` 中按名字查找可执行文件；名字本身含分隔符时按路径处理。
-fn find_in_path(command: &str, dirs: &[PathBuf]) -> Option<PathBuf> {
+pub(crate) fn find_in_path(command: &str, dirs: &[PathBuf]) -> Option<PathBuf> {
     if command.contains('/') {
         let direct = PathBuf::from(command);
         return is_executable(&direct).then_some(direct);
@@ -673,7 +677,7 @@ fn home_dir() -> Option<PathBuf> {
 }
 
 /// 把目录列表拼成给子进程用的 `PATH`。
-fn path_env(dirs: &[PathBuf]) -> std::ffi::OsString {
+pub(crate) fn path_env(dirs: &[PathBuf]) -> std::ffi::OsString {
     std::env::join_paths(dirs).unwrap_or_default()
 }
 

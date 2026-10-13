@@ -302,9 +302,41 @@ fn journal_text(
                 format!("{summary}（改派到本岗位）")
             }
         }
+        EventKind::RunFinished => {
+            let mut text = summary.to_owned();
+            if let Some(failure) = str_field(data, &["failure"])
+                && !data
+                    .get("takenOver")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false)
+            {
+                text.push_str(&format!("；原因：{failure}"));
+            }
+            if let Some(s) = str_field(data, &["summary"]) {
+                text.push_str(&format!("；摘要：{s}"));
+            }
+            let files: Vec<&str> = data
+                .get("changedFiles")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_str)
+                .collect();
+            if !files.is_empty() {
+                let shown: Vec<&str> = files.iter().take(RUN_FILES_IN_JOURNAL).copied().collect();
+                text.push_str(&format!("；改动文件：{}", shown.join("、")));
+                if files.len() > shown.len() {
+                    text.push_str(&format!(" 等 {} 个", files.len()));
+                }
+            }
+            text
+        }
         _ => summary.to_owned(),
     }))
 }
+
+/// 执行摘要写入工作日志时最多列出的改动文件数。
+const RUN_FILES_IN_JOURNAL: usize = 10;
 
 /// 写回同步结果；问题首次出现或变化时记录一条 `role_folder_error` 活动（同一问题不重复记录）。
 pub(crate) fn apply(conn: &Connection, plans: &[RolePlan], outcomes: &[SyncOutcome]) -> Result<()> {

@@ -12,7 +12,7 @@ use time::OffsetDateTime;
 use crate::error::{Error, Result};
 
 /// 当前 schema 版本。
-pub(crate) const SCHEMA_VERSION: i64 = 4;
+pub(crate) const SCHEMA_VERSION: i64 = 5;
 
 const SCHEMA_V1: &str = r#"
 CREATE TABLE teams (
@@ -197,7 +197,69 @@ ALTER TABLE harnesses_v4 RENAME TO harnesses;
 CREATE UNIQUE INDEX harnesses_active_name ON harnesses (team_id, name) WHERE archived_at IS NULL;
 "#;
 
-const MIGRATIONS: &[&str] = &[SCHEMA_V1, SCHEMA_V2, SCHEMA_V3, SCHEMA_V4];
+/// v5：执行（M2）。
+///
+/// - `runs`：每次执行一行；Harness 以快照保存（名称、预设、命令、参数）。
+///   `runs_active_task` 保证同一任务同时只有一个活动执行；`runs_active_in_place` 保证同一个普通文件夹
+///   工作空间同时只有一个原地执行（D15）。`pending_permission` 为等待 Human 的权限请求（JSON）。
+/// - `run_updates`：执行进度。`seq` 是位置（时间顺序），`rev` 是本执行内的变更序号：条目被更新
+///   （消息块合并、工具调用状态、权限决定）时 `rev` 前移，增量读取按 `rev` 游标进行。
+///   `key` 用于按工具调用 ID、权限请求 ID 或计划找回同一条目。
+const SCHEMA_V5: &str = r#"
+CREATE TABLE runs (
+    id                 TEXT PRIMARY KEY,
+    team_id            TEXT NOT NULL REFERENCES teams (id),
+    task_id            TEXT NOT NULL REFERENCES tasks (id),
+    role_id            TEXT NOT NULL REFERENCES roles (id),
+    harness_id         TEXT NOT NULL REFERENCES harnesses (id),
+    harness_name       TEXT NOT NULL,
+    harness_preset     TEXT NOT NULL,
+    harness_command    TEXT NOT NULL,
+    harness_args       TEXT NOT NULL DEFAULT '[]',
+    attempt            INTEGER NOT NULL CHECK (attempt >= 1),
+    status             TEXT NOT NULL CHECK (status IN ('queued', 'running', 'waiting_permission', 'succeeded', 'failed', 'cancelled', 'interrupted')),
+    session_id         TEXT,
+    workspace_path     TEXT NOT NULL,
+    exec_dir           TEXT NOT NULL,
+    isolation          TEXT NOT NULL CHECK (isolation IN ('worktree', 'in_place')),
+    branch             TEXT,
+    base_commit        TEXT,
+    capabilities       TEXT,
+    started_at         TEXT NOT NULL,
+    ended_at           TEXT,
+    stop_reason        TEXT,
+    failure            TEXT,
+    failure_kind       TEXT,
+    summary            TEXT,
+    changed_files      TEXT NOT NULL DEFAULT '[]',
+    tool_call_count    INTEGER NOT NULL DEFAULT 0,
+    taken_over         INTEGER NOT NULL DEFAULT 0 CHECK (taken_over IN (0, 1)),
+    pending_permission TEXT,
+    UNIQUE (task_id, attempt)
+);
+CREATE INDEX runs_task ON runs (task_id, attempt);
+CREATE INDEX runs_role ON runs (role_id, started_at);
+CREATE UNIQUE INDEX runs_active_task ON runs (task_id)
+    WHERE status IN ('queued', 'running', 'waiting_permission');
+CREATE UNIQUE INDEX runs_active_in_place ON runs (workspace_path)
+    WHERE isolation = 'in_place' AND status IN ('queued', 'running', 'waiting_permission');
+
+CREATE TABLE run_updates (
+    seq        INTEGER PRIMARY KEY,
+    id         TEXT NOT NULL UNIQUE,
+    run_id     TEXT NOT NULL REFERENCES runs (id),
+    rev        INTEGER NOT NULL,
+    kind       TEXT NOT NULL,
+    key        TEXT,
+    body       TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE (run_id, rev)
+);
+CREATE INDEX run_updates_key ON run_updates (run_id, key);
+"#;
+
+const MIGRATIONS: &[&str] = &[SCHEMA_V1, SCHEMA_V2, SCHEMA_V3, SCHEMA_V4, SCHEMA_V5];
 
 /// 打开数据库：WAL 日志、synchronous=NORMAL、开启外键，并迁移到当前版本。
 pub(crate) fn open(path: &Path) -> Result<Connection> {
@@ -531,6 +593,38 @@ mod tests {
             [],
         )
         .unwrap();
+    }
+
+    #[test]
+    fn v4_database_migrates_to_v5_with_run_tables() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("t.db");
+        {
+            let conn = Connection::open(&path).unwrap();
+            for sql in &MIGRATIONS[..4] {
+                conn.execute_batch(sql).unwrap();
+            }
+            conn.execute_batch(
+                "INSERT INTO teams VALUES ('t', 'T', '', '/w', 'a', 'a', NULL);
+                 PRAGMA user_version = 4;",
+            )
+            .unwrap();
+        }
+        let conn = open(&path).unwrap();
+        for table in ["runs", "run_updates"] {
+            let n: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?1",
+                    [table],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(n, 1, "{table}");
+        }
+        let teams: i64 = conn
+            .query_row("SELECT COUNT(*) FROM teams", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(teams, 1);
     }
 
     #[test]

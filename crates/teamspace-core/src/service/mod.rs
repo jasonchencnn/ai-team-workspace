@@ -4,6 +4,7 @@ pub(crate) mod event;
 pub(crate) mod folder;
 pub(crate) mod harness;
 pub(crate) mod role;
+pub(crate) mod run;
 pub(crate) mod task;
 pub(crate) mod team;
 pub(crate) mod workspace;

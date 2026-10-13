@@ -11,6 +11,7 @@
 mod event;
 mod harness;
 mod role;
+mod run;
 mod system;
 mod task;
 mod team;
@@ -18,6 +19,7 @@ mod team;
 pub use event::*;
 pub use harness::*;
 pub use role::*;
+pub use run::*;
 pub use system::*;
 pub use task::*;
 pub use team::*;

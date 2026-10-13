@@ -23,8 +23,13 @@ pub(crate) struct NewEvent<'a> {
     pub data: Value,
 }
 
-/// 追加一条活动（actor 固定为 human）。
+/// 追加一条活动（actor 为 human）。
 pub(crate) fn record(conn: &Connection, event: NewEvent<'_>) -> Result<()> {
+    record_as(conn, Actor::Human, event)
+}
+
+/// 以指定操作者追加一条活动。
+pub(crate) fn record_as(conn: &Connection, actor: Actor, event: NewEvent<'_>) -> Result<()> {
     conn.execute(
         "INSERT INTO events (id, team_id, task_id, role_id, kind, actor, summary, data, created_at)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
@@ -34,7 +39,7 @@ pub(crate) fn record(conn: &Connection, event: NewEvent<'_>) -> Result<()> {
             event.task_id,
             event.role_id,
             enum_str(event.kind),
-            enum_str(Actor::Human),
+            enum_str(actor),
             event.summary,
             event.data.to_string(),
             now(),

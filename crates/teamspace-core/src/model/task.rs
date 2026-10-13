@@ -219,13 +219,18 @@ pub struct TaskDetail {
     pub dependencies: Vec<TaskSummary>,
     /// 依赖本任务的任务（下游）。
     pub dependents: Vec<TaskSummary>,
-    /// 当前可执行的状态流转（不满足就绪条件时已排除 ready 和 doing）。
+    /// 当前可执行的状态流转（不满足就绪条件时已排除 ready 和 doing；有活动执行时为空，
+    /// 需先取消或接管执行）。
     pub allowed_transitions: Vec<TaskStatus>,
     /// 进入 ready / doing 的未满足条件（中文）；为空表示满足。与当前状态无关，始终计算。
     /// 工作区目录不存在时只有一条「工作区目录不存在或已移动」。
     pub readiness: Vec<String>,
     /// 与本任务相关的活动，按时间倒序。
     pub events: Vec<Event>,
+    /// 最近一次执行；从未执行过为 `null`。全部执行见 `list_runs`。
+    pub latest_run: Option<super::Run>,
+    /// 现在点「开始执行」会被拒绝的原因（中文）；为空表示可以开始（`start_run`）。
+    pub run_problems: Vec<String>,
 }
 
 /// 创建任务。

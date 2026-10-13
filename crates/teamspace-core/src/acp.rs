@@ -9,7 +9,7 @@
 //!
 //! 结构上把协议逻辑（[`handshake_over`]，只依赖一条读消息的通道和一个写端）与进程管理
 //! （[`handshake_process`]）分开，协议逻辑可以直接用内存通道测试，进程部分用假 Agent 脚本测试。
-//! M2 的会话、权限请求与执行进度在这里继续扩展。
+//! M2 的长连接会话见 [`connection`]，执行管理见 [`crate::run`]。
 
 use std::ffi::OsStr;
 use std::io::{BufRead, BufReader, Read, Write};
@@ -23,6 +23,8 @@ use serde_json::{Value, json};
 
 use crate::model::{AcpCapabilities, AgentInfo, Handshake, HandshakeStatus};
 use crate::system_probe::{isolate_in_process_group, kill_process_group};
+
+pub mod connection;
 
 /// Teamspace 支持的 ACP 协议版本。
 pub const PROTOCOL_VERSION: u64 = 1;
@@ -54,26 +56,32 @@ pub struct AgentLaunch {
     pub env_profile: Option<String>,
 }
 
-/// `initialize` 请求（一行 JSON，不含换行）。
+/// `initialize` 请求（一行 JSON，不含换行）。握手检查不提供任何 Client 能力。
 pub fn initialize_request() -> String {
     json!({
         "jsonrpc": "2.0",
         "id": INITIALIZE_ID,
         "method": "initialize",
-        "params": {
-            "protocolVersion": PROTOCOL_VERSION,
-            "clientCapabilities": {
-                "fs": { "readTextFile": false, "writeTextFile": false },
-                "terminal": false
-            },
-            "clientInfo": {
-                "name": "teamspace",
-                "title": "Teamspace",
-                "version": env!("CARGO_PKG_VERSION")
-            }
-        }
+        "params": initialize_params(false)
     })
     .to_string()
+}
+
+/// `initialize` 的参数。`fs` 为 `true` 时声明 Client 提供文件读写（执行时；读写范围由权限规则限定，
+/// 见 [`crate::run::policy`]）；终端能力始终不提供（Agent 自带的命令执行会通过权限请求来问）。
+pub fn initialize_params(fs: bool) -> Value {
+    json!({
+        "protocolVersion": PROTOCOL_VERSION,
+        "clientCapabilities": {
+            "fs": { "readTextFile": fs, "writeTextFile": fs },
+            "terminal": false
+        },
+        "clientInfo": {
+            "name": "teamspace",
+            "title": "Teamspace",
+            "version": env!("CARGO_PKG_VERSION")
+        }
+    })
 }
 
 /// 握手在协议层面的失败（进程层再补上退出码和 stderr）。

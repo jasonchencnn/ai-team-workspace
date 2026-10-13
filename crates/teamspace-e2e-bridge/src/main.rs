@@ -2,13 +2,17 @@
 //!
 //! 用法：`teamspace-e2e-bridge <数据库路径> <端口>`。只监听 127.0.0.1，只提供 `POST /invoke`，
 //! 请求体 `{ "cmd": "...", "args": {...} }`，响应 `{ "ok": 值 }` 或 `{ "err": ErrorPayload }`。
-//! 以 `--teamspace-mock-agent` 参数启动时作为内置 Mock ACP Agent 运行（Mock 预设的握手会这样启动它）。
+//! 以 `--teamspace-mock-agent` 参数启动时作为内置 Mock ACP Agent 运行（Mock 预设的握手与执行会这样启动它）。
+//!
+//! 执行事件（Tauri 中由 `app.emit` 推送）在这里缓存在内存里，浏览器端用桥接专用命令
+//! `__poll_run_events`（参数 `{ after: number }`，返回 `{ events: [{ seq, event }], next }`）轮询，
+//! 再交给 mock 的事件系统分发给 `listen` 的订阅者，前端代码无需区分。
 //! 不属于正式应用。
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::Path;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::thread;
 
 use serde::de::DeserializeOwned;
@@ -47,7 +51,23 @@ impl SystemProbe for BridgeProbe {
         println!("reveal {}", path.display());
         Ok(())
     }
+
+    fn command_path_env(&self) -> std::ffi::OsString {
+        self.0.command_path_env()
+    }
 }
+
+/// 缓存的执行事件上限。
+const EVENT_BUFFER: usize = 5000;
+
+/// 执行事件缓存：（序号，事件）。
+#[derive(Default)]
+struct EventLog {
+    next: u64,
+    events: std::collections::VecDeque<(u64, Value)>,
+}
+
+type Events = Arc<Mutex<EventLog>>;
 
 type CmdResult = Result<Value, ErrorPayload>;
 
@@ -70,19 +90,32 @@ fn main() {
         HostConfig::with_current_exe_mock_agent(),
     )
     .unwrap_or_else(|err| panic!("open database: {err}"));
+    let events: Events = Arc::default();
+    let sink = Arc::clone(&events);
+    ts.set_run_listener(move |event| {
+        let mut log = sink.lock().unwrap_or_else(|p| p.into_inner());
+        log.next += 1;
+        let seq = log.next;
+        log.events
+            .push_back((seq, serde_json::to_value(event).unwrap_or(Value::Null)));
+        while log.events.len() > EVENT_BUFFER {
+            log.events.pop_front();
+        }
+    });
     let ts = Arc::new(ts);
     let listener = TcpListener::bind(format!("127.0.0.1:{port}"))
         .unwrap_or_else(|err| panic!("bind port {port}: {err}"));
     println!("bridge listening on 127.0.0.1:{port}");
     for stream in listener.incoming().flatten() {
         let ts = Arc::clone(&ts);
+        let events = Arc::clone(&events);
         thread::spawn(move || {
-            let _ = handle(stream, &ts);
+            let _ = handle(stream, &ts, &events);
         });
     }
 }
 
-fn handle(mut stream: TcpStream, ts: &Teamspace) -> std::io::Result<()> {
+fn handle(mut stream: TcpStream, ts: &Teamspace, events: &Events) -> std::io::Result<()> {
     let mut reader = BufReader::new(stream.try_clone()?);
     let mut request_line = String::new();
     reader.read_line(&mut request_line)?;
@@ -113,7 +146,12 @@ fn handle(mut stream: TcpStream, ts: &Teamspace) -> std::io::Result<()> {
         Ok(request) => {
             let cmd = request["cmd"].as_str().unwrap_or_default();
             let args = request.get("args").cloned().unwrap_or(Value::Null);
-            match dispatch(ts, cmd, &args) {
+            let result = if cmd == "__poll_run_events" {
+                poll_events(events, &args)
+            } else {
+                dispatch(ts, cmd, &args)
+            };
+            match result {
                 Ok(value) => json!({ "ok": value }),
                 Err(err) => json!({ "err": err }),
             }
@@ -147,6 +185,19 @@ fn arg<T: DeserializeOwned>(args: &Value, name: &str) -> Result<T, ErrorPayload>
 fn out<T: serde::Serialize>(result: teamspace_core::Result<T>) -> CmdResult {
     let value = result.map_err(|err| err.payload())?;
     serde_json::to_value(value).map_err(|err| bad(err.to_string()))
+}
+
+/// 返回序号大于 `after` 的执行事件。
+fn poll_events(events: &Events, args: &Value) -> CmdResult {
+    let after = args.get("after").and_then(Value::as_u64).unwrap_or(0);
+    let log = events.lock().unwrap_or_else(|p| p.into_inner());
+    let list: Vec<Value> = log
+        .events
+        .iter()
+        .filter(|(seq, _)| *seq > after)
+        .map(|(seq, event)| json!({ "seq": seq, "event": event }))
+        .collect();
+    Ok(json!({ "events": list, "next": log.next.max(after) }))
 }
 
 fn dispatch(ts: &Teamspace, cmd: &str, args: &Value) -> CmdResult {
@@ -195,6 +246,16 @@ fn dispatch(ts: &Teamspace, cmd: &str, args: &Value) -> CmdResult {
         "update_task" => out(ts.update_task(arg(args, "input")?)),
         "change_task_status" => out(ts.change_task_status(arg(args, "input")?)),
         "search_workspace_files" => out(ts.search_workspace_files(arg(args, "input")?)),
+        "start_run" => out(ts.start_run(&arg::<String>(args, "taskId")?)),
+        "cancel_run" => out(ts.cancel_run(&arg::<String>(args, "runId")?)),
+        "resume_run" => out(ts.resume_run(&arg::<String>(args, "runId")?)),
+        "mark_run_failed" => out(ts.mark_run_failed(&arg::<String>(args, "runId")?)),
+        "takeover_run" => out(ts.takeover_run(&arg::<String>(args, "runId")?)),
+        "open_run_dir" => out(ts.open_run_dir(&arg::<String>(args, "runId")?)),
+        "get_run" => out(ts.get_run(&arg::<String>(args, "runId")?)),
+        "list_runs" => out(ts.list_runs(&arg::<String>(args, "taskId")?)),
+        "list_run_updates" => out(ts.list_run_updates(arg(args, "input")?)),
+        "respond_permission" => out(ts.respond_permission(arg(args, "input")?)),
         "list_events" => out(ts.list_events(arg(args, "input")?)),
         other => Err(bad(format!("未知命令：{other}"))),
     }
