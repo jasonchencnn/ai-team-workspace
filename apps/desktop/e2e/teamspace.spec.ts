@@ -409,7 +409,9 @@ test("普通文件夹作为工作空间：不显示分支，READY 任务可引�
   await suggestion.click();
   await page.locator("#task-file-search").fill("素材清单");
   await expect(page.locator(".task-form__suggestion", { hasText: "素材清单.txt" })).toBeVisible();
-  await page.locator("#task-file-search").fill("README");
+  // 用只存在于文件夹外（Git 仓库里的 docs/plan.md）的名字验证范围；不能搜 README——
+  // Teamspace 会在工作空间里生成 Teamspace/README.md，是否已生成取决于时机。
+  await page.locator("#task-file-search").fill("plan");
   await expect(page.locator(".task-form__suggestion")).toHaveCount(0);
   await page.locator("#task-file-search").fill("");
   await expect(page.locator(".task-form__chip", { hasText: "notes/outline.md" })).toBeVisible();
