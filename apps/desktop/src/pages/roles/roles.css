@@ -296,6 +296,112 @@
   overflow-wrap: anywhere;
 }
 
+/* 岗位详情里的岗位文件夹与工作日志 */
+.role-detail__folder {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+  padding: 16px;
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius-control);
+  background: var(--color-canvas);
+}
+
+.role-detail__folder-title {
+  font-size: var(--font-size-section-title);
+  font-weight: 700;
+  line-height: var(--line-height-section-title);
+}
+
+.role-detail__folder-problem {
+  color: var(--color-ink);
+  overflow-wrap: anywhere;
+}
+
+.role-detail__folder-body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+
+/* 长路径按任意位置折行，完整值放在 title 里，不越出面板。 */
+.role-detail__folder-path,
+.role-detail__folder-abs {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-size: var(--font-size-caption);
+  line-height: var(--line-height-caption);
+}
+
+.role-detail__folder-abs {
+  color: var(--color-muted);
+  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+}
+
+.role-detail__folder-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.role-detail__folder-state,
+.role-detail__folder-empty {
+  color: var(--color-muted);
+  font-size: var(--font-size-caption);
+  line-height: var(--line-height-caption);
+  overflow-wrap: anywhere;
+}
+
+.role-detail__folder-subtitle {
+  margin-top: 8px;
+  font-weight: 700;
+}
+
+.role-detail__folder-note,
+.role-detail__folder-hint {
+  color: var(--color-muted);
+  font-size: var(--font-size-caption);
+  line-height: var(--line-height-caption);
+  overflow-wrap: anywhere;
+}
+
+.role-detail__journal {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.role-detail__journal-item {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+  padding: 6px 8px;
+  border-radius: var(--radius-control);
+  background: var(--color-surface);
+  font-size: var(--font-size-caption);
+  line-height: var(--line-height-caption);
+}
+
+.role-detail__journal-time {
+  flex-shrink: 0;
+  color: var(--color-muted);
+  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  white-space: nowrap;
+}
+
+.role-detail__journal-text {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
 /* Harness 实例区 */
 .harness-section {
   display: flex;

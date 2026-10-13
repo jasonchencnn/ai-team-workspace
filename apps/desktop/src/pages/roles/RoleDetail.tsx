@@ -11,6 +11,7 @@ import {
 } from "../../components/index.js";
 import type { HarnessInstance } from "../../bindings/HarnessInstance.js";
 import type { RoleView } from "../../bindings/RoleView.js";
+import { RoleFolderSection } from "./roleFolder.js";
 import { useRoleMutations } from "./useRoleMutations.js";
 import {
   TEST_HARNESS_LABEL,
@@ -30,7 +31,7 @@ export interface RoleDetailProps {
   onPickToggle: () => void;
 }
 
-/** 右侧选中岗位详情：固定身份、职责与工作约定、当前绑定与更换。 */
+/** 右侧选中岗位详情：固定身份、职责与工作约定、当前绑定与更换、岗位文件夹与工作日志。 */
 export function RoleDetail({
   teamId,
   view,
@@ -227,6 +228,8 @@ export function RoleDetail({
           ) : null}
         </div>
       ) : null}
+
+      <RoleFolderSection teamId={teamId} view={view} />
 
       <p className="role-detail__hint">
         岗位身份与绑定分离：更换 Harness 不会改变岗位、任务编号或历史记录。

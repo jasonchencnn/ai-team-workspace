@@ -17,6 +17,7 @@ import {
   Tag,
 } from "../../components/index.js";
 import type { TagTone } from "../../components/index.js";
+import { useRevealRoleFolder } from "../roles/roleFolder.js";
 import { formatLocalDateTime } from "./formatLocalDateTime.js";
 import "./team-home.css";
 
@@ -65,6 +66,8 @@ export function TeamHomePage() {
     queryFn: () => getTeamOverview(key),
     enabled: teamId !== undefined,
   });
+
+  const revealFolder = useRevealRoleFolder();
 
   if (overview.isPending) {
     return <Spinner label="正在加载团队空间" />;
@@ -153,10 +156,29 @@ export function TeamHomePage() {
                 {item.openTaskCount > 0 ? (
                   <p className="th-note">未结束任务 {item.openTaskCount}</p>
                 ) : null}
+                <div className="th-role__folder">
+                  <Button
+                    variant="subtle"
+                    title={item.folder ?? "岗位文件夹尚未建立"}
+                    loading={revealFolder.isPending && revealFolder.variables === item.role.id}
+                    onClick={() => {
+                      revealFolder.mutate(item.role.id);
+                    }}
+                  >
+                    岗位文件夹
+                  </Button>
+                  {item.folderProblem === null ? null : (
+                    <span className="th-role__folder-warn" title={item.folderProblem}>
+                      文件夹不可用
+                    </span>
+                  )}
+                </div>
               </div>
             </Card>
           ))
         )}
+
+        {revealFolder.error === null ? null : <ErrorBanner error={revealFolder.error} />}
       </section>
 
       <div className="th-panels">
