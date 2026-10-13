@@ -3,7 +3,9 @@ import { useMutation, useQuery } from "@tanstack/react-query";
 import { getRoleFolder, revealRoleFolder } from "../../api/commands.js";
 import { queryKeys } from "../../api/queryKeys.js";
 import type { RoleView } from "../../bindings/RoleView.js";
-import { Button, Card, ErrorBanner, Spinner } from "../../components/index.js";
+import { Link } from "react-router";
+import { Button, ErrorBanner, Spinner } from "../../components/index.js";
+import { roleWorkbenchPath } from "./rolesNav.js";
 
 /** 工作日志取最近 20 条，与内核 `DEFAULT_JOURNAL_LIMIT` 一致。 */
 const JOURNAL_LIMIT = 20;
@@ -36,127 +38,62 @@ export function splitJournalLine(line: string): { time: string; text: string } {
   return { time: line.slice(0, at), text: line.slice(at + 3) };
 }
 
-export interface RoleFolderSectionProps {
+export interface RoleFolderLineProps {
   teamId: string;
   view: RoleView;
 }
 
-/** 岗位详情里的「岗位文件夹」区块：相对路径、打开按钮、文件夹问题说明与最近工作日志。 */
-export function RoleFolderSection({ teamId, view }: RoleFolderSectionProps) {
+/**
+ * 岗位详情里的岗位文件夹入口：只保留一行路径与「打开岗位工作台」。
+ * 工作日志、过程文件和文件夹问题的完整视图都在岗位工作台上，这里不再重复。
+ */
+export function RoleFolderLine({ teamId, view }: RoleFolderLineProps) {
   const roleId = view.role.id;
   const folder = useQuery({
     queryKey: roleFolderKey(teamId, roleId),
     queryFn: () => getRoleFolder(roleId, JOURNAL_LIMIT),
   });
-  const reveal = useRevealRoleFolder();
 
-  const data = folder.data;
-  const relative = data?.relativePath ?? view.folder;
-  const absolute = data?.path ?? null;
-  // 岗位列表带回的同步失败（view.folderProblem）与本次查询读到的失败（data.problem）
-  // 是两个来源，都可能是中文说明，去重后一起显示。
-  const problems = [...new Set([view.folderProblem, data?.problem ?? null])].filter(
-    (item): item is string => item !== null,
-  );
-  const journal = data?.journal ?? [];
-  const headingId = `role-folder-heading-${roleId}`;
+  const relative = folder.data?.relativePath ?? view.folder;
+  const problem = folder.data?.problem ?? view.folderProblem;
 
   return (
-    <section className="role-detail__folder" aria-labelledby={headingId}>
-      <h3 className="role-detail__folder-title" id={headingId}>
-        岗位文件夹
-      </h3>
-
-      {problems.length === 0 ? null : (
-        <Card tone="warning" title="岗位文件夹不可用">
-          {problems.map((problem) => (
-            <p key={problem} className="role-detail__folder-problem">
+    <section className="role-detail__folder" aria-label="岗位文件夹">
+      {folder.isPending ? (
+        <Spinner label="正在读取岗位文件夹" />
+      ) : (
+        <>
+          <p className="role-detail__folder-path" title={folder.data?.path ?? undefined}>
+            <span className="nowrap">路径：</span>
+            <span>{relative ?? "尚未建立"}</span>
+          </p>
+          {problem === null ? null : (
+            <p className="role-detail__folder-problem" title={problem}>
               {problem}
             </p>
-          ))}
-        </Card>
+          )}
+        </>
       )}
-
-      <div className="role-detail__folder-body">
-        {folder.isPending ? (
-          <Spinner label="正在读取岗位文件夹" />
-        ) : folder.isError ? (
-          <ErrorBanner
-            error={folder.error}
-            action={
-              <Button
-                variant="neutral"
-                onClick={() => {
-                  void folder.refetch();
-                }}
-              >
-                重试
-              </Button>
-            }
-          />
-        ) : (
-          <>
-            <p className="role-detail__folder-path">
-              <span className="nowrap">路径：</span>
-              <span>{relative ?? "尚未建立"}</span>
-            </p>
-            {absolute === null ? null : (
-              <p className="role-detail__folder-abs" title={absolute}>
-                {absolute}
-              </p>
-            )}
-
-            <div className="role-detail__folder-actions">
-              {/* 文件夹不存在时仍然可点：内核会说明具体原因，比一个点不动的按钮更有用。 */}
-              <Button
-                variant="neutral"
-                loading={reveal.isPending}
-                onClick={() => {
-                  reveal.mutate(roleId);
-                }}
-              >
-                在 Finder 中打开
-              </Button>
-              {data?.exists === false ? (
-                <span className="role-detail__folder-state">文件夹尚不存在</span>
-              ) : null}
-            </div>
-
-            {reveal.error === null ? null : <ErrorBanner error={reveal.error} />}
-
-            <h4 className="role-detail__folder-subtitle">工作日志</h4>
-            {journal.length === 0 ? (
-              <p className="role-detail__folder-empty">暂无记录</p>
-            ) : (
-              <>
-                <p className="role-detail__folder-note">
-                  共 {String(journal.length)} 条，最新的在最前。
-                </p>
-                <ol className="role-detail__journal">
-                  {journal.map((line, index) => {
-                    const entry = splitJournalLine(line);
-                    return (
-                      <li
-                        key={`${String(index)}-${entry.time}`}
-                        className="role-detail__journal-item"
-                      >
-                        {entry.time === "" ? null : (
-                          <span className="role-detail__journal-time">{entry.time}</span>
-                        )}
-                        <span className="role-detail__journal-text">{entry.text}</span>
-                      </li>
-                    );
-                  })}
-                </ol>
-              </>
-            )}
-          </>
-        )}
-
-        <p className="role-detail__folder-hint">
-          更换 Harness 时，新的执行者会先阅读这个文件夹，了解岗位进展。
-        </p>
+      <div className="role-detail__folder-actions">
+        <Link className="ui-button ui-button--neutral" to={roleWorkbenchPath(teamId, roleId)}>
+          打开岗位工作台
+        </Link>
       </div>
+      {folder.error === null ? null : (
+        <ErrorBanner
+          error={folder.error}
+          action={
+            <Button
+              variant="neutral"
+              onClick={() => {
+                void folder.refetch();
+              }}
+            >
+              重试
+            </Button>
+          }
+        />
+      )}
     </section>
   );
 }

@@ -1,0 +1,258 @@
+/* 岗位工作台：面包屑 + 页头元信息 + 左（任务、日志）右（绑定、文件夹、文件）两栏。
+   颜色、字号、间距、圆角只使用 theme.css 的变量。 */
+
+.rw-page {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-section);
+}
+
+/* 顶栏只有「工作空间 / 团队」两级，第三级岗位名在这里补上。 */
+.rw-crumbs {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  color: var(--color-muted);
+  font-size: var(--font-size-caption);
+  line-height: var(--line-height-caption);
+}
+
+.rw-crumbs [aria-current="page"] {
+  color: var(--color-ink);
+}
+
+.rw-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 16px;
+  color: var(--color-muted);
+  font-size: var(--font-size-caption);
+  line-height: var(--line-height-caption);
+}
+
+.rw-meta__item {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+}
+
+.rw-meta__label {
+  color: var(--color-muted);
+}
+
+.rw-meta__prefix {
+  font-weight: 500;
+}
+
+.rw-meta__code {
+  color: var(--color-muted);
+  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+}
+
+.rw-columns {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--space-section);
+  align-items: start;
+}
+
+@media (min-width: 1080px) {
+  .rw-columns {
+    grid-template-columns: minmax(0, 1.7fr) minmax(0, 1fr);
+  }
+}
+
+.rw-column {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-section);
+  min-width: 0;
+}
+
+.rw-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+}
+
+.rw-panel__head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.rw-panel__title {
+  font-size: var(--font-size-section-title);
+  font-weight: 700;
+  line-height: var(--line-height-section-title);
+}
+
+.rw-panel__subtitle {
+  font-weight: 600;
+}
+
+.rw-note {
+  min-width: 0;
+  color: var(--color-muted);
+  overflow-wrap: anywhere;
+}
+
+.rw-note--warn {
+  color: var(--color-warning);
+}
+
+.rw-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+/* 路径按任意位置折行，完整值放在 title 里，不越出面板。 */
+.rw-path {
+  min-width: 0;
+  padding: 8px 12px;
+  border-radius: var(--radius-control);
+  background: var(--color-canvas);
+  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  overflow-wrap: anywhere;
+}
+
+/* 最近任务：编号、标题、状态、更新时间 */
+.rw-task-list,
+.rw-file-list,
+.rw-journal {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.rw-task-row,
+.rw-file-row {
+  display: grid;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  padding: 12px 16px;
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius-control);
+  background: var(--color-surface);
+  text-align: left;
+  cursor: pointer;
+}
+
+.rw-task-row {
+  grid-template-columns: max-content minmax(0, 1fr) max-content max-content;
+}
+
+.rw-file-row {
+  grid-template-columns: auto minmax(0, 1fr) max-content;
+}
+
+.rw-task-row:hover,
+.rw-file-row:hover {
+  background: var(--color-canvas);
+}
+
+.rw-task-row__key {
+  color: var(--color-brand);
+  font-size: var(--font-size-caption);
+}
+
+.rw-task-row__title,
+.rw-file-row__name {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.rw-task-row__time,
+.rw-file-row__time {
+  color: var(--color-muted);
+  font-size: var(--font-size-caption);
+  white-space: nowrap;
+}
+
+/* 工作日志时间线 */
+.rw-journal {
+  gap: 10px;
+  max-height: 420px;
+  overflow-y: auto;
+}
+
+.rw-journal-item {
+  display: grid;
+  grid-template-columns: max-content max-content minmax(0, 1fr);
+  align-items: baseline;
+  gap: 10px;
+  min-width: 0;
+}
+
+.rw-journal-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: var(--radius-pill);
+  background: var(--color-brand);
+}
+
+.rw-journal-time {
+  color: var(--color-muted);
+  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  font-size: var(--font-size-caption);
+  white-space: nowrap;
+}
+
+.rw-journal-text {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+/* 当前绑定 */
+.rw-binding__name,
+.rw-binding__unbound {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.rw-binding__label {
+  min-width: 0;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.rw-facts {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 0;
+}
+
+.rw-fact {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  align-items: baseline;
+  gap: 12px;
+  min-width: 0;
+}
+
+.rw-fact__key {
+  color: var(--color-muted);
+  font-size: var(--font-size-caption);
+}
+
+.rw-fact__value {
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
+  text-align: right;
+}

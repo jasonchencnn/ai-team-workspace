@@ -1,4 +1,4 @@
-import { NavLink, useParams } from "react-router";
+import { NavLink, useLocation, useParams } from "react-router";
 import { TeamSwitcher } from "./TeamSwitcher.js";
 
 interface NavEntry {
@@ -7,10 +7,18 @@ interface NavEntry {
   to?: string;
   end?: boolean;
   note?: string;
+  /**
+   * 额外的高亮匹配：岗位工作台是团队空间下的岗位子页，
+   * 侧边导航仍应高亮「团队空间」。
+   */
+  alsoMatch?: (pathname: string) => boolean;
 }
 
+/** 岗位工作台：/teams/:teamId/roles/:roleId/workbench */
+const WORKBENCH_PATH = /^\/teams\/[^/]+\/roles\/[^/]+\/workbench\/?$/;
+
 const NAV_ENTRIES: NavEntry[] = [
-  { label: "团队空间", to: "", end: true },
+  { label: "团队空间", to: "", end: true, alsoMatch: (path) => WORKBENCH_PATH.test(path) },
   { label: "任务面板", to: "/tasks" },
   { label: "共享文件", note: "M3 提供" },
   { label: "岗位与绑定", to: "/roles" },
@@ -38,6 +46,7 @@ function DisabledItem({ id, label, note }: { id: string; label: string; note: st
 
 export function Sidebar() {
   const { teamId } = useParams();
+  const location = useLocation();
 
   return (
     <aside className="sidebar">
@@ -74,7 +83,11 @@ export function Sidebar() {
               key={entry.label}
               to={`/teams/${teamId}${entry.to}`}
               end={entry.end ?? false}
-              className={({ isActive }) => (isActive ? "nav-item nav-item--active" : "nav-item")}
+              className={({ isActive }) =>
+                isActive || (entry.alsoMatch?.(location.pathname) ?? false)
+                  ? "nav-item nav-item--active"
+                  : "nav-item"
+              }
             >
               {entry.label}
             </NavLink>

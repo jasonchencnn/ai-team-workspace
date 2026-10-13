@@ -1,10 +1,9 @@
 import { useQuery } from "@tanstack/react-query";
-import { useNavigate, useParams } from "react-router";
+import { Link, useNavigate, useParams } from "react-router";
 
 import { getTeamOverview } from "../../api/commands.js";
 import { queryKeys } from "../../api/queryKeys.js";
 import type { AcpPreset } from "../../bindings/AcpPreset.js";
-import type { HandshakeStatus } from "../../bindings/HandshakeStatus.js";
 import type { TaskStatus } from "../../bindings/TaskStatus.js";
 import {
   Button,
@@ -18,10 +17,12 @@ import {
 } from "../../components/index.js";
 import type { TagTone } from "../../components/index.js";
 import { useRevealRoleFolder } from "../roles/roleFolder.js";
+import { roleWorkbenchPath } from "../roles/rolesNav.js";
+import { healthLabel, healthTone } from "../harness-detail/harnessFormat.js";
 import { formatLocalDateTime } from "./formatLocalDateTime.js";
 import "./team-home.css";
 
-/** Harness 类型的中文展示名；mock 是测试用执行器，标注出来避免误当成真实执行环境。 */
+/** Harness 预设的中文展示名；mock 是测试用执行器，标注出来避免误当成真实执行环境。 */
 const HARNESS_LABEL: Record<AcpPreset, string> = {
   claude_code: "Claude Code",
   codex: "Codex",
@@ -29,20 +30,6 @@ const HARNESS_LABEL: Record<AcpPreset, string> = {
   gemini_cli: "Gemini CLI",
   custom: "自定义 ACP Agent",
   mock: "Mock（测试用）",
-};
-
-const HEALTH_TONE: Record<HandshakeStatus, TagTone> = {
-  connected: "success",
-  needs_auth: "warning",
-  error: "danger",
-  unknown: "neutral",
-};
-
-const HEALTH_LABEL: Record<HandshakeStatus, string> = {
-  connected: "已连接",
-  needs_auth: "需要登录",
-  error: "异常",
-  unknown: "未检测",
 };
 
 const STATUS_TONE: Record<TaskStatus, TagTone> = {
@@ -138,7 +125,15 @@ export function TeamHomePage() {
           </Panel>
         ) : (
           data.roles.map((item) => (
-            <Card key={item.role.id} title={item.role.name} className="th-role">
+            <Card
+              key={item.role.id}
+              className="th-role th-role--linked"
+              title={
+                <Link className="th-role__link" to={roleWorkbenchPath(data.team.id, item.role.id)}>
+                  {item.role.name}
+                </Link>
+              }
+            >
               <div className="th-stack">
                 {item.harness === null ? (
                   <p>未绑定 Harness · 暂不派工</p>
@@ -149,8 +144,8 @@ export function TeamHomePage() {
                       {item.harness.name === "" ? "" : ` · ${item.harness.name}`}
                     </p>
                     <div className="th-health">
-                      <Tag tone={HEALTH_TONE[item.harness.handshake.status]}>
-                        {HEALTH_LABEL[item.harness.handshake.status]}
+                      <Tag tone={healthTone(item.harness.handshake.status)}>
+                        {healthLabel(item.harness.handshake.status)}
                       </Tag>
                       {item.harness.handshake.detail ? (
                         <span className="th-note">{item.harness.handshake.detail}</span>
@@ -161,6 +156,7 @@ export function TeamHomePage() {
                 {item.openTaskCount > 0 ? (
                   <p className="th-note">未结束任务 {item.openTaskCount}</p>
                 ) : null}
+                {/* 「岗位文件夹」在卡片里是独立操作，叠在整卡链接之上，不跟着跳转到工作台。 */}
                 <div className="th-role__folder">
                   <Button
                     variant="subtle"

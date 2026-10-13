@@ -1,5 +1,5 @@
-// Harness 预设、握手状态的中文标签与时间格式化：岗位页与 Harness 详情页共用同一套文案。
-// M1.3-03 只做了 ACP 契约的最小编译适配，页面由 M1.3-04 按 Figma 重做。
+// Harness 预设、握手状态的中文标签与时间格式化：岗位工作台、岗位页与接入详情页共用同一套文案。
+import type { AcpCapabilities } from "../../bindings/AcpCapabilities.js";
 import type { AcpPreset } from "../../bindings/AcpPreset.js";
 import type { Handshake } from "../../bindings/Handshake.js";
 import type { HandshakeStatus } from "../../bindings/HandshakeStatus.js";
@@ -26,6 +26,79 @@ export function isTestHarness(kind: AcpPreset): boolean {
 /** 测试用实例的标签文案。 */
 export const TEST_HARNESS_LABEL = "测试用";
 
+/**
+ * 预设标签：岗位工作台与接入列表上的胶囊文案，如 `Claude Code · ACP`。
+ * 真实预设说明它们是经适配器接入 ACP 的 Agent；自定义与 Mock 单独措辞。
+ */
+export function presetTagLabel(kind: AcpPreset): string {
+  switch (kind) {
+    case "claude_code":
+      return "Claude Code · ACP";
+    case "codex":
+      return "Codex · ACP";
+    case "minimax_code":
+      return "MiniMax Code · ACP";
+    case "gemini_cli":
+      return "Gemini CLI · ACP";
+    case "custom":
+      return "自定义 ACP Agent";
+    case "mock":
+      return `Mock ${TEST_HARNESS_LABEL}`;
+  }
+}
+
+/**
+ * 握手声明的能力标签（如「加载会话」「图片输入」「MCP」）。
+ * 未握手成功时能力为 null，此时没有标签可展示。
+ */
+export function capabilityLabels(capabilities: AcpCapabilities | null): string[] {
+  if (capabilities === null) {
+    return [];
+  }
+  const labels: string[] = [];
+  if (capabilities.loadSession) {
+    labels.push("加载会话");
+  }
+  if (capabilities.image) {
+    labels.push("图片输入");
+  }
+  if (capabilities.audio) {
+    labels.push("音频输入");
+  }
+  if (capabilities.embeddedContext) {
+    labels.push("嵌入上下文");
+  }
+  if (capabilities.mcpHttp) {
+    labels.push("MCP(HTTP)");
+  }
+  if (capabilities.mcpSse) {
+    labels.push("MCP(SSE)");
+  }
+  return labels;
+}
+
+/** ACP 协议版本的展示文案，如 `ACP v1`；未握手成功时为 null。 */
+export function protocolVersionLabel(handshake: Handshake): string | null {
+  return handshake.protocolVersion === null ? null : `ACP v${String(handshake.protocolVersion)}`;
+}
+
+/**
+ * 握手状态的补充说明：已连接时说明可以派工，需要登录时提示去对应工具登录，
+ * 异常时说明去接入列表看错误，未检查时说明尚未做过握手检查。
+ */
+export function handshakeHint(status: HandshakeStatus): string {
+  switch (status) {
+    case "connected":
+      return "握手成功，可以派工。";
+    case "needs_auth":
+      return "Agent 要求登录，请在对应工具中完成登录后重新检查。";
+    case "error":
+      return "启动或握手失败，查看接入列表中的错误说明。";
+    case "unknown":
+      return "尚未做过握手检查。";
+  }
+}
+
 const HEALTH_LABELS: Record<HandshakeStatus, string> = {
   connected: "已连接",
   needs_auth: "需要登录",
@@ -40,7 +113,7 @@ export function healthLabel(status: HandshakeStatus): string {
 const HEALTH_TONES: Record<HandshakeStatus, TagTone> = {
   connected: "success",
   needs_auth: "warning",
-  error: "warning",
+  error: "danger",
   unknown: "neutral",
 };
 
@@ -95,11 +168,6 @@ export function formatDate(iso: string | null): string {
     return "—";
   }
   return `${String(date.getFullYear())}.${pad(date.getMonth() + 1)}.${pad(date.getDate())}`;
-}
-
-/** 实例的 CLI 版本；尚未检测到时统一占位为「未检测」，卡片与详情页共用同一措辞。 */
-export function formatVersion(version: string | null): string {
-  return version ?? "未检测";
 }
 
 /** 「12 秒前」这类相对时间；从未检查过时返回「从未检查」，与状态标签「未检查」区分。 */

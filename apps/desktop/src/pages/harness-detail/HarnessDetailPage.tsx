@@ -16,19 +16,24 @@ import {
   Tag,
 } from "../../components/index.js";
 import type { HarnessInstance } from "../../bindings/HarnessInstance.js";
-import { harnessListPath } from "../roles/RolesPage.js";
+import { harnessListPath } from "../roles/rolesNav.js";
 import {
   TEST_HARNESS_LABEL,
-  formatDateTime,
-  formatVersion,
-  harnessKindLabel,
   agentVersion,
+  capabilityLabels,
+  commandLine,
+  formatDateTime,
   healthLabel,
   healthTone,
-  splitArgs,
   isTestHarness,
+  presetTagLabel,
+  protocolVersionLabel,
+  splitArgs,
 } from "./harnessFormat.js";
 import "./harness-detail.css";
+
+/** 载入中、载入失败与找不到实例时共用同一个页头，避免三种状态各写一份。 */
+const PAGE_TITLE = "Harness 接入";
 
 export function HarnessDetailPage() {
   const { teamId, harnessId } = useParams();
@@ -52,7 +57,7 @@ export function HarnessDetailPage() {
     },
   });
 
-  // 「返回」落回岗位页的 Harness 实例视图，与页头文案一致。
+  // 「返回」落回岗位页的 Harness 接入页签，与页头文案一致。
   const backToHarnesses = () => {
     if (teamId !== undefined) {
       void navigate(harnessListPath(teamId));
@@ -61,7 +66,7 @@ export function HarnessDetailPage() {
 
   const backButton = (
     <Button variant="neutral" onClick={backToHarnesses}>
-      返回实例列表
+      返回接入列表
     </Button>
   );
 
@@ -72,9 +77,9 @@ export function HarnessDetailPage() {
   if (harnessesQuery.isPending) {
     return (
       <>
-        <PageHeader title="Harness 注册与健康检查" actions={backButton} />
+        <PageHeader title={PAGE_TITLE} actions={backButton} />
         <Panel>
-          <Spinner label="正在加载实例" />
+          <Spinner label="正在加载接入" />
         </Panel>
       </>
     );
@@ -83,7 +88,7 @@ export function HarnessDetailPage() {
   if (harnessesQuery.error !== null) {
     return (
       <>
-        <PageHeader title="Harness 注册与健康检查" actions={backButton} />
+        <PageHeader title={PAGE_TITLE} actions={backButton} />
         <ErrorBanner
           error={harnessesQuery.error}
           action={
@@ -104,13 +109,13 @@ export function HarnessDetailPage() {
   if (harness === null) {
     return (
       <>
-        <PageHeader title="Harness 注册与健康检查" actions={backButton} />
+        <PageHeader title={PAGE_TITLE} actions={backButton} />
         <EmptyState
-          title="找不到该实例"
+          title="找不到该接入"
           description="它可能已被归档。"
           action={
             <Button variant="neutral" onClick={backToHarnesses}>
-              返回实例列表
+              返回接入列表
             </Button>
           }
         />
@@ -183,6 +188,9 @@ function HarnessDetailView({
   });
 
   const health = harness.handshake;
+  const protocol = protocolVersionLabel(health);
+  const capabilities = capabilityLabels(health.capabilities);
+  const agent = health.agent;
 
   const dirty =
     name !== harness.name ||
@@ -193,18 +201,18 @@ function HarnessDetailView({
   return (
     <div className="harness-detail">
       <PageHeader
-        title={`${harness.name} · Harness 设置`}
-        description="实例可替换，岗位身份与权限保持稳定；敏感凭据只保留安全引用。"
+        title={`${harness.name} · ACP 接入设置`}
+        description="接入可替换，岗位身份与权限保持稳定；敏感凭据只保留安全引用。"
         actions={
           <Button variant="neutral" onClick={onBack}>
-            返回实例列表
+            返回接入列表
           </Button>
         }
       />
 
       <div className="harness-detail__columns">
         <Panel className="harness-detail__connection">
-          <h2 className="harness-detail__title">连接设置</h2>
+          <h2 className="harness-detail__title">启动配置</h2>
 
           <InputField
             label="实例名称"
@@ -214,9 +222,9 @@ function HarnessDetailView({
               setName(event.target.value);
             }}
           />
-          <SelectField label="类型" value={harness.preset} disabled hint="创建后不可修改。">
+          <SelectField label="预设" value={harness.preset} disabled hint="创建后不可修改。">
             <option value={harness.preset}>
-              {harnessKindLabel(harness.preset)}
+              {presetTagLabel(harness.preset)}
               {isTestHarness(harness.preset) ? `（${TEST_HARNESS_LABEL}）` : ""}
             </option>
           </SelectField>
@@ -254,15 +262,15 @@ function HarnessDetailView({
               saveMutation.mutate();
             }}
           >
-            保存连接
+            保存启动配置
           </Button>
         </Panel>
 
         <Panel className="harness-detail__health">
-          <h2 className="harness-detail__title">健康检查结果</h2>
+          <h2 className="harness-detail__title">握手结果</h2>
 
           <p className="harness-detail__instance">
-            实例 {harness.name} · {harnessKindLabel(harness.preset)}
+            实例 {harness.name} · {presetTagLabel(harness.preset)}
             {isTestHarness(harness.preset) ? `（${TEST_HARNESS_LABEL}）` : ""}
           </p>
 
@@ -273,11 +281,40 @@ function HarnessDetailView({
             </span>
           </div>
 
+          <dl className="harness-detail__facts">
+            <div className="harness-detail__fact">
+              <dt className="harness-detail__key">协议版本</dt>
+              <dd className="harness-detail__value">{protocol ?? "—"}</dd>
+            </div>
+            <div className="harness-detail__fact">
+              <dt className="harness-detail__key">Agent 名称</dt>
+              <dd className="harness-detail__value">{agent?.name ?? "—"}</dd>
+            </div>
+            <div className="harness-detail__fact">
+              <dt className="harness-detail__key">Agent 版本</dt>
+              <dd className="harness-detail__value">{agentVersion(health) ?? "—"}</dd>
+            </div>
+            <div className="harness-detail__fact">
+              <dt className="harness-detail__key">登录方式</dt>
+              <dd className="harness-detail__value">
+                {health.authMethods.length === 0 ? "—" : health.authMethods.join("、")}
+              </dd>
+            </div>
+            <div className="harness-detail__fact">
+              <dt className="harness-detail__key">能力</dt>
+              <dd className="harness-detail__value harness-detail__capabilities">
+                {capabilities.length === 0 ? "—" : capabilities.join("、")}
+              </dd>
+            </div>
+          </dl>
+
           {health.detail === null ? null : (
             <p className="harness-detail__detail">{health.detail}</p>
           )}
 
-          <p className="harness-detail__version">版本：{formatVersion(agentVersion(health))}</p>
+          <p className="harness-detail__version">
+            启动命令：{commandLine(harness.command, harness.args)}
+          </p>
 
           {checkError === null ? null : <ErrorBanner error={checkError} />}
 
@@ -288,7 +325,7 @@ function HarnessDetailView({
               onCheck(harness.id);
             }}
           >
-            重新健康检查
+            握手检查
           </Button>
         </Panel>
       </div>
@@ -296,7 +333,8 @@ function HarnessDetailView({
       <Panel className="harness-detail__scope">
         <h2 className="harness-detail__title">安全与生效范围</h2>
         <p className="harness-detail__scope-text">
-          平台不保存任何密钥，登录由各 CLI 自己管理。保存连接只更新实例配置，不改变岗位和任务历史。
+          平台不保存任何密钥，登录由各 Agent
+          自己管理。保存启动配置只更新接入配置，握手状态会重置为「未检查」，不改变岗位和任务历史。
         </p>
       </Panel>
 
@@ -310,7 +348,7 @@ function HarnessDetailView({
             archiveMutation.mutate();
           }}
         >
-          归档实例
+          归档接入
         </Button>
       </div>
     </div>

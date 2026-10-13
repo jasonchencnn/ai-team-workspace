@@ -62,8 +62,39 @@
   color: var(--color-muted);
 }
 
+/* 整卡可点进入岗位工作台：标题里的链接铺满卡片，卡片内其他操作叠在链接之上。 */
+.th-role--linked {
+  position: relative;
+}
+
+.th-role--linked:hover {
+  border-color: var(--color-brand);
+}
+
+.th-role__link {
+  color: inherit;
+  overflow-wrap: anywhere;
+}
+
+.th-role__link::after {
+  position: absolute;
+  inset: 0;
+  content: "";
+}
+
+.th-role__link:focus-visible {
+  outline: none;
+}
+
+.th-role--linked:has(.th-role__link:focus-visible) {
+  outline: 2px solid var(--color-brand);
+  outline-offset: 2px;
+}
+
 /* 岗位卡片上的岗位文件夹入口 */
 .th-role__folder {
+  position: relative;
+  z-index: 1;
   display: flex;
   flex-wrap: wrap;
   align-items: center;

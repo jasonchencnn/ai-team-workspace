@@ -16,16 +16,10 @@ import { HarnessInstancesSection } from "./HarnessInstancesSection.js";
 import { RoleCreateForm } from "./RoleCreateForm.js";
 import { RoleDetail } from "./RoleDetail.js";
 import { RoleList } from "./RoleList.js";
+import { HARNESS_TAB_PARAM } from "./rolesNav.js";
 import "./roles.css";
 
-/** 岗位页内的两个视图：岗位列表/详情，以及 Harness 实例。用 `?tab=` 记住当前视图。 */
-export const HARNESS_TAB_PARAM = "harness";
-
-/** Harness 详情页的「返回」应落回实例列表视图。 */
-export function harnessListPath(teamId: string): string {
-  return `/teams/${teamId}/roles?tab=${HARNESS_TAB_PARAM}`;
-}
-
+/** 岗位页内的两个视图：岗位列表/详情，以及 Harness 接入。用 `?tab=` 记住当前视图。 */
 export function RolesPage() {
   const { teamId } = useParams();
 
@@ -39,9 +33,11 @@ export function RolesPage() {
 function RolesView({ teamId }: { teamId: string }) {
   const [searchParams, setSearchParams] = useSearchParams();
   const showHarnesses = searchParams.get("tab") === HARNESS_TAB_PARAM;
+  // 岗位工作台的「换绑 Harness」带着 role 参数跳进来：选中该岗位并直接展开绑定选择。
+  const requestedRoleId = searchParams.get("role");
 
-  const [selectedRoleId, setSelectedRoleId] = useState<string | null>(null);
-  const [pickingFor, setPickingFor] = useState<string | null>(null);
+  const [selectedRoleId, setSelectedRoleId] = useState<string | null>(requestedRoleId);
+  const [pickingFor, setPickingFor] = useState<string | null>(requestedRoleId);
   const [creating, setCreating] = useState(false);
 
   const rolesQuery = useQuery({
@@ -62,14 +58,17 @@ function RolesView({ teamId }: { teamId: string }) {
       setSearchParams({ tab: HARNESS_TAB_PARAM });
       return;
     }
-    setSearchParams({});
+    setSearchParams(requestedRoleId === null ? {} : { role: requestedRoleId });
   };
 
   return (
     <div className="roles-page">
-      <PageHeader title="岗位与绑定" description="岗位由你自定义，执行工具可以随时调整。" />
+      <PageHeader
+        title="岗位与绑定"
+        description="岗位身份长期保留；执行用的 Harness 通过 ACP 接入，可以随时调整。"
+      />
 
-      <div className="roles-tabs" role="tablist" aria-label="岗位与 Harness 实例">
+      <div className="roles-tabs" role="tablist" aria-label="岗位与 Harness 接入">
         <button
           type="button"
           role="tab"
@@ -90,7 +89,7 @@ function RolesView({ teamId }: { teamId: string }) {
             selectTab("harness");
           }}
         >
-          Harness 实例
+          Harness 接入
         </button>
       </div>
 
@@ -98,6 +97,7 @@ function RolesView({ teamId }: { teamId: string }) {
         <HarnessInstancesSection
           teamId={teamId}
           harnesses={harnesses}
+          roles={roles}
           isPending={harnessesQuery.isPending}
           error={harnessesQuery.error}
           onRetry={() => {
