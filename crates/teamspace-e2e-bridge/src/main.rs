@@ -7,6 +7,8 @@
 //! 执行事件（Tauri 中由 `app.emit` 推送）在这里缓存在内存里，浏览器端用桥接专用命令
 //! `__poll_run_events`（参数 `{ after: number }`，返回 `{ events: [{ seq, event }], next }`）轮询，
 //! 再交给 mock 的事件系统分发给 `listen` 的订阅者，前端代码无需区分。
+//! 测试专用命令 `__simulate_restart`：等同应用退出时的收尾（终止所有 Agent 进程，把进行中的执行标记为
+//! 已中断），用来验证「已中断」状态与续接、重新执行、标记为失败。
 //! 不属于正式应用。
 
 use std::io::{BufRead, BufReader, Read, Write};
@@ -256,6 +258,10 @@ fn dispatch(ts: &Teamspace, cmd: &str, args: &Value) -> CmdResult {
         "list_runs" => out(ts.list_runs(&arg::<String>(args, "taskId")?)),
         "list_run_updates" => out(ts.list_run_updates(arg(args, "input")?)),
         "respond_permission" => out(ts.respond_permission(arg(args, "input")?)),
+        "__simulate_restart" => {
+            ts.shutdown();
+            Ok(Value::Null)
+        }
         "list_events" => out(ts.list_events(arg(args, "input")?)),
         other => Err(bad(format!("未知命令：{other}"))),
     }

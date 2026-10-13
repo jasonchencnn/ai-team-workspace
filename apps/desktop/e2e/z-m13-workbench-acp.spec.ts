@@ -109,14 +109,25 @@ test("创建工作台团队：两个岗位，职责与工作约定写入", async
   await shot(page, "team-created-roles");
 });
 
-test("ACP 接入：新建接入的预设网格显示 6 个预设与本机检测标签", async ({ page }) => {
+test("ACP 接入：新建接入的预设网格显示 12 个预设与本机检测标签", async ({ page }) => {
   await openHarnessTab(page);
   await expect(page.getByText("本团队还没有接入")).toBeVisible();
   await page.getByRole("button", { name: "新建接入" }).click();
 
   const grid = page.locator(".acp-preset-grid");
-  await expect(grid.locator(".acp-preset")).toHaveCount(6);
-  for (const label of ["Claude Code", "Codex", "MiniMax Code", "Gemini CLI"]) {
+  await expect(grid.locator(".acp-preset")).toHaveCount(12);
+  for (const label of [
+    "Claude Code",
+    "Codex",
+    "MiniMax Code",
+    "Gemini CLI",
+    "CodeBuddy",
+    "Qoder CLI",
+    "Grok Build",
+    "Qwen Code",
+    "Kimi CLI",
+    "OpenCode",
+  ]) {
     await expect(grid.locator(".acp-preset", { hasText: label })).toContainText(
       /本机已检测到|未检测到/,
     );

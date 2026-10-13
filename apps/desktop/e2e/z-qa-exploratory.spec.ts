@@ -105,7 +105,7 @@ async function gotoTeam(page: Page, path = ""): Promise<string> {
 
 test.describe.configure({ mode: "serial" });
 
-test("01. 新建接入：预设网格显示 6 个预设与本机检测标签", async ({ page }) => {
+test("01. 新建接入：预设网格显示 12 个预设与本机检测标签", async ({ page }) => {
   await gotoTeam(page, "/roles?tab=harness");
   await expect(page.getByRole("tab", { name: "Harness 接入" })).toHaveAttribute(
     "aria-selected",
@@ -120,8 +120,19 @@ test("01. 新建接入：预设网格显示 6 个预设与本机检测标签", a
   await page.getByRole("button", { name: "新建接入" }).click();
   const grid = page.locator(".acp-preset-grid");
   await expect(grid).toBeVisible();
-  await expect(grid.locator(".acp-preset")).toHaveCount(6);
-  for (const label of ["Claude Code", "Codex", "MiniMax Code", "Gemini CLI"]) {
+  await expect(grid.locator(".acp-preset")).toHaveCount(12);
+  for (const label of [
+    "Claude Code",
+    "Codex",
+    "MiniMax Code",
+    "Gemini CLI",
+    "CodeBuddy",
+    "Qoder CLI",
+    "Grok Build",
+    "Qwen Code",
+    "Kimi CLI",
+    "OpenCode",
+  ]) {
     await expect(grid.locator(".acp-preset", { hasText: label })).toContainText(
       /本机已检测到|未检测到/,
     );
