@@ -43,6 +43,12 @@ fn presets_fill_default_command_and_args() {
         (AcpPreset::Codex, "codex-acp", vec![]),
         (AcpPreset::MinimaxCode, "mcode", vec!["acp"]),
         (AcpPreset::GeminiCli, "gemini", vec!["--experimental-acp"]),
+        (AcpPreset::CodeBuddy, "codebuddy", vec!["--acp"]),
+        (AcpPreset::QoderCli, "qodercli", vec!["--acp"]),
+        (AcpPreset::GrokBuild, "grok", vec!["agent", "stdio"]),
+        (AcpPreset::QwenCode, "qwen", vec!["--experimental-acp"]),
+        (AcpPreset::KimiCli, "kimi", vec!["--acp"]),
+        (AcpPreset::OpenCode, "opencode", vec!["acp"]),
         (AcpPreset::Mock, "teamspace-mock-agent", vec![]),
     ];
     for (i, (preset, command, args)) in cases.into_iter().enumerate() {
@@ -308,6 +314,47 @@ fn presets_report_local_detection_and_hints() {
     assert_eq!(gemini.default_args, ["--experimental-acp"]);
     assert!(!gemini.command_found);
     assert!(gemini.hint.as_deref().unwrap().contains("Gemini CLI"));
+
+    // codebuddy 在假探测中「已安装」，无提示。
+    let codebuddy = get(AcpPreset::CodeBuddy);
+    assert_eq!(codebuddy.label, "CodeBuddy（腾讯）");
+    assert_eq!(codebuddy.default_command.as_deref(), Some("codebuddy"));
+    assert_eq!(codebuddy.default_args, ["--acp"]);
+    assert!(codebuddy.command_found);
+    assert_eq!(codebuddy.requires_cli, None);
+    assert_eq!(codebuddy.hint, None);
+
+    let expect_missing = [
+        (
+            AcpPreset::QoderCli,
+            "qodercli",
+            "需要安装 Qoder CLI（qodercli 命令）",
+        ),
+        (
+            AcpPreset::GrokBuild,
+            "grok",
+            "需要安装 Grok Build（grok 命令）并具备 SuperGrok Heavy 订阅",
+        ),
+        (
+            AcpPreset::QwenCode,
+            "qwen",
+            "需要安装 Qwen Code（qwen 命令）",
+        ),
+        (AcpPreset::KimiCli, "kimi", "需要安装 Kimi CLI（kimi 命令）"),
+        (
+            AcpPreset::OpenCode,
+            "opencode",
+            "需要安装 OpenCode（opencode 命令）",
+        ),
+    ];
+    for (preset, command, hint) in expect_missing {
+        let info = get(preset);
+        assert_eq!(info.default_command.as_deref(), Some(command));
+        assert!(!info.command_found, "{command}");
+        assert_eq!(info.command_path, None);
+        assert_eq!(info.hint.as_deref(), Some(hint), "{command}");
+        assert!(!info.description.is_empty());
+    }
 
     let custom = get(AcpPreset::Custom);
     assert_eq!(custom.default_command, None);

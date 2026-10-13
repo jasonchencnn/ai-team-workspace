@@ -97,6 +97,24 @@ function harnessKindLabel(kind: string): string {
   if (kind === "gemini_cli") {
     return "Gemini CLI";
   }
+  if (kind === "codebuddy") {
+    return "CodeBuddy（腾讯）";
+  }
+  if (kind === "qoder_cli") {
+    return "Qoder CLI（阿里）";
+  }
+  if (kind === "grok_build") {
+    return "Grok Build（xAI）";
+  }
+  if (kind === "qwen_code") {
+    return "Qwen Code（阿里）";
+  }
+  if (kind === "kimi_cli") {
+    return "Kimi CLI（月之暗面）";
+  }
+  if (kind === "opencode") {
+    return "OpenCode";
+  }
   if (kind === "custom") {
     return "自定义 ACP Agent";
   }

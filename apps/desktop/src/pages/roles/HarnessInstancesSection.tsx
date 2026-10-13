@@ -399,6 +399,12 @@ function presetStateLabel(info: AcpPresetInfo): string {
     case "codex":
     case "minimax_code":
     case "gemini_cli":
+    case "codebuddy":
+    case "qoder_cli":
+    case "grok_build":
+    case "qwen_code":
+    case "kimi_cli":
+    case "opencode":
       return info.commandFound ? "本机已检测到" : "未检测到";
   }
 }

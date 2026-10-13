@@ -10,6 +10,12 @@ const KIND_LABELS: Record<AcpPreset, string> = {
   codex: "Codex",
   minimax_code: "MiniMax Code",
   gemini_cli: "Gemini CLI",
+  codebuddy: "CodeBuddy（腾讯）",
+  qoder_cli: "Qoder CLI（阿里）",
+  grok_build: "Grok Build（xAI）",
+  qwen_code: "Qwen Code（阿里）",
+  kimi_cli: "Kimi CLI（月之暗面）",
+  opencode: "OpenCode",
   custom: "自定义 ACP Agent",
   mock: "Mock",
 };
@@ -40,6 +46,18 @@ export function presetTagLabel(kind: AcpPreset): string {
       return "MiniMax Code · ACP";
     case "gemini_cli":
       return "Gemini CLI · ACP";
+    case "codebuddy":
+      return "CodeBuddy · ACP";
+    case "qoder_cli":
+      return "Qoder CLI · ACP";
+    case "grok_build":
+      return "Grok Build · ACP";
+    case "qwen_code":
+      return "Qwen Code · ACP";
+    case "kimi_cli":
+      return "Kimi CLI · ACP";
+    case "opencode":
+      return "OpenCode · ACP";
     case "custom":
       return "自定义 ACP Agent";
     case "mock":

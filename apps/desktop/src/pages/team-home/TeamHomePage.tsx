@@ -28,6 +28,12 @@ const HARNESS_LABEL: Record<AcpPreset, string> = {
   codex: "Codex",
   minimax_code: "MiniMax Code",
   gemini_cli: "Gemini CLI",
+  codebuddy: "CodeBuddy（腾讯）",
+  qoder_cli: "Qoder CLI（阿里）",
+  grok_build: "Grok Build（xAI）",
+  qwen_code: "Qwen Code（阿里）",
+  kimi_cli: "Kimi CLI（月之暗面）",
+  opencode: "OpenCode",
   custom: "自定义 ACP Agent",
   mock: "Mock（测试用）",
 };

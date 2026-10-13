@@ -4,4 +4,4 @@
  * ACP Agent 预设（D13）。Harness 实例都是 ACP Agent，预设只决定默认启动命令和本机检测方式，
  * 平台不为单一厂商写专门的执行代码。`mock` 由宿主程序内置，用于测试和演示，不消耗额度。
  */
-export type AcpPreset = "claude_code" | "codex" | "minimax_code" | "gemini_cli" | "custom" | "mock";
+export type AcpPreset = "claude_code" | "codex" | "minimax_code" | "gemini_cli" | "codebuddy" | "qoder_cli" | "grok_build" | "qwen_code" | "kimi_cli" | "opencode" | "custom" | "mock";

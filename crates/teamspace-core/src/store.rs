@@ -12,7 +12,7 @@ use time::OffsetDateTime;
 use crate::error::{Error, Result};
 
 /// 当前 schema 版本。
-pub(crate) const SCHEMA_VERSION: i64 = 5;
+pub(crate) const SCHEMA_VERSION: i64 = 6;
 
 const SCHEMA_V1: &str = r#"
 CREATE TABLE teams (
@@ -259,7 +259,39 @@ CREATE TABLE run_updates (
 CREATE INDEX run_updates_key ON run_updates (run_id, key);
 "#;
 
-const MIGRATIONS: &[&str] = &[SCHEMA_V1, SCHEMA_V2, SCHEMA_V3, SCHEMA_V4, SCHEMA_V5];
+/// v6：新增原生 ACP 预设（CodeBuddy、Qoder CLI、Grok Build、Qwen Code、Kimi CLI、OpenCode）。
+/// `harnesses.preset` 的 CHECK 约束不能原地修改，重建表（结构同 v4，仅扩充预设取值），数据原样保留。
+const SCHEMA_V6: &str = r#"
+CREATE TABLE harnesses_v6 (
+    id                   TEXT PRIMARY KEY,
+    team_id              TEXT NOT NULL REFERENCES teams (id),
+    name                 TEXT NOT NULL CHECK (name <> ''),
+    preset               TEXT NOT NULL CHECK (preset IN ('claude_code', 'codex', 'minimax_code', 'gemini_cli', 'codebuddy', 'qoder_cli', 'grok_build', 'qwen_code', 'kimi_cli', 'opencode', 'custom', 'mock')),
+    command              TEXT NOT NULL CHECK (command <> ''),
+    args                 TEXT NOT NULL DEFAULT '[]',
+    env_profile          TEXT,
+    handshake_status     TEXT NOT NULL DEFAULT 'unknown' CHECK (handshake_status IN ('connected', 'needs_auth', 'error', 'unknown')),
+    protocol_version     INTEGER,
+    agent_name           TEXT,
+    agent_title          TEXT,
+    agent_version        TEXT,
+    capabilities         TEXT,
+    auth_methods         TEXT NOT NULL DEFAULT '[]',
+    handshake_detail     TEXT,
+    handshake_checked_at TEXT,
+    created_at           TEXT NOT NULL,
+    updated_at           TEXT NOT NULL,
+    archived_at          TEXT
+);
+INSERT INTO harnesses_v6 SELECT * FROM harnesses;
+DROP TABLE harnesses;
+ALTER TABLE harnesses_v6 RENAME TO harnesses;
+CREATE UNIQUE INDEX harnesses_active_name ON harnesses (team_id, name) WHERE archived_at IS NULL;
+"#;
+
+const MIGRATIONS: &[&str] = &[
+    SCHEMA_V1, SCHEMA_V2, SCHEMA_V3, SCHEMA_V4, SCHEMA_V5, SCHEMA_V6,
+];
 
 /// 打开数据库：WAL 日志、synchronous=NORMAL、开启外键，并迁移到当前版本。
 pub(crate) fn open(path: &Path) -> Result<Connection> {
@@ -625,6 +657,81 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM teams", [], |r| r.get(0))
             .unwrap();
         assert_eq!(teams, 1);
+    }
+
+    #[test]
+    fn v5_database_migrates_to_v6_with_new_presets() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("t.db");
+        {
+            let conn = Connection::open(&path).unwrap();
+            for sql in &MIGRATIONS[..5] {
+                conn.execute_batch(sql).unwrap();
+            }
+            conn.execute_batch(
+                "INSERT INTO teams VALUES ('t', 'T', '', '/w', 'a', 'a', NULL);
+                 INSERT INTO harnesses (id, team_id, name, preset, command, args, created_at, updated_at)
+                     VALUES ('h1', 't', 'claude', 'claude_code', 'claude-code-acp', '[]', 'a', 'a'),
+                            ('h2', 't', 'old', 'mock', 'teamspace-mock-agent', '[]', 'a', 'a');
+                 UPDATE harnesses SET archived_at = 'c' WHERE id = 'h2';
+                 INSERT INTO roles (id, team_id, name, code, task_prefix, harness_id, created_at, updated_at)
+                     VALUES ('r', 't', '前端', 'role_fe', 'FE', 'h1', 'a', 'a');
+                 PRAGMA user_version = 5;",
+            )
+            .unwrap();
+        }
+        let conn = open(&path).unwrap();
+        let v: i64 = conn
+            .pragma_query_value(None, "user_version", |r| r.get(0))
+            .unwrap();
+        assert_eq!(v, SCHEMA_VERSION);
+        let fk: i64 = conn
+            .pragma_query_value(None, "foreign_keys", |r| r.get(0))
+            .unwrap();
+        assert_eq!(fk, 1);
+        let n: i64 = conn
+            .query_row("SELECT COUNT(*) FROM harnesses", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 2);
+        let role_harness: String = conn
+            .query_row("SELECT harness_id FROM roles WHERE id = 'r'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(role_harness, "h1");
+        // 新预设可以写入；未知预设仍被拒绝。
+        for preset in [
+            "codebuddy",
+            "qoder_cli",
+            "grok_build",
+            "qwen_code",
+            "kimi_cli",
+            "opencode",
+        ] {
+            conn.execute(
+                "INSERT INTO harnesses (id, team_id, name, preset, command, created_at, updated_at)
+                 VALUES (?1, 't', ?1, ?2, 'x', 'a', 'a')",
+                [preset, preset],
+            )
+            .unwrap_or_else(|e| panic!("{preset}: {e}"));
+        }
+        assert!(
+            conn.execute(
+                "INSERT INTO harnesses (id, team_id, name, preset, command, created_at, updated_at)
+                 VALUES ('bad', 't', 'bad', 'code_buddy', 'x', 'a', 'a')",
+                [],
+            )
+            .is_err()
+        );
+        // 活动名唯一索引仍然有效。
+        assert!(
+            conn.execute(
+                "INSERT INTO harnesses (id, team_id, name, preset, command, created_at, updated_at)
+                 VALUES ('dup', 't', 'claude', 'custom', 'x', 'a', 'a')",
+                [],
+            )
+            .is_err()
+        );
     }
 
     #[test]

@@ -15,6 +15,20 @@ pub enum AcpPreset {
     MinimaxCode,
     /// Gemini CLI，原生 ACP：`gemini --experimental-acp`。
     GeminiCli,
+    /// CodeBuddy（腾讯），原生 ACP：`codebuddy --acp`。
+    #[serde(rename = "codebuddy")]
+    CodeBuddy,
+    /// Qoder CLI（阿里），原生 ACP：`qodercli --acp`。
+    QoderCli,
+    /// Grok Build（xAI），原生 ACP（测试版）：`grok agent stdio`，需要 SuperGrok Heavy 订阅。
+    GrokBuild,
+    /// Qwen Code（阿里），原生 ACP：`qwen --experimental-acp`。
+    QwenCode,
+    /// Kimi CLI（月之暗面），原生 ACP：`kimi --acp`。
+    KimiCli,
+    /// OpenCode，原生 ACP：`opencode acp`。
+    #[serde(rename = "opencode")]
+    OpenCode,
     /// 任意支持 ACP 的 Agent，启动命令由用户填写。
     Custom,
     /// 内置 Mock Agent（测试用）。
@@ -22,11 +36,17 @@ pub enum AcpPreset {
 }
 
 impl AcpPreset {
-    pub const ALL: [AcpPreset; 6] = [
+    pub const ALL: [AcpPreset; 12] = [
         AcpPreset::ClaudeCode,
         AcpPreset::Codex,
         AcpPreset::MinimaxCode,
         AcpPreset::GeminiCli,
+        AcpPreset::CodeBuddy,
+        AcpPreset::QoderCli,
+        AcpPreset::GrokBuild,
+        AcpPreset::QwenCode,
+        AcpPreset::KimiCli,
+        AcpPreset::OpenCode,
         AcpPreset::Custom,
         AcpPreset::Mock,
     ];
@@ -38,6 +58,12 @@ impl AcpPreset {
             AcpPreset::Codex => "Codex",
             AcpPreset::MinimaxCode => "MiniMax Code",
             AcpPreset::GeminiCli => "Gemini CLI",
+            AcpPreset::CodeBuddy => "CodeBuddy（腾讯）",
+            AcpPreset::QoderCli => "Qoder CLI（阿里）",
+            AcpPreset::GrokBuild => "Grok Build（xAI）",
+            AcpPreset::QwenCode => "Qwen Code（阿里）",
+            AcpPreset::KimiCli => "Kimi CLI（月之暗面）",
+            AcpPreset::OpenCode => "OpenCode",
             AcpPreset::Custom => "自定义 ACP Agent",
             AcpPreset::Mock => "Mock",
         }

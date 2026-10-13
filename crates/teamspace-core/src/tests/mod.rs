@@ -37,8 +37,17 @@ pub(crate) const BROKEN_COMMAND: &str = "/broken/agent";
 pub(crate) const NEEDS_AUTH_COMMAND: &str = "needs-auth-agent";
 /// 测试宿主注入的 Mock Agent 命令。
 pub(crate) const MOCK_HOST: &str = "/opt/teamspace/host";
-/// 假探测在本机「找不到」的命令。
-pub(crate) const MISSING_COMMANDS: &[&str] = &["codex-acp", "gemini", "claude"];
+/// 假探测在本机「找不到」的命令（codebuddy 在本机已安装，按「找到」处理）。
+pub(crate) const MISSING_COMMANDS: &[&str] = &[
+    "codex-acp",
+    "gemini",
+    "claude",
+    "qodercli",
+    "grok",
+    "qwen",
+    "kimi",
+    "opencode",
+];
 
 impl SystemProbe for FakeProbe {
     fn inspect_workspace(&self, path: &Path) -> Result<WorkspaceInfo> {

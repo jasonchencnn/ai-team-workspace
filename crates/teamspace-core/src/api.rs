@@ -506,7 +506,7 @@ impl Teamspace {
 
     // ---------------------------------------------------------------- Harness
 
-    /// ACP 预设与本机检测结果（Claude Code、Codex、MiniMax Code、Gemini CLI、自定义、Mock），
+    /// ACP 预设与本机检测结果（Claude Code、Codex、MiniMax Code、Gemini CLI、CodeBuddy 等原生 ACP、自定义、Mock），
     /// 不写入任何数据：默认命令是否在 PATH 中、适配器依赖的底层 CLI 是否存在、缺少时的中文提示。
     /// 只查找命令，不运行任何程序。
     pub fn list_acp_presets(&self) -> Vec<AcpPresetInfo> {
