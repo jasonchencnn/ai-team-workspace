@@ -8,6 +8,8 @@ import { fileURLToPath } from "node:url";
 
 import { type Locator, type Page, expect, test } from "@playwright/test";
 
+import { acpEntry, createMockHarness } from "./harnessHelpers.js";
+
 const artifactsDir = fileURLToPath(new URL("../e2e-artifacts/", import.meta.url));
 mkdirSync(artifactsDir, { recursive: true });
 
@@ -138,22 +140,17 @@ test.describe("M1.1 回归与探索测试套件", () => {
     await expect(page.locator(".topbar__commit")).toHaveCount(0);
     await captureQaShot(page, "video-teamspace-home-overview");
 
-    // 7. 新建 Mock Harness 并健康检查
+    // 7. 新建 Mock 接入并握手
     await page.goto(`/#/teams/${videoTeamId}/roles?tab=harness`);
-    await page.getByRole("button", { name: "新建实例" }).click();
-    await page.getByLabel("实例名称").fill("mock-post-pipeline");
-    await page.getByLabel("类型").selectOption("mock");
-    await page.getByRole("button", { name: "注册实例" }).click();
+    await createMockHarness(page, "mock-post-pipeline");
 
-    const harnessCard = page.locator(".harness-card", { hasText: "mock-post-pipeline" });
-    await expect(harnessCard).toBeVisible();
+    const harnessCard = acpEntry(page, "mock-post-pipeline");
     await expect(harnessCard).toContainText("测试用");
-    await harnessCard.getByRole("button", { name: "查看详情" }).click();
-    await expect(page.getByRole("heading", { name: "健康检查结果" })).toBeVisible();
-    await page.getByRole("button", { name: "重新健康检查" }).click();
-    await expect(page.locator(".harness-detail__health .ui-tag")).toHaveText("在线");
-    await expect(page.getByText("Mock Harness，无需检测")).toBeVisible();
-    await page.getByRole("button", { name: "返回实例列表" }).click();
+    await harnessCard.getByRole("button", { name: "编辑" }).click();
+    await expect(page.getByRole("heading", { name: "握手结果" })).toBeVisible();
+    await page.getByRole("button", { name: "握手检查" }).click();
+    await expect(page.locator(".harness-detail__health-head .ui-tag")).toHaveText("已连接");
+    await page.getByRole("button", { name: "返回接入列表" }).click();
     await captureQaShot(page, "mock-harness-registered-healthy");
 
     // 8. 把「剪辑师」岗位绑定到该 Mock 实例

@@ -8,6 +8,8 @@ import { fileURLToPath } from "node:url";
 
 import { type Locator, type Page, expect, test } from "@playwright/test";
 
+import { acpEntry, createMockHarness } from "./harnessHelpers.js";
+
 const artifacts = fileURLToPath(new URL("../e2e-artifacts/", import.meta.url));
 mkdirSync(artifacts, { recursive: true });
 
@@ -68,12 +70,24 @@ async function openRole(page: Page, name: string): Promise<void> {
   await expect(page.getByRole("heading", { level: 2, name })).toBeVisible();
 }
 
+/** 从岗位详情的「打开岗位工作台」进入工作台；工作日志与岗位文件夹路径都在工作台上。 */
+async function openWorkbench(page: Page, name: string): Promise<void> {
+  await openRole(page, name);
+  await page.getByRole("link", { name: "打开岗位工作台" }).click();
+  await expect(page).toHaveURL(/\/roles\/[^/]+\/workbench$/);
+  await expect(page.getByRole("heading", { level: 1, name })).toBeVisible();
+}
+
 function folderSection(page: Page): Locator {
-  return page.locator(".role-detail__folder");
+  return page.locator(".rw-panel", { has: page.getByRole("heading", { name: "岗位文件夹" }) });
+}
+
+function folderPath(page: Page): Locator {
+  return folderSection(page).locator(".rw-path");
 }
 
 function journalItems(page: Page): Locator {
-  return page.locator(".role-detail__journal-item .role-detail__journal-text");
+  return page.locator(".rw-journal-item .rw-journal-text");
 }
 
 test("创建团队后每个岗位都有文件夹、岗位说明、工作日志和过程文件", async ({ page }) => {
@@ -118,19 +132,16 @@ test("创建团队后每个岗位都有文件夹、岗位说明、工作日志�
 });
 
 test("岗位详情显示相对路径与工作日志；绑定、派工、状态变化按顺序记入日志", async ({ page }) => {
-  await openRole(page, ROLE_A);
+  await openWorkbench(page, ROLE_A);
   const section = folderSection(page);
-  await expect(section.locator(".role-detail__folder-path")).toContainText(`Teamspace/${ROLE_A}`);
+  await expect(folderPath(page)).toContainText(`Teamspace/${ROLE_A}`);
   await expect(journalItems(page)).toHaveText([`创建岗位「${ROLE_A}」（任务前缀 ${prefixA}）`]);
   await shot(page, "role-folder-initial", section);
 
   // 注册 Mock Harness 并绑定
   await page.goto(`/#/teams/${teamId}/roles?tab=harness`);
-  await page.getByRole("button", { name: "新建实例" }).click();
-  await page.getByLabel("实例名称").fill("mock-folder");
-  await page.getByLabel("类型").selectOption("mock");
-  await page.getByRole("button", { name: "注册实例" }).click();
-  await expect(page.locator(".harness-card", { hasText: "mock-folder" })).toBeVisible();
+  await createMockHarness(page, "mock-folder");
+  await expect(acpEntry(page, "mock-folder")).toBeVisible();
 
   await openRole(page, ROLE_A);
   await page.getByRole("button", { name: "绑定 Harness", exact: true }).click();
@@ -140,6 +151,7 @@ test("岗位详情显示相对路径与工作日志；绑定、派工、状态�
   );
   await page.getByRole("button", { name: "确认绑定" }).click();
   await expect(page.getByText("当前绑定 mock-folder")).toBeVisible();
+  await openWorkbench(page, ROLE_A);
   await expect(journalItems(page).first()).toHaveText("绑定 Harness「mock-folder」");
 
   // 创建分派给该岗位的任务（TODO），再依次流转到受阻
@@ -165,7 +177,7 @@ test("岗位详情显示相对路径与工作日志；绑定、派工、状态�
   await expect(status).toContainText(`受阻 / ${prefixA}-001`);
 
   // 界面：最新的在最前
-  await openRole(page, ROLE_A);
+  await openWorkbench(page, ROLE_A);
   const key = `${prefixA}-001`;
   await expect(journalItems(page)).toHaveText([
     `${key} · 状态 执行中 → 受阻：${BLOCK_REASON}`,
@@ -187,7 +199,7 @@ test("岗位详情显示相对路径与工作日志；绑定、派工、状态�
     `${key} · 状态 执行中 → 受阻：${BLOCK_REASON}`,
   ]);
   expect(read("Teamspace", ROLE_A, "岗位说明.md")).toContain(
-    "- 当前绑定 Harness：mock-folder（Mock）",
+    "- 当前绑定 Harness：mock-folder（Mock · ACP，启动命令 `teamspace-mock-agent`）",
   );
   // 其他岗位的日志不受影响
   expect(journalLines(ROLE_B)).toHaveLength(1);
@@ -200,9 +212,11 @@ test("岗位改名：文件夹与用户文件随之移动；与其他岗位同�
   await page.getByLabel("岗位名称").fill(ROLE_A_RENAMED);
   await page.getByRole("button", { name: "保存岗位说明" }).click();
   await expect(page.getByRole("heading", { level: 2, name: ROLE_A_RENAMED })).toBeVisible();
-  await expect(folderSection(page).locator(".role-detail__folder-path")).toContainText(
+  await expect(page.locator(".role-detail__folder-path")).toContainText(
     `Teamspace/${ROLE_A_RENAMED}`,
   );
+  await page.getByRole("link", { name: "打开岗位工作台" }).click();
+  await expect(folderPath(page)).toContainText(`Teamspace/${ROLE_A_RENAMED}`);
   await expect(journalItems(page).first()).toHaveText(
     `编辑岗位：岗位改名：「${ROLE_A}」→「${ROLE_A_RENAMED}」`,
   );
@@ -253,16 +267,14 @@ test("名称含 / : 的岗位：文件夹名被安全替换", async ({ page }) =
   expect(existsSync(path("Teamspace", "报表"))).toBe(false);
   expect(read("Teamspace", ROLE_C_FOLDER, "岗位说明.md")).toContain(`- 岗位名：${ROLE_C}`);
 
-  await openRole(page, ROLE_C);
-  await expect(folderSection(page).locator(".role-detail__folder-path")).toContainText(
-    `Teamspace/${ROLE_C_FOLDER}`,
-  );
+  await openWorkbench(page, ROLE_C);
+  await expect(folderPath(page)).toContainText(`Teamspace/${ROLE_C_FOLDER}`);
   await shot(page, "sanitized-folder-name", folderSection(page));
 });
 
-test("「在 Finder 中打开」按钮可点击且无报错", async ({ page }) => {
-  await openRole(page, ROLE_A_RENAMED);
-  const button = page.getByRole("button", { name: "在 Finder 中打开" });
+test("工作台「在 Finder 中打开岗位文件夹」按钮可点击且无报错", async ({ page }) => {
+  await openWorkbench(page, ROLE_A_RENAMED);
+  const button = page.getByRole("button", { name: "在 Finder 中打开岗位文件夹" });
   await expect(button).toBeEnabled();
   const reply = page.waitForResponse(
     (response) =>
@@ -273,7 +285,7 @@ test("「在 Finder 中打开」按钮可点击且无报错", async ({ page }) =
   const body = (await (await reply).json()) as { ok?: unknown; err?: unknown };
   expect(body.err).toBeUndefined();
   await expect(button).toBeEnabled();
-  await expect(folderSection(page).getByRole("alert")).toHaveCount(0);
+  await expect(page.getByRole("alert")).toHaveCount(0);
   await shot(page, "reveal-button", folderSection(page));
 });
 

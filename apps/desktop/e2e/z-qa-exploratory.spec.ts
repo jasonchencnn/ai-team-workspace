@@ -5,6 +5,8 @@ import { fileURLToPath } from "node:url";
 
 import { type Locator, type Page, expect, test } from "@playwright/test";
 
+import { acpEntry, createMockHarness } from "./harnessHelpers.js";
+
 const artifacts = fileURLToPath(new URL("../e2e-artifacts/", import.meta.url));
 mkdirSync(artifacts, { recursive: true });
 
@@ -103,53 +105,40 @@ async function gotoTeam(page: Page, path = ""): Promise<string> {
 
 test.describe.configure({ mode: "serial" });
 
-test("01. 检测本机 CLI：界面显示 Claude Code 与 Codex 检测结果", async ({ page }) => {
+test("01. 新建接入：预设网格显示 6 个预设与本机检测标签", async ({ page }) => {
   await gotoTeam(page, "/roles?tab=harness");
-  await expect(page.getByRole("tab", { name: "Harness 实例" })).toHaveAttribute(
+  await expect(page.getByRole("tab", { name: "Harness 接入" })).toHaveAttribute(
     "aria-selected",
     "true",
   );
 
   // 保证基础 mock-local 存在，方便后续用例使用
-  const mockCard = page.locator(".harness-card", { hasText: "mock-local" });
-  if ((await mockCard.count()) === 0) {
-    await page.getByRole("button", { name: "新建实例" }).click();
-    await page.getByLabel("实例名称").fill("mock-local");
-    await page.getByLabel("类型").selectOption("mock");
-    await page.getByRole("button", { name: "注册实例" }).click();
-    await expect(mockCard).toBeVisible();
+  if ((await acpEntry(page, "mock-local").count()) === 0) {
+    await createMockHarness(page, "mock-local");
   }
 
-  const detectButton = page.getByRole("button", { name: "检测本机 CLI" });
-  await expect(detectButton).toBeVisible();
-  await detectButton.click();
+  await page.getByRole("button", { name: "新建接入" }).click();
+  const grid = page.locator(".acp-preset-grid");
+  await expect(grid).toBeVisible();
+  await expect(grid.locator(".acp-preset")).toHaveCount(6);
+  for (const label of ["Claude Code", "Codex", "MiniMax Code", "Gemini CLI"]) {
+    await expect(grid.locator(".acp-preset", { hasText: label })).toContainText(
+      /本机已检测到|未检测到/,
+    );
+  }
+  await expect(grid.locator(".acp-preset", { hasText: "自定义 ACP Agent" })).toContainText(
+    "自由配置",
+  );
+  await expect(grid.locator(".acp-preset", { hasText: "Mock" })).toContainText("内置");
 
-  const detectionList = page.locator(".harness-detection__list");
-  await expect(detectionList).toBeVisible();
-  await expect(page.locator(".harness-detection__item")).toHaveCount(2);
-
-  const claudeItem = page.locator(".harness-detection__item", { hasText: "Claude Code" });
-  await expect(claudeItem).toBeVisible();
-  await expect(claudeItem).toContainText(/已找到 · 版本 2\.1\.\d+/);
-
-  const codexItem = page.locator(".harness-detection__item", { hasText: "Codex" });
-  await expect(codexItem).toBeVisible();
-  await expect(codexItem).toContainText(/已找到 · 版本 0\.145\.\d+/);
-
-  await qaShot(page, "qa-01-cli-detection", detectionList);
+  await qaShot(page, "qa-01-cli-detection", grid);
 });
 
 test("02. 归档 Harness：仍被岗位绑定时被拒绝，解绑后成功归档", async ({ page }) => {
   await gotoTeam(page, "/roles?tab=harness");
 
   // 1. 新建 Mock 实例 qa-mock-harness
-  await page.getByRole("button", { name: "新建实例" }).click();
-  await page.getByLabel("实例名称").fill("qa-mock-harness");
-  await page.getByLabel("类型").selectOption("mock");
-  await page.getByRole("button", { name: "注册实例" }).click();
-
-  const harnessCard = page.locator(".harness-card", { hasText: "qa-mock-harness" });
-  await expect(harnessCard).toBeVisible();
+  await createMockHarness(page, "qa-mock-harness");
 
   // 2. 绑定到 QA 测试岗位
   await page.getByRole("tab", { name: "岗位" }).click();
@@ -165,37 +154,31 @@ test("02. 归档 Harness：仍被岗位绑定时被拒绝，解绑后成功归�
   await expect(page.getByText("当前绑定 qa-mock-harness")).toBeVisible();
 
   // 3. 尝试归档该 Harness -> 预期被后端拒绝 (conflict)
-  await page.getByRole("tab", { name: "Harness 实例" }).click();
-  await page
-    .locator(".harness-card", { hasText: "qa-mock-harness" })
-    .getByRole("button", { name: "查看详情" })
-    .click();
+  await page.getByRole("tab", { name: "Harness 接入" }).click();
+  await acpEntry(page, "qa-mock-harness").getByRole("button", { name: "编辑" }).click();
   await expect(page).toHaveURL(/\/harnesses\/[^/]+$/);
 
-  await page.getByRole("button", { name: "归档实例" }).click();
+  await page.getByRole("button", { name: "归档接入" }).click();
   const alert = page.getByRole("alert");
   await expect(alert).toBeVisible();
   await expect(alert).toContainText(/仍被岗位「QA 测试」绑定，请先解绑/);
   await qaShot(page, "qa-02-archive-harness-refused", alert);
 
   // 4. 回到岗位页解绑
-  await page.getByRole("button", { name: "返回实例列表" }).click();
+  await page.getByRole("button", { name: "返回接入列表" }).click();
   await page.getByRole("tab", { name: "岗位" }).click();
   await page.locator(".role-chip", { hasText: "QA 测试" }).click();
   await page.getByRole("button", { name: "解绑" }).click();
   await expect(page.locator(".role-detail__unbound")).toBeVisible();
 
   // 5. 再次归档该 Harness -> 成功
-  await page.getByRole("tab", { name: "Harness 实例" }).click();
-  await page
-    .locator(".harness-card", { hasText: "qa-mock-harness" })
-    .getByRole("button", { name: "查看详情" })
-    .click();
-  await page.getByRole("button", { name: "归档实例" }).click();
+  await page.getByRole("tab", { name: "Harness 接入" }).click();
+  await acpEntry(page, "qa-mock-harness").getByRole("button", { name: "编辑" }).click();
+  await page.getByRole("button", { name: "归档接入" }).click();
 
   // 归档成功后落回实例列表，qa-mock-harness 不再存在
   await expect(page).toHaveURL(/\/roles\?tab=harness$/);
-  await expect(page.locator(".harness-card", { hasText: "qa-mock-harness" })).toHaveCount(0);
+  await expect(acpEntry(page, "qa-mock-harness")).toHaveCount(0);
   await qaShot(page, "qa-03-archive-harness-success");
 });
 
@@ -435,11 +418,11 @@ test("07. 输入边界：超长标题、控制字符、首尾空格、重复名�
 
   // 4. 重复 Harness 名称
   await gotoTeam(page, "/roles?tab=harness");
-  await page.getByRole("button", { name: "新建实例" }).click();
-  const harnessCreateForm = page.locator(".harness-create");
+  await page.getByRole("button", { name: "新建接入" }).click();
+  const harnessCreateForm = page.locator(".acp-create");
+  await harnessCreateForm.locator(".acp-preset", { hasText: "Mock" }).click();
   await harnessCreateForm.getByLabel("实例名称").fill("mock-local");
-  await harnessCreateForm.getByLabel("类型").selectOption("mock");
-  await harnessCreateForm.getByRole("button", { name: "注册实例" }).click();
+  await harnessCreateForm.getByRole("button", { name: "保存并握手检查" }).click();
   const harnessAlert = harnessCreateForm.getByRole("alert");
   await expect(harnessAlert).toContainText("团队中已有名为「mock-local」的 Harness");
   await qaShot(page, "qa-18-input-boundary-duplicate-harness", harnessAlert);
@@ -532,7 +515,7 @@ test("09. 团队切换与数据隔离：创建第二个团队并验证数据互�
 
 test("10. 重新加载页面后状态保持", async ({ page }) => {
   await gotoTeam(page, "/roles?tab=harness");
-  await expect(page.getByRole("tab", { name: "Harness 实例" })).toHaveAttribute(
+  await expect(page.getByRole("tab", { name: "Harness 接入" })).toHaveAttribute(
     "aria-selected",
     "true",
   );
@@ -540,13 +523,13 @@ test("10. 重新加载页面后状态保持", async ({ page }) => {
   // 重新加载页面
   await page.reload();
 
-  // 验证重新加载后仍然在 Harness 实例标签页
+  // 验证重新加载后仍然在 Harness 接入标签页
   await expect(page).toHaveURL(/\/roles\?tab=harness$/);
-  await expect(page.getByRole("tab", { name: "Harness 实例" })).toHaveAttribute(
+  await expect(page.getByRole("tab", { name: "Harness 接入" })).toHaveAttribute(
     "aria-selected",
     "true",
   );
-  await expect(page.getByRole("heading", { name: "Harness 实例" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "接入列表" })).toBeVisible();
 
   // 再在任务面板验证刷新
   await gotoTeam(page, "/tasks");
