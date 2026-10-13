@@ -259,9 +259,81 @@ pub fn resume_text(task_key: &str, role_folder: &str) -> String {
     )
 }
 
-/// 从 Agent 最后的消息中截取执行摘要：去掉首尾空白，超过 [`SUMMARY_LIMIT`] 个字符时截断并加省略号。
+/// 行首的开始标签名（`<name` 后紧跟空白、`>` 或 `/`）。标签名为小写字母开头，后接小写字母、数字和连字符。
+fn opening_tag_name(line: &str) -> Option<&str> {
+    let rest = line.trim_start().strip_prefix('<')?;
+    let end = rest
+        .find(|c: char| !(c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-'))
+        .unwrap_or(rest.len());
+    let name = &rest[..end];
+    let starts_with_letter = name.starts_with(|c: char| c.is_ascii_lowercase());
+    let boundary_ok = rest[end..]
+        .chars()
+        .next()
+        .is_none_or(|c| c.is_whitespace() || c == '>' || c == '/');
+    (starts_with_letter && boundary_ok).then_some(name)
+}
+
+/// 去掉 Agent 界面用的显示标记（如 `<deliver-assets>…</deliver-assets>`、独立成行的 `<media … />`）。
+///
+/// 只处理整行开始的标签：成对标签块（可跨多行、可含自闭合标签）整块删除；独立成行的自闭合标签删除；
+/// 正文里的普通尖括号文字（如 `a < b`）不动。清理后压缩多余空行并去掉首尾空白；清理后为空则保留原文（去首尾空白）。
+pub fn strip_display_markup(text: &str) -> String {
+    let lines: Vec<&str> = text.lines().collect();
+    let mut kept: Vec<&str> = Vec::with_capacity(lines.len());
+    let mut i = 0;
+    while i < lines.len() {
+        let line = lines[i];
+        let trimmed = line.trim();
+        if let Some(name) = opening_tag_name(line) {
+            let close = format!("</{name}>");
+            if trimmed.ends_with("/>") {
+                // 独立成行的自闭合标签。
+                i += 1;
+                continue;
+            }
+            if trimmed.contains(&close) {
+                // 同一行内的成对标签：整行以闭合标签结尾时整行删除。
+                if trimmed.ends_with(&close) {
+                    i += 1;
+                    continue;
+                }
+            } else if let Some(j) = (i + 1..lines.len()).find(|&j| lines[j].trim() == close) {
+                // 跨行的成对标签块：从开始行到闭合行整块删除。
+                i = j + 1;
+                continue;
+            }
+        }
+        kept.push(line);
+        i += 1;
+    }
+
+    let mut out = String::new();
+    let mut prev_blank = true;
+    for line in kept {
+        let blank = line.trim().is_empty();
+        if blank && prev_blank {
+            continue;
+        }
+        if !out.is_empty() || !blank {
+            out.push_str(line);
+            out.push('\n');
+        }
+        prev_blank = blank;
+    }
+    let cleaned = out.trim();
+    if cleaned.is_empty() {
+        text.trim().to_string()
+    } else {
+        cleaned.to_string()
+    }
+}
+
+/// 从 Agent 最后的消息中截取执行摘要：先去掉显示标记（见 [`strip_display_markup`]）和首尾空白，
+/// 超过 [`SUMMARY_LIMIT`] 个字符时截断并加省略号。
 pub fn summarize(text: &str) -> Option<String> {
-    let text = text.trim();
+    let cleaned = strip_display_markup(text);
+    let text = cleaned.as_str();
     if text.is_empty() {
         return None;
     }
@@ -409,5 +481,43 @@ mod tests {
         let s = summarize(&long).unwrap();
         assert_eq!(s.chars().count(), SUMMARY_LIMIT + 1);
         assert!(s.ends_with('…'));
+    }
+
+    #[test]
+    fn summary_strips_minimax_display_markup() {
+        let raw = "已完成需求梳理。\n未执行任何命令。\n\n<deliver-assets>\n<media type=\"file\" src=\"/abs/path/summary.md\" caption=\"WA-001 需求总结\" />\n</deliver-assets>";
+        assert_eq!(
+            strip_display_markup(raw),
+            "已完成需求梳理。\n未执行任何命令。"
+        );
+        assert_eq!(
+            summarize(raw).as_deref(),
+            Some("已完成需求梳理。\n未执行任何命令。")
+        );
+    }
+
+    #[test]
+    fn summary_keeps_plain_angle_brackets() {
+        let raw = "检查条件：x < 5 并且 y > 3\n代码里 a <b 不是标签\n<T> 泛型示例";
+        assert_eq!(strip_display_markup(raw), raw);
+    }
+
+    #[test]
+    fn summary_keeps_original_when_only_markup() {
+        let raw = "  <deliver-assets>\n<media type=\"file\" src=\"/a.md\" />\n</deliver-assets>  ";
+        assert_eq!(
+            strip_display_markup(raw),
+            "<deliver-assets>\n<media type=\"file\" src=\"/a.md\" />\n</deliver-assets>"
+        );
+        assert_eq!(
+            strip_display_markup("<media type=\"file\" />"),
+            "<media type=\"file\" />"
+        );
+    }
+
+    #[test]
+    fn summary_strips_multiple_markup_blocks() {
+        let raw = "第一段\n<deliver-assets>\n<media src=\"a.md\" />\n</deliver-assets>\n第二段\n\n\n<media type=\"file\" src=\"/b.md\" />\n<notes>\n内部备注\n</notes>\n结尾";
+        assert_eq!(strip_display_markup(raw), "第一段\n第二段\n\n结尾");
     }
 }
