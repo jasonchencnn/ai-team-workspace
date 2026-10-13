@@ -103,7 +103,10 @@ fn valid_code(code: &str) -> bool {
 }
 
 fn valid_prefix(prefix: &str) -> bool {
-    (2..=4).contains(&prefix.len()) && prefix.chars().all(|c| c.is_ascii_uppercase())
+    let mut chars = prefix.chars();
+    (2..=4).contains(&prefix.len())
+        && chars.next().is_some_and(|c| c.is_ascii_uppercase())
+        && chars.all(|c| c.is_ascii_uppercase() || c.is_ascii_digit())
 }
 
 fn validate_name(name: &str) -> Result<String> {
@@ -122,7 +125,7 @@ fn validate_prefix(prefix: &str) -> Result<String> {
     let prefix = prefix.trim();
     if !valid_prefix(prefix) {
         return Err(Error::invalid(format!(
-            "任务前缀「{prefix}」格式不正确：需为 2–4 位大写字母"
+            "任务前缀「{prefix}」格式不正确：需为 2–4 位大写字母或数字，且以字母开头"
         )));
     }
     Ok(prefix.to_owned())
@@ -167,25 +170,55 @@ fn check_unique(
     Ok(())
 }
 
-/// 校验并插入岗位（不写活动）。
-pub(crate) fn insert(conn: &Connection, team_id: &str, input: NewRole) -> Result<Role> {
-    let name = validate_name(&input.name)?;
-    let code = input.code.trim();
-    if !valid_code(code) {
-        return Err(Error::invalid(format!(
-            "岗位标识「{code}」格式不正确：需以小写字母开头，只含小写字母、数字和下划线，最长 40 位"
-        )));
+/// 生成团队内未被占用（含已归档岗位）的岗位标识：`role_` + 序号，序号从团队岗位总数 + 1 起递增。
+fn generate_code(conn: &Connection, team_id: &str) -> Result<String> {
+    let count: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM roles WHERE team_id = ?1",
+        params![team_id],
+        |row| row.get(0),
+    )?;
+    let mut n = count + 1;
+    loop {
+        let code = format!("role_{n}");
+        if !code_taken(conn, team_id, &code)? {
+            return Ok(code);
+        }
+        n += 1;
     }
-    let prefix = validate_prefix(&input.task_prefix)?;
-    let (description, guidelines) = validate_texts(&input.description, &input.guidelines)?;
-    let code_taken: bool = conn.query_row(
+}
+
+fn code_taken(conn: &Connection, team_id: &str, code: &str) -> Result<bool> {
+    Ok(conn.query_row(
         "SELECT EXISTS (SELECT 1 FROM roles WHERE team_id = ?1 AND code = ?2)",
         params![team_id, code],
         |row| row.get(0),
-    )?;
-    if code_taken {
-        return Err(Error::conflict(format!("团队中已有岗位标识「{code}」")));
-    }
+    )?)
+}
+
+/// 校验并插入岗位（不写活动）。`code` 缺省或空白时自动生成。
+pub(crate) fn insert(conn: &Connection, team_id: &str, input: NewRole) -> Result<Role> {
+    let name = validate_name(&input.name)?;
+    let prefix = validate_prefix(&input.task_prefix)?;
+    let (description, guidelines) = validate_texts(&input.description, &input.guidelines)?;
+    let code = match input
+        .code
+        .as_deref()
+        .map(str::trim)
+        .filter(|c| !c.is_empty())
+    {
+        Some(code) => {
+            if !valid_code(code) {
+                return Err(Error::invalid(format!(
+                    "岗位标识「{code}」格式不正确：需以小写字母开头，只含小写字母、数字和下划线，最长 40 位"
+                )));
+            }
+            if code_taken(conn, team_id, code)? {
+                return Err(Error::conflict(format!("团队中已有岗位标识「{code}」")));
+            }
+            code.to_owned()
+        }
+        None => generate_code(conn, team_id)?,
+    };
     check_unique(conn, team_id, None, &prefix, input.is_leader)?;
     let id = new_id();
     let at = now();
@@ -206,6 +239,69 @@ pub(crate) fn insert(conn: &Connection, team_id: &str, input: NewRole) -> Result
         ],
     )?;
     get_active(conn, &id)
+}
+
+/// 团队未归档岗位已用的任务前缀。
+pub(crate) fn active_prefixes(conn: &Connection, team_id: &str) -> Result<Vec<String>> {
+    team::get_active(conn, team_id)?;
+    let mut stmt =
+        conn.prepare("SELECT task_prefix FROM roles WHERE team_id = ?1 AND archived_at IS NULL")?;
+    let rows = stmt.query_map(params![team_id], |row| row.get(0))?;
+    Ok(rows.collect::<rusqlite::Result<_>>()?)
+}
+
+/// 根据岗位名称建议任务前缀，避开 `taken`（比较时不区分大小写）。
+///
+/// - 名称含两个及以上英文单词：取各单词首字母（最多 4 位），如 `Video Editor` → `VE`；
+/// - 只有一个英文单词：全大写且 2–4 位时原样使用（`QA`），否则取前两个字母（`Leader` → `LE`）；
+/// - 候选被占用时依次尝试在前 3 位后加数字 2–9（`LE2`、`LE3`…）；
+/// - 名称中取不到英文字母（如纯中文）或上述都被占用时，给出 `R1`、`R2`… 中第一个未占用的。
+///
+/// 中文名不做拼音转换。
+pub(crate) fn suggest_prefix(name: &str, taken: &[String]) -> String {
+    let taken: std::collections::HashSet<String> = taken
+        .iter()
+        .map(|p| p.trim().to_ascii_uppercase())
+        .collect();
+    let words: Vec<&str> = name
+        .split(|c: char| !c.is_ascii_alphabetic())
+        .filter(|w| !w.is_empty())
+        .collect();
+    let base = match words.as_slice() {
+        [] => None,
+        [word] => {
+            let upper = word.to_ascii_uppercase();
+            if *word == upper && (2..=4).contains(&word.len()) {
+                Some(upper)
+            } else if word.len() >= 2 {
+                Some(upper[..2].to_owned())
+            } else {
+                None
+            }
+        }
+        many => Some(
+            many.iter()
+                .take(4)
+                .map(|w| w[..1].to_ascii_uppercase())
+                .collect(),
+        ),
+    };
+    if let Some(base) = base {
+        if !taken.contains(&base) {
+            return base;
+        }
+        let stem = &base[..base.len().min(3)];
+        for n in 2..=9 {
+            let candidate = format!("{stem}{n}");
+            if !taken.contains(&candidate) {
+                return candidate;
+            }
+        }
+    }
+    (1..)
+        .map(|n| format!("R{n}"))
+        .find(|candidate| !taken.contains(candidate))
+        .expect("unbounded range always yields a free prefix")
 }
 
 pub(crate) fn create(conn: &Connection, input: CreateRoleInput) -> Result<RoleView> {
@@ -374,9 +470,55 @@ mod tests {
     fn prefix_format() {
         assert!(valid_prefix("FE"));
         assert!(valid_prefix("ABCD"));
+        assert!(valid_prefix("R1"));
+        assert!(valid_prefix("V2X"));
         assert!(!valid_prefix("F"));
         assert!(!valid_prefix("ABCDE"));
         assert!(!valid_prefix("Fe"));
-        assert!(!valid_prefix("F1"));
+        assert!(!valid_prefix("1F"));
+        assert!(!valid_prefix("R-1"));
+        assert!(!valid_prefix("ＡＢ"));
+    }
+
+    fn taken(list: &[&str]) -> Vec<String> {
+        list.iter().map(|s| (*s).to_owned()).collect()
+    }
+
+    #[test]
+    fn suggest_prefix_from_english_names() {
+        assert_eq!(suggest_prefix("Leader", &[]), "LE");
+        assert_eq!(suggest_prefix("QA 测试", &[]), "QA");
+        assert_eq!(suggest_prefix("Video Editor", &[]), "VE");
+        assert_eq!(
+            suggest_prefix("  sound design and mixing team ", &[]),
+            "SDAM"
+        );
+        assert_eq!(suggest_prefix("UI设计师", &[]), "UI");
+        assert_eq!(
+            suggest_prefix("3D 建模", &[]),
+            "R1",
+            "单个字母不足以组成前缀"
+        );
+    }
+
+    #[test]
+    fn suggest_prefix_for_chinese_names_uses_r_series() {
+        assert_eq!(suggest_prefix("剪辑师", &[]), "R1");
+        assert_eq!(suggest_prefix("", &[]), "R1");
+        assert_eq!(suggest_prefix("剪辑师", &taken(&["R1", "r2"])), "R3");
+    }
+
+    #[test]
+    fn suggest_prefix_increments_on_conflict() {
+        assert_eq!(suggest_prefix("Leader", &taken(&["le"])), "LE2");
+        assert_eq!(suggest_prefix("Leader", &taken(&["LE", "LE2"])), "LE3");
+        assert_eq!(suggest_prefix("ABCD", &taken(&["ABCD"])), "ABC2");
+        let all: Vec<String> = std::iter::once("LE".to_owned())
+            .chain((2..=9).map(|n| format!("LE{n}")))
+            .collect();
+        assert_eq!(suggest_prefix("Leader", &all), "R1");
+        for name in ["Leader", "剪辑师", "Video Editor", "ABCD"] {
+            assert!(valid_prefix(&suggest_prefix(name, &[])), "{name}");
+        }
     }
 }

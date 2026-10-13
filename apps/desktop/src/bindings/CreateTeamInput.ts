@@ -2,10 +2,11 @@
 import type { NewRole } from "./NewRole.js";
 
 /**
- * 创建团队的输入。`roles` 为初始岗位（通常来自岗位模板，可修改），可以为空。
+ * 创建团队的输入。`roles` 为初始岗位（由用户自定义），可以为空。
  */
 export type CreateTeamInput = { name: string, description: string, 
 /**
- * 用户选择的文件夹；后端会规范化为所在 Git 仓库的顶层目录。
+ * 用户选择的文件夹，须为已存在的目录，不要求是 Git 仓库。后端规范化为绝对路径（去掉末尾斜杠），
+ * 选中 Git 仓库的子目录时仍以该子目录本身为工作空间。
  */
 workspacePath: string, roles: Array<NewRole>, };

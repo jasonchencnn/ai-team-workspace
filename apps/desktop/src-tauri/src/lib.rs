@@ -24,6 +24,7 @@ register_commands!(
     get_team_overview,
     inspect_workspace,
     list_role_templates,
+    suggest_task_prefix,
     list_roles,
     create_role,
     update_role,

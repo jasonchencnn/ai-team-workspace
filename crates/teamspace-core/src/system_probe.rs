@@ -18,7 +18,8 @@ use std::time::{Duration, Instant};
 
 use crate::error::{Error, Result};
 use crate::model::{
-    HarnessDetection, HarnessInstance, HarnessKind, HealthCheck, HealthStatus, WorkspaceInfo,
+    GitInfo, HarnessDetection, HarnessInstance, HarnessKind, HealthCheck, HealthStatus,
+    WorkspaceInfo,
 };
 use crate::probe::SystemProbe;
 
@@ -266,8 +267,7 @@ impl SystemProbe for LocalProbe {
 
         Ok(WorkspaceInfo {
             path: root,
-            branch,
-            commit,
+            git: Some(GitInfo { branch, commit }),
         })
     }
 
@@ -865,8 +865,9 @@ mod tests {
             .inspect_workspace(dir.path())
             .expect("应识别为 Git 仓库");
         assert_eq!(info.path, canonical(dir.path()));
-        assert_eq!(info.branch.as_deref(), Some("probe-branch"));
-        let commit = info.commit.expect("有提交时应返回短哈希");
+        let git = info.git.expect("应有 Git 信息");
+        assert_eq!(git.branch.as_deref(), Some("probe-branch"));
+        let commit = git.commit.expect("有提交时应返回短哈希");
         assert_eq!(commit.len(), 7);
         assert!(commit.chars().all(|c| c.is_ascii_hexdigit()));
     }
@@ -891,8 +892,9 @@ mod tests {
 
         let info = probe.inspect_workspace(dir.path()).expect("空仓库也是仓库");
         assert_eq!(info.path, canonical(dir.path()));
-        assert_eq!(info.commit, None);
-        assert_eq!(info.branch.as_deref(), Some("probe-branch"));
+        let git = info.git.expect("应有 Git 信息");
+        assert_eq!(git.commit, None);
+        assert_eq!(git.branch.as_deref(), Some("probe-branch"));
     }
 
     #[test]
@@ -914,8 +916,9 @@ mod tests {
         let info = probe
             .inspect_workspace(dir.path())
             .expect("detached HEAD 仍是仓库");
-        assert_eq!(info.branch, None);
-        assert!(info.commit.is_some());
+        let git = info.git.expect("应有 Git 信息");
+        assert_eq!(git.branch, None);
+        assert!(git.commit.is_some());
     }
 
     #[test]

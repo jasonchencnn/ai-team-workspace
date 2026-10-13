@@ -116,6 +116,7 @@ fn dispatch(ts: &Teamspace, cmd: &str, args: &Value) -> CmdResult {
             Err(_) => Ok(Value::Null),
         },
         "list_role_templates" => out(Ok(ts.list_role_templates())),
+        "suggest_task_prefix" => out(ts.suggest_task_prefix(arg(args, "input")?)),
         "list_roles" => out(ts.list_roles(&arg::<String>(args, "teamId")?)),
         "create_role" => out(ts.create_role(arg(args, "input")?)),
         "update_role" => out(ts.update_role(arg(args, "input")?)),

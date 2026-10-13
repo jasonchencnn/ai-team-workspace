@@ -11,9 +11,9 @@ pub struct Role {
     pub id: String,
     pub team_id: String,
     pub name: String,
-    /// 稳定标识，不可修改，团队内唯一，如 `role_frontend`。
+    /// 稳定标识，不可修改，团队内唯一，如 `role_3`（自动生成）或 `role_frontend`。
     pub code: String,
-    /// 任务编号前缀，2–4 位大写字母，如 `FE`。修改前缀不影响已有任务编号。
+    /// 任务编号前缀，2–4 位大写字母或数字、以字母开头，如 `FE`、`R1`。修改前缀不影响已有任务编号。
     pub task_prefix: String,
     /// 职责。
     pub description: String,
@@ -53,7 +53,7 @@ pub struct RoleRef {
     pub archived: bool,
 }
 
-/// 后端提供的岗位模板，用于创建团队和新增岗位时预填。
+/// 岗位模板：可选的「快速添加示例」，用户主动选择时才用来预填，默认不加载到任何团队。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export)]
@@ -75,6 +75,23 @@ pub struct CreateRoleInput {
     pub role: super::NewRole,
 }
 
+/// 请求任务前缀建议。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct SuggestTaskPrefixInput {
+    /// 已有团队时传入，建议会避开该团队未归档岗位已用的前缀；创建团队前可缺省。
+    #[serde(default)]
+    #[ts(optional = nullable)]
+    pub team_id: Option<String>,
+    /// 岗位名称（可为空）。
+    pub name: String,
+    /// 额外需要避开的前缀，如创建团队表单里其他尚未保存的岗位前缀。
+    #[serde(default)]
+    #[ts(optional = nullable)]
+    pub taken: Option<Vec<String>>,
+}
+
 /// 编辑岗位（整体替换可编辑字段）。`code` 不可修改；绑定 Harness 走单独命令。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
@@ -88,7 +105,7 @@ pub struct UpdateRoleInput {
     pub is_leader: bool,
 }
 
-/// 内置岗位模板，顺序即界面展示顺序。
+/// 内置岗位模板（快速添加示例，偏软件开发场景），顺序即界面展示顺序。
 pub fn role_templates() -> Vec<RoleTemplate> {
     let t =
         |name: &str, code: &str, prefix: &str, description: &str, is_leader: bool| RoleTemplate {

@@ -17,6 +17,7 @@ import type { HarnessInstance } from "../bindings/HarnessInstance.js";
 import type { Role } from "../bindings/Role.js";
 import type { RoleTemplate } from "../bindings/RoleTemplate.js";
 import type { RoleView } from "../bindings/RoleView.js";
+import type { SuggestTaskPrefixInput } from "../bindings/SuggestTaskPrefixInput.js";
 import type { TaskBoard } from "../bindings/TaskBoard.js";
 import type { TaskBoardQuery } from "../bindings/TaskBoardQuery.js";
 import type { TaskDetail } from "../bindings/TaskDetail.js";
@@ -53,7 +54,7 @@ export const createTeam = (input: CreateTeamInput) => invoke<Team>("create_team"
 export const getTeamOverview = (teamId: string) =>
   invoke<TeamOverview>("get_team_overview", { teamId });
 
-/** 检测某个路径的 Git 工作区。 */
+/** 检测某个目录作为工作空间的信息（任意文件夹；是 Git 仓库时 git 含分支与提交）。 */
 export const inspectWorkspace = (path: string) =>
   invoke<WorkspaceInfo>("inspect_workspace", { path });
 
@@ -62,8 +63,12 @@ export const pickWorkspaceFolder = () => invoke<WorkspaceInfo | null>("pick_work
 
 // ---------------------------------------------------------------- 岗位
 
-/** 内置岗位模板。 */
+/** 可选的「快速添加示例」岗位（默认不加载）。 */
 export const listRoleTemplates = () => invoke<RoleTemplate[]>("list_role_templates");
+
+/** 根据岗位名称建议任务前缀（用于表单预填）。 */
+export const suggestTaskPrefix = (input: SuggestTaskPrefixInput) =>
+  invoke<string>("suggest_task_prefix", { input });
 
 /** 团队的未归档岗位卡片。 */
 export const listRoles = (teamId: string) => invoke<RoleView[]>("list_roles", { teamId });

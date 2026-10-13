@@ -5,6 +5,7 @@ pub(crate) mod harness;
 pub(crate) mod role;
 pub(crate) mod task;
 pub(crate) mod team;
+pub(crate) mod workspace;
 
 use crate::error::{Error, Result};
 

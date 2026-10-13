@@ -1,6 +1,6 @@
 //! 系统探测接口（M1-04 实现）。
 //!
-//! 内核通过 [`SystemProbe`] 访问 Git、工作区文件和本机 CLI，便于在测试中替换为假实现。
+//! 内核通过 [`SystemProbe`] 访问 Git、工作空间文件和本机 CLI，便于在测试中替换为假实现。
 //! 实现不得读取或保存任何密钥，也不得启动 Harness 执行任务；只允许 `--version` 一类只读调用。
 
 use std::path::Path;
@@ -8,17 +8,27 @@ use std::path::Path;
 use crate::error::Result;
 use crate::model::{HarnessDetection, HarnessInstance, HarnessKind, HealthCheck, WorkspaceInfo};
 
-/// 工作区文件搜索的返回上限。
+/// 工作空间文件搜索的返回上限。
 pub const FILE_SEARCH_LIMIT: usize = 50;
 
+/// 普通文件夹（非 Git）文件搜索时最多扫描的文件数，超过后停止遍历。
+pub const MAX_SCANNED_FILES: usize = 20_000;
+
 pub trait SystemProbe: Send + Sync {
-    /// 解析 `path` 所在的 Git 仓库，返回顶层目录绝对路径、当前分支（detached 时为 `None`）
-    /// 和 7 位短提交（无提交时为 `None`）。路径不存在或不在 Git 仓库中返回 `Error::Invalid`。
+    /// 探测工作空间目录。`path` 由内核规范化为已存在目录的绝对路径后传入，内核会以它覆盖
+    /// 返回值的 `path`（工作空间就是所选目录本身，不提升为仓库根）。
+    ///
+    /// 目录位于 Git 仓库中（含仓库子目录）时 `git` 为 `Some`：当前分支（detached 时为 `None`）
+    /// 和 7 位短提交（无提交时为 `None`）；不是 Git 仓库时 `git` 为 `None`，**不是错误**。
+    /// 只有目录不存在、不是目录或 Git 本身无法运行等情况才返回错误。
     fn inspect_workspace(&self, path: &Path) -> Result<WorkspaceInfo>;
 
-    /// 在工作区中按不区分大小写的子串搜索文件，范围为
-    /// `git ls-files --cached --others --exclude-standard`；返回 `/` 分隔的相对路径，
-    /// 最多 `limit` 条，排序稳定（建议：文件名命中优先，其次路径短者优先）。
+    /// 在工作空间中按不区分大小写的子串搜索文件，返回相对工作空间目录、`/` 分隔的路径，
+    /// 最多 `limit` 条，排序稳定（建议：文件名命中优先，其次路径短者优先）。搜索范围：
+    ///
+    /// - Git 目录：`git ls-files --cached --others --exclude-standard`（相对所选目录）；
+    /// - 普通文件夹：遍历目录树，跳过隐藏文件与目录（以 `.` 开头）以及 `node_modules`、`target`、
+    ///   `dist`、`build` 等常见大目录，扫描 [`MAX_SCANNED_FILES`] 个文件后停止。
     fn search_files(&self, workspace: &Path, query: &str, limit: usize) -> Result<Vec<String>>;
 
     /// 在本机查找 `kind` 对应的 CLI（`claude` / `codex`）并读取版本。

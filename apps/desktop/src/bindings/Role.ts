@@ -5,11 +5,11 @@
  */
 export type Role = { id: string, teamId: string, name: string, 
 /**
- * 稳定标识，不可修改，团队内唯一，如 `role_frontend`。
+ * 稳定标识，不可修改，团队内唯一，如 `role_3`（自动生成）或 `role_frontend`。
  */
 code: string, 
 /**
- * 任务编号前缀，2–4 位大写字母，如 `FE`。修改前缀不影响已有任务编号。
+ * 任务编号前缀，2–4 位大写字母或数字、以字母开头，如 `FE`、`R1`。修改前缀不影响已有任务编号。
  */
 taskPrefix: string, 
 /**

@@ -33,6 +33,14 @@ pub fn list_role_templates(ts: State<'_, Teamspace>) -> Result<Vec<RoleTemplate>
 }
 
 #[tauri::command(async)]
+pub fn suggest_task_prefix(
+    ts: State<'_, Teamspace>,
+    input: SuggestTaskPrefixInput,
+) -> Result<String, Error> {
+    ts.suggest_task_prefix(input)
+}
+
+#[tauri::command(async)]
 pub fn list_roles(ts: State<'_, Teamspace>, team_id: &str) -> Result<Vec<RoleView>, Error> {
     ts.list_roles(team_id)
 }

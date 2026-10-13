@@ -44,8 +44,9 @@ function defaultDraft(template: RoleTemplate): RoleDraft {
 
 /** 分支或提交缺失时如实说明，不编造。 */
 function repoLine(workspace: WorkspaceInfo): string {
-  const branch = workspace.branch ?? "detached HEAD";
-  const commit = workspace.commit ?? "暂无提交";
+  if (workspace.git === null) return "普通文件夹（不是 Git 仓库）";
+  const branch = workspace.git.branch ?? "detached HEAD";
+  const commit = workspace.git.commit ?? "暂无提交";
   return `${branch} @ ${commit}`;
 }
 

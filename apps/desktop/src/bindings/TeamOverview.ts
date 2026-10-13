@@ -15,7 +15,7 @@ export type TeamOverview = { team: Team,
  */
 workspace: WorkspaceInfo | null, 
 /**
- * 工作区不可用时的中文说明（如目录不存在、不再是 Git 仓库）。
+ * 工作空间不可用时的中文说明（如目录不存在或已移动）。
  */
 workspaceProblem: string | null, 
 /**

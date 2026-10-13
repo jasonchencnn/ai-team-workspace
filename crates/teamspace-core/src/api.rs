@@ -6,7 +6,7 @@
 //! 参数约定：ID 参数在前端以 camelCase 传入（`team_id` → `teamId`）；结构体参数统一命名为
 //! `input`。所有命令失败时返回 [`crate::Error`]（前端收到 `ErrorPayload`）。
 //!
-//! 文件系统和外部进程访问（工作区文件存在性、Git、CLI）都在数据库锁之外完成。
+//! 文件系统和外部进程访问（工作空间文件存在性、Git、CLI）都在数据库锁之外完成。
 //!
 //! 所有写操作在同一事务内完成数据变更并追加一条 [`crate::model::Event`]（actor 为 human，中文摘要由后端生成）。
 
@@ -20,7 +20,7 @@ use crate::model::*;
 use crate::probe::FILE_SEARCH_LIMIT;
 use crate::probe::SystemProbe;
 use crate::service::task::FileCheck;
-use crate::service::{event, harness, role, task, team};
+use crate::service::{event, harness, role, task, team, workspace};
 use crate::store;
 
 /// 只在 Tauri 层实现、不经过 [`Teamspace`] 的命令。
@@ -37,6 +37,7 @@ pub const COMMANDS: &[&str] = &[
     "get_team_overview",
     "inspect_workspace",
     "list_role_templates",
+    "suggest_task_prefix",
     "list_roles",
     "create_role",
     "update_role",
@@ -101,40 +102,57 @@ impl Teamspace {
         team::list(&self.lock())
     }
 
-    /// 创建团队及初始岗位：名称必填且在未归档团队中唯一；工作区须为 Git 仓库并规范化为顶层目录；
-    /// 初始岗位逐个按岗位规则校验（code / 前缀唯一、至多一个 Leader）。
+    /// 规范化工作空间目录并实时探测：目录须存在；是 Git 仓库（或其子目录）时附带分支与提交。
+    /// 返回的 `path` 始终是规范化后的所选目录本身。
+    fn inspect(&self, path: &str) -> Result<WorkspaceInfo> {
+        let dir = workspace::resolve(path)?;
+        let mut info = self.probe.inspect_workspace(&dir)?;
+        info.path = workspace::display(&dir);
+        Ok(info)
+    }
+
+    /// 创建团队及初始岗位：名称必填且在未归档团队中唯一；工作空间为任意已存在的目录
+    /// （规范化为绝对路径，不要求是 Git 仓库，选中仓库子目录时不提升为仓库根）；
+    /// 初始岗位可以为空，逐个按岗位规则校验（code 缺省自动生成、前缀唯一、至多一个 Leader）。
     pub fn create_team(&self, input: CreateTeamInput) -> Result<Team> {
         team::validate_name(&input.name)?;
-        let workspace = self
-            .probe
-            .inspect_workspace(Path::new(&input.workspace_path))?;
+        let workspace = self.inspect(&input.workspace_path)?;
         self.write(|tx| team::create(tx, input, &workspace))
     }
 
-    /// 团队概览：团队、实时工作区状态（检测失败不报错，写入 `workspaceProblem`）、岗位卡片、
+    /// 团队概览：团队、实时工作空间状态（检测失败不报错，写入 `workspaceProblem`）、岗位卡片、
     /// 各状态任务数、进行中的任务和最近 10 条活动。
     pub fn get_team_overview(&self, team_id: &str) -> Result<TeamOverview> {
         let mut overview = team::overview(&self.lock(), team_id)?;
-        match self
-            .probe
-            .inspect_workspace(Path::new(&overview.team.workspace_path))
-        {
+        match self.inspect(&overview.team.workspace_path) {
             Ok(info) => overview.workspace = Some(info),
             Err(err) => overview.workspace_problem = Some(err.to_string()),
         }
         Ok(overview)
     }
 
-    /// 检测某个路径的 Git 工作区（创建团队前预览「代码库已检测：main @ a31f8c2」）。
+    /// 检测某个目录作为工作空间的信息（创建团队前预览路径，是 Git 仓库时显示分支与提交）。
+    /// 目录不存在或不是目录时为 invalid；普通文件夹返回 `git: null`。
     pub fn inspect_workspace(&self, path: &str) -> Result<WorkspaceInfo> {
-        self.probe.inspect_workspace(Path::new(path))
+        self.inspect(path)
     }
 
     // ---------------------------------------------------------------- 岗位
 
-    /// 内置岗位模板（Leader / 产品经理 / 前端开发 / 后端开发 / QA 测试）。
+    /// 可选的「快速添加示例」岗位（Leader / 产品经理 / 前端开发 / 后端开发 / QA 测试）。
+    /// 岗位完全由用户自定义，示例默认不加载，只在用户主动选择时用于预填。
     pub fn list_role_templates(&self) -> Vec<RoleTemplate> {
         role_templates()
+    }
+
+    /// 根据岗位名称建议任务前缀（供表单预填，不写数据）：取名称中的英文字母生成，
+    /// 取不到时给出 `R1`、`R2`…；避开团队未归档岗位已用前缀（传入 `teamId` 时）和 `taken`。
+    pub fn suggest_task_prefix(&self, input: SuggestTaskPrefixInput) -> Result<String> {
+        let mut taken = input.taken.unwrap_or_default();
+        if let Some(team_id) = input.team_id.as_deref() {
+            taken.extend(role::active_prefixes(&self.lock(), team_id)?);
+        }
+        Ok(role::suggest_prefix(&input.name, &taken))
     }
 
     /// 列出团队的未归档岗位卡片，Leader 在前，其余按创建时间。
@@ -142,8 +160,8 @@ impl Teamspace {
         role::list_views(&self.lock(), team_id)
     }
 
-    /// 新增岗位：code 格式合法且团队内唯一（含已归档），前缀 2–4 位大写字母且在未归档岗位中唯一，
-    /// 至多一个 Leader。
+    /// 新增岗位：code 可缺省（自动生成 `role_N`），填写时须格式合法且团队内唯一（含已归档）；
+    /// 前缀必填，2–4 位大写字母或数字、以字母开头，在未归档岗位中唯一；至多一个 Leader。
     pub fn create_role(&self, input: CreateRoleInput) -> Result<RoleView> {
         self.write(|tx| role::create(tx, input))
     }
@@ -267,7 +285,8 @@ impl Teamspace {
         self.write(|tx| task::change_status(tx, input, &files))
     }
 
-    /// 在团队工作区中搜索文件（用于添加引用），返回相对路径，最多 50 条。
+    /// 在团队工作空间中搜索文件（用于添加引用），返回相对路径，最多 50 条。
+    /// Git 目录与普通文件夹的搜索范围见 [`SystemProbe::search_files`]。
     pub fn search_workspace_files(&self, input: FileSearchQuery) -> Result<Vec<String>> {
         let workspace = team::get_active(&self.lock(), &input.team_id)?.workspace_path;
         let mut files = self.probe.search_files(

@@ -16,7 +16,8 @@ use crate::error::{Error, ErrorKind, Result};
 use crate::model::*;
 use crate::probe::SystemProbe;
 
-/// 假探测：任何存在的目录都视为 Git 仓库顶层；文件搜索遍历目录；健康检查按约定返回。
+/// 假探测：目录自身或任一上级目录含 `.git` 时视为 Git 仓库（分支 main、提交 a31f8c2），否则为普通
+/// 文件夹；文件搜索遍历目录（跳过以 `.` 开头的条目）；健康检查按约定返回。
 pub(crate) struct FakeProbe;
 
 /// 健康检查时 executable 为此路径则返回 error。
@@ -25,12 +26,16 @@ pub(crate) const BROKEN_EXECUTABLE: &str = "/broken/claude";
 impl SystemProbe for FakeProbe {
     fn inspect_workspace(&self, path: &Path) -> Result<WorkspaceInfo> {
         if !path.is_dir() {
-            return Err(Error::invalid("所选目录不是 Git 仓库"));
+            return Err(Error::invalid("所选路径不是目录"));
         }
+        let root = path.ancestors().find(|dir| dir.join(".git").is_dir());
         Ok(WorkspaceInfo {
-            path: path.to_string_lossy().into_owned(),
-            branch: Some("main".into()),
-            commit: Some("a31f8c2".into()),
+            // 内核会用所选目录覆盖 path；这里故意返回仓库根，以验证不会被提升。
+            path: root.unwrap_or(path).to_string_lossy().into_owned(),
+            git: root.map(|_| GitInfo {
+                branch: Some("main".into()),
+                commit: Some("a31f8c2".into()),
+            }),
         })
     }
 
@@ -38,6 +43,9 @@ impl SystemProbe for FakeProbe {
         fn walk(root: &Path, dir: &Path, out: &mut Vec<String>) {
             for entry in fs::read_dir(dir).unwrap() {
                 let path = entry.unwrap().path();
+                if path.file_name().unwrap().to_string_lossy().starts_with('.') {
+                    continue;
+                }
                 if path.is_dir() {
                     walk(root, &path, out);
                 } else {
@@ -92,7 +100,15 @@ pub(crate) struct Fixture {
     pub ts: Teamspace,
 }
 
+/// 工作空间是一个 Git 仓库（含 `.git` 目录）。
 pub(crate) fn fixture() -> Fixture {
+    let f = plain_fixture();
+    fs::create_dir_all(f.ws.join(".git")).unwrap();
+    f
+}
+
+/// 工作空间是普通文件夹（不是 Git 仓库）。
+pub(crate) fn plain_fixture() -> Fixture {
     let dir = tempfile::tempdir().unwrap();
     let ws = dir.path().join("ws");
     fs::create_dir_all(&ws).unwrap();
@@ -112,7 +128,7 @@ impl Fixture {
         fs::write(path, "x").unwrap();
     }
 
-    /// 以全部岗位模板创建团队。
+    /// 以全部岗位示例（模板）创建团队。
     pub fn team(&self, name: &str) -> Team {
         self.ts
             .create_team(CreateTeamInput {
@@ -219,7 +235,7 @@ pub(crate) fn templates() -> Vec<NewRole> {
         .into_iter()
         .map(|t| NewRole {
             name: t.name,
-            code: t.code,
+            code: Some(t.code),
             task_prefix: t.task_prefix,
             description: t.description,
             guidelines: t.guidelines,
@@ -230,12 +246,21 @@ pub(crate) fn templates() -> Vec<NewRole> {
 
 pub(crate) fn new_role(name: &str, code: &str, prefix: &str, is_leader: bool) -> NewRole {
     NewRole {
+        code: Some(code.into()),
+        is_leader,
+        ..custom_role(name, prefix)
+    }
+}
+
+/// 用户自定义岗位：不填 code（由后端生成），非 Leader。
+pub(crate) fn custom_role(name: &str, prefix: &str) -> NewRole {
+    NewRole {
         name: name.into(),
-        code: code.into(),
+        code: None,
         task_prefix: prefix.into(),
         description: String::new(),
         guidelines: String::new(),
-        is_leader,
+        is_leader: false,
     }
 }
 

@@ -37,9 +37,9 @@ export function TopBar() {
       {teamId === undefined || overview.data === undefined ? null : workspace !== null ? (
         <p className="topbar__branch" title={workspace.path}>
           <span className="topbar__branch-label">工作区</span>
-          <span>{workspace.branch ?? "（游离 HEAD）"}</span>
-          {workspace.commit === null ? null : (
-            <span className="topbar__commit">{workspace.commit}</span>
+          {workspace.git === null ? null : <span>{workspace.git.branch ?? "（游离 HEAD）"}</span>}
+          {workspace.git?.commit == null ? null : (
+            <span className="topbar__commit">{workspace.git.commit}</span>
           )}
         </p>
       ) : problem !== null ? (

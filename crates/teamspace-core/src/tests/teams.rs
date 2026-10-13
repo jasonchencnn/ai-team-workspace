@@ -50,17 +50,72 @@ fn team_name_is_required_and_unique_among_active_teams() {
     f.ts.create_team(input("Alpha")).unwrap();
 }
 
-#[test]
-fn workspace_must_be_a_git_repository() {
-    let f = fixture();
-    let err = f.ts.create_team(CreateTeamInput {
-        name: "X".into(),
+fn team_at(f: &Fixture, name: &str, path: &str) -> Result<Team> {
+    f.ts.create_team(CreateTeamInput {
+        name: name.into(),
         description: String::new(),
-        workspace_path: f.ws.join("missing").to_string_lossy().into_owned(),
+        workspace_path: path.into(),
         roles: vec![],
-    });
-    assert_kind(err, ErrorKind::Invalid);
+    })
+}
+
+#[test]
+fn workspace_must_be_an_existing_directory() {
+    let f = fixture();
+    let missing = f.ws.join("missing");
+    let msg = assert_kind(
+        team_at(&f, "X", &missing.to_string_lossy()),
+        ErrorKind::Invalid,
+    );
+    assert!(msg.contains("工作空间目录不存在"), "{msg}");
+    f.touch("notes.txt");
+    let msg = assert_kind(
+        team_at(&f, "X", &f.ws.join("notes.txt").to_string_lossy()),
+        ErrorKind::Invalid,
+    );
+    assert!(msg.contains("工作空间目录不存在"), "{msg}");
+    assert_kind(team_at(&f, "X", "  "), ErrorKind::Invalid);
     assert!(f.ts.list_teams().unwrap().is_empty());
+}
+
+#[test]
+fn plain_folder_can_be_a_workspace() {
+    let f = plain_fixture();
+    let path = format!("{}/", f.ws.to_string_lossy());
+    let team = team_at(&f, "剪辑组", &path).unwrap();
+    assert_eq!(team.workspace_path, f.ws.to_string_lossy(), "去掉末尾斜杠");
+
+    let info = f.ts.inspect_workspace(&path).unwrap();
+    assert_eq!(info.path, team.workspace_path);
+    assert!(info.git.is_none());
+
+    let o = f.ts.get_team_overview(&team.id).unwrap();
+    assert!(o.workspace_problem.is_none());
+    assert!(o.workspace.unwrap().git.is_none());
+}
+
+#[test]
+fn git_subdirectory_stays_the_workspace() {
+    let f = fixture();
+    let sub = f.ws.join("videos/raw");
+    fs::create_dir_all(&sub).unwrap();
+    let team = team_at(&f, "T", &format!("{}/./", sub.to_string_lossy())).unwrap();
+    assert_eq!(team.workspace_path, sub.to_string_lossy(), "不提升为仓库根");
+
+    let o = f.ts.get_team_overview(&team.id).unwrap();
+    let ws = o.workspace.unwrap();
+    assert_eq!(ws.path, team.workspace_path);
+    assert_eq!(ws.git.unwrap().branch.as_deref(), Some("main"));
+}
+
+#[test]
+fn team_can_start_without_roles() {
+    let f = plain_fixture();
+    let team = team_at(&f, "空团队", &f.ws.to_string_lossy()).unwrap();
+    assert!(f.ts.list_roles(&team.id).unwrap().is_empty());
+    let o = f.ts.get_team_overview(&team.id).unwrap();
+    assert!(o.roles.is_empty());
+    assert_eq!(o.recent_events[0].summary, "创建团队「空团队」");
 }
 
 #[test]
@@ -91,8 +146,10 @@ fn overview_combines_workspace_roles_counts_tasks_and_events() {
     let o = f.ts.get_team_overview(&team.id).unwrap();
     assert_eq!(o.team.id, team.id);
     let ws = o.workspace.unwrap();
-    assert_eq!(ws.branch.as_deref(), Some("main"));
-    assert_eq!(ws.commit.as_deref(), Some("a31f8c2"));
+    assert_eq!(ws.path, team.workspace_path);
+    let git = ws.git.unwrap();
+    assert_eq!(git.branch.as_deref(), Some("main"));
+    assert_eq!(git.commit.as_deref(), Some("a31f8c2"));
     assert!(o.workspace_problem.is_none());
     assert_eq!(o.roles.len(), 5);
     let fe_card = o.roles.iter().find(|v| v.role.id == fe.id).unwrap();
@@ -117,7 +174,8 @@ fn overview_reports_unavailable_workspace_without_failing() {
     fs::remove_dir_all(&f.ws).unwrap();
     let o = f.ts.get_team_overview(&team.id).unwrap();
     assert!(o.workspace.is_none());
-    assert!(o.workspace_problem.is_some());
+    let problem = o.workspace_problem.unwrap();
+    assert!(problem.contains("工作空间目录不存在"), "{problem}");
 }
 
 #[test]
@@ -125,6 +183,8 @@ fn inspect_workspace_and_detect_harnesses_delegate_to_probe() {
     let f = fixture();
     assert_eq!(
         f.ts.inspect_workspace(&f.ws.to_string_lossy())
+            .unwrap()
+            .git
             .unwrap()
             .commit
             .as_deref(),

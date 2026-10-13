@@ -310,3 +310,122 @@ fn archiving_a_role_clears_its_harness_binding() {
     // 已不被任何岗位引用，可以直接归档。
     f.ts.archive_harness(&h.id).unwrap();
 }
+
+#[test]
+fn code_is_generated_when_omitted_and_stays_stable() {
+    let f = plain_fixture();
+    let team =
+        f.ts.create_team(CreateTeamInput {
+            name: "剪辑组".into(),
+            description: String::new(),
+            workspace_path: f.ws.to_string_lossy().into_owned(),
+            roles: vec![custom_role("剪辑师", "R1"), custom_role("调色师", "R2")],
+        })
+        .unwrap();
+    let codes: Vec<_> =
+        f.ts.list_roles(&team.id)
+            .unwrap()
+            .into_iter()
+            .map(|v| v.role.code)
+            .collect();
+    assert_eq!(codes, ["role_1", "role_2"]);
+
+    // 空白 code 视为未填写；与已有（含用户填写的）code 冲突时序号继续递增。
+    create(&f, &team.id, new_role("占位", "role_4", "ZW", false)).unwrap();
+    let blank = create(&f, &team.id, new_role("配音", "  ", "PY", false)).unwrap();
+    assert_eq!(blank.role.code, "role_5");
+
+    // 归档后的 code 不复用；改名不改变 code。
+    f.ts.archive_role(&blank.role.id).unwrap();
+    let next = create(&f, &team.id, custom_role("字幕", "ZM")).unwrap();
+    assert_eq!(next.role.code, "role_6");
+    let renamed =
+        f.ts.update_role(UpdateRoleInput {
+            role_id: next.role.id.clone(),
+            name: "字幕与包装".into(),
+            task_prefix: "ZM".into(),
+            description: String::new(),
+            guidelines: String::new(),
+            is_leader: true,
+        })
+        .unwrap();
+    assert_eq!(renamed.role.code, "role_6");
+    assert!(renamed.role.is_leader);
+}
+
+#[test]
+fn generated_codes_are_unique_per_team() {
+    let f = fixture();
+    let a = f.team("A");
+    let b =
+        f.ts.create_team(CreateTeamInput {
+            name: "B".into(),
+            description: String::new(),
+            workspace_path: f.ws.to_string_lossy().into_owned(),
+            roles: vec![],
+        })
+        .unwrap();
+    // 团队 A 已有 5 个示例岗位，新岗位从 role_6 开始；团队 B 独立编号。
+    assert_eq!(
+        create(&f, &a.id, custom_role("X", "XX")).unwrap().role.code,
+        "role_6"
+    );
+    assert_eq!(
+        create(&f, &b.id, custom_role("X", "XX")).unwrap().role.code,
+        "role_1"
+    );
+}
+
+#[test]
+fn prefix_may_contain_digits_after_a_letter() {
+    let f = plain_fixture();
+    let team = f.team("T");
+    let role = create(&f, &team.id, custom_role("剪辑师", "R1"))
+        .unwrap()
+        .role;
+    let task = f.task(&team.id, &role, "粗剪");
+    assert_eq!(task.task.key, "R1-001");
+    for bad in ["1R", "R", "r1", "R_1", "ABCDE"] {
+        let msg = assert_kind(
+            create(&f, &team.id, custom_role("X", bad)),
+            ErrorKind::Invalid,
+        );
+        assert!(msg.contains("以字母开头"), "{bad}: {msg}");
+    }
+}
+
+#[test]
+fn suggest_task_prefix_avoids_team_and_form_prefixes() {
+    let f = fixture();
+    let suggest = |team_id: Option<&str>, name: &str, taken: Option<Vec<&str>>| {
+        f.ts.suggest_task_prefix(SuggestTaskPrefixInput {
+            team_id: team_id.map(Into::into),
+            name: name.into(),
+            taken: taken.map(|t| t.into_iter().map(Into::into).collect()),
+        })
+    };
+    assert_eq!(suggest(None, "Video Editor", None).unwrap(), "VE");
+    assert_eq!(suggest(None, "Leader", None).unwrap(), "LE");
+    assert_eq!(suggest(None, "剪辑师", None).unwrap(), "R1");
+    assert_eq!(
+        suggest(None, "调色师", Some(vec!["R1"])).unwrap(),
+        "R2",
+        "创建团队表单中尚未保存的前缀也要避开"
+    );
+
+    let team = f.team("T");
+    // 示例岗位占用了 LD / PM / FE / BE / QA。
+    assert_eq!(suggest(Some(&team.id), "QA", None).unwrap(), "QA2");
+    assert_eq!(suggest(Some(&team.id), "Ld", None).unwrap(), "LD2");
+    create(&f, &team.id, custom_role("剪辑师", "R1")).unwrap();
+    assert_eq!(
+        suggest(Some(&team.id), "调色师", Some(vec!["R2"])).unwrap(),
+        "R3"
+    );
+    // 已归档岗位的前缀可以再用。
+    let qa = f.role(&team.id, "role_qa");
+    f.ts.archive_role(&qa.id).unwrap();
+    assert_eq!(suggest(Some(&team.id), "QA", None).unwrap(), "QA");
+
+    assert_kind(suggest(Some("nope"), "X", None), ErrorKind::NotFound);
+}

@@ -229,10 +229,12 @@ export function TeamHomePage() {
                   <span className="nowrap">路径：</span>
                   <span title={data.workspace.path}>{data.workspace.path}</span>
                 </p>
-                <p>
-                  分支：{data.workspace.branch ?? "detached HEAD"} · 提交：
-                  {data.workspace.commit ?? "暂无提交"}
-                </p>
+                {data.workspace.git === null ? null : (
+                  <p>
+                    分支：{data.workspace.git.branch ?? "detached HEAD"} · 提交：
+                    {data.workspace.git.commit ?? "暂无提交"}
+                  </p>
+                )}
               </div>
             )}
 

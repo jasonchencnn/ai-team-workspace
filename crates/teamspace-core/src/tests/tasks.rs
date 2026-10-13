@@ -217,6 +217,46 @@ fn ready_requires_refs_existing_files_and_done_dependencies() {
 }
 
 #[test]
+fn plain_folder_workspace_checks_file_refs_for_readiness() {
+    let f = plain_fixture();
+    let team =
+        f.ts.create_team(CreateTeamInput {
+            name: "剪辑组".into(),
+            description: String::new(),
+            workspace_path: f.ws.to_string_lossy().into_owned(),
+            roles: vec![custom_role("剪辑师", "R1")],
+        })
+        .unwrap();
+    let editor = f.ts.list_roles(&team.id).unwrap().remove(0).role;
+    let t = f
+        .try_task(
+            &team.id,
+            &editor,
+            "粗剪",
+            Todo,
+            vec!["素材/镜头 01.mov"],
+            vec![],
+        )
+        .unwrap();
+    assert!(!t.file_refs[0].exists);
+    assert!(t.readiness[0].contains("素材/镜头 01.mov"));
+    assert_kind(f.move_to(&t.task.id, Ready), ErrorKind::Conflict);
+
+    f.touch("素材/镜头 01.mov");
+    let t = f.move_to(&t.task.id, Ready).unwrap();
+    assert_eq!(t.task.status, Ready);
+    assert!(t.file_refs[0].exists);
+
+    let hits =
+        f.ts.search_workspace_files(FileSearchQuery {
+            team_id: team.id,
+            query: "镜头".into(),
+        })
+        .unwrap();
+    assert_eq!(hits, ["素材/镜头 01.mov"]);
+}
+
+#[test]
 fn create_as_ready_checks_readiness() {
     let f = fixture();
     let team = f.team("T");
