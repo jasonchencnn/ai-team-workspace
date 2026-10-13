@@ -30,11 +30,63 @@ async function gotoTeam(page: Page, path = ""): Promise<void> {
   }
 }
 
+/** 从地址栏取团队 id（地址形如 `#/teams/<id>` 或 `#/teams/<id>/...`）。 */
+function teamIdOf(page: Page): string {
+  const id = /\/teams\/([^/?]+)/.exec(page.url())?.[1] ?? "";
+  expect(id).not.toBe("");
+  return id;
+}
+
+/** 在创建团队页「从示例添加」若干岗位（示例面板保持展开）。 */
+async function addExampleRoles(page: Page, names: string[]): Promise<void> {
+  await page.getByRole("button", { name: "从示例添加" }).click();
+  for (const name of names) {
+    await page
+      .locator(".tc-example", { hasText: name })
+      .getByRole("button", { name: "添加" })
+      .click();
+  }
+}
+
+/** 点「+ 添加岗位」自定义一个岗位：填名称、失焦让界面向内核要前缀建议，返回自动填入的前缀。 */
+async function addCustomRole(
+  page: Page,
+  name: string,
+  description = "",
+  expectedPrefix?: string,
+): Promise<string> {
+  await page.getByRole("button", { name: "+ 添加岗位" }).click();
+  const card = page.locator(".tc-role").last();
+  await card.getByLabel("岗位名称").fill(name);
+  await card.getByLabel("岗位名称").blur();
+  const prefix = card.getByLabel("任务编号前缀");
+  if (expectedPrefix === undefined) {
+    await expect(prefix).toHaveValue(/^[A-Z][A-Z0-9]{1,3}$/);
+  } else {
+    await expect(prefix).toHaveValue(expectedPrefix);
+  }
+  if (description !== "") {
+    await card.getByLabel("职责").fill(description);
+  }
+  return await prefix.inputValue();
+}
+
 async function createTask(
   page: Page,
-  input: { title: string; owner: string; file?: string; status: "TODO" | "READY"; dep?: string },
+  input: {
+    title: string;
+    owner: string;
+    file?: string;
+    status: "TODO" | "READY";
+    dep?: string;
+    teamId?: string;
+  },
 ): Promise<void> {
-  await gotoTeam(page, "/tasks/new");
+  if (input.teamId === undefined) {
+    await gotoTeam(page, "/tasks/new");
+  } else {
+    await page.goto(`/#/teams/${input.teamId}/tasks/new`);
+  }
   await page.getByLabel("任务名称").fill(input.title);
   const ownerSelect = page.getByLabel("负责人岗位");
   const ownerValue = await ownerSelect
@@ -42,7 +94,7 @@ async function createTask(
     .getAttribute("value");
   await ownerSelect.selectOption(ownerValue);
   if (input.file !== undefined) {
-    await page.getByPlaceholder("搜索工作区文件").fill(input.file);
+    await page.locator("#task-file-search").fill(input.file);
     await page.getByRole("button", { name: "添加", exact: true }).click();
   }
   if (input.dep !== undefined) {
@@ -70,25 +122,50 @@ test.describe.configure({ mode: "serial" });
 test("首次进入跳转到创建团队页", async ({ page }) => {
   await page.goto("/");
   await expect(page).toHaveURL(/\/teams\/new$/);
-  await expect(page.getByRole("heading", { name: "创建 Team" })).toBeVisible();
-  await expect(page.getByText("代码库状态：尚未检测")).toBeVisible();
+  await expect(page.getByRole("heading", { name: "创建团队" })).toBeVisible();
+  await expect(page.getByText("尚未检测")).toBeVisible();
+  // 岗位默认为空：不预置任何岗位，示例也不自动加载
+  await expect(page.getByText("还没有岗位")).toBeVisible();
+  await expect(page.locator(".tc-role")).toHaveCount(0);
+  await expect(page.locator(".tc-example")).toHaveCount(0);
   await shot(page, "first-run-create-team");
 });
 
-test("创建团队：选择工作空间、保留默认岗位、保存后进入岗位与绑定页", async ({ page }) => {
+test("创建团队：检测 Git 工作空间，自定义岗位自动建议前缀，保存后进入团队空间", async ({
+  page,
+}) => {
   await page.goto("/#/teams/new");
-  await page.getByLabel("Team 名称").fill("账号系统迭代");
+  await page.getByLabel("团队名称").fill("账号系统迭代");
   await page.getByLabel("说明").first().fill("端到端测试团队");
   await page.getByRole("button", { name: "选择工作空间" }).click();
-  await expect(page.getByText(/代码库已检测：main @ [0-9a-f]{7}/)).toBeVisible();
-  // 默认勾选 Leader / 前端开发 / QA 测试
-  await expect(page.locator(".tc-role__checkbox:checked")).toHaveCount(3);
+  await expect(page.getByText(/Git 仓库：main @ [0-9a-f]{7}/)).toBeVisible();
+
+  // 次要入口：从示例添加（后续用例需要 Leader / 前端开发 / QA 测试）
+  await addExampleRoles(page, ["Leader", "前端开发", "QA 测试"]);
+  await expect(page.locator(".tc-role")).toHaveCount(3);
+  await expect(page.locator(".tc-role").nth(0).getByLabel("任务编号前缀")).toHaveValue("LD");
+  await expect(page.locator(".tc-role").nth(1).getByLabel("任务编号前缀")).toHaveValue("FE");
+  await expect(page.locator(".tc-role").nth(2).getByLabel("任务编号前缀")).toHaveValue("QA");
+
+  // 主入口：自定义非开发岗位；中文名称没有字母，前缀由内核建议为 R1、R2（避开表单内已有前缀）
+  await addCustomRole(page, "剪辑师", "把素材剪成成片", "R1");
+  await addCustomRole(page, "审片人", "审看成片并给出修改意见", "R2");
+  await expect(page.locator(".tc-role")).toHaveCount(5);
   await shot(page, "create-team-workspace-detected");
 
-  await page.getByRole("button", { name: "创建团队并配置岗位" }).click();
-  await expect(page).toHaveURL(/\/teams\/[^/]+\/roles$/);
+  await page.getByRole("button", { name: "创建团队", exact: true }).click();
+  // 创建成功后落到团队空间，而不是岗位页
+  await expect(page).toHaveURL(/\/teams\/(?!new$)[^/]+$/);
+  await expect(page.getByRole("heading", { name: "团队空间" })).toBeVisible();
+  await expect(page.locator(".th-roles .th-role")).toHaveCount(5);
+  await expect(page.locator(".th-role", { hasText: "剪辑师" })).toBeVisible();
+  await expect(page.locator(".th-role", { hasText: "审片人" })).toBeVisible();
+  await shot(page, "team-home-after-create");
+
+  await page.goto(`/#/teams/${teamIdOf(page)}/roles`);
   await expect(page.getByRole("heading", { name: "岗位与绑定" })).toBeVisible();
   await expect(page.getByRole("button", { name: /^前端开发\s*\/\s*未绑定$/ })).toBeVisible();
+  await expect(page.getByRole("button", { name: /^剪辑师\s*\/\s*未绑定$/ })).toBeVisible();
   await shot(page, "roles-after-create");
 });
 
@@ -256,7 +333,8 @@ test("团队空间页显示计数、进行中的任务和最近活动", async ({
   await expect(page.getByText(/1 个执行中/)).toBeVisible();
   await expect(page.locator(".th-task-row", { hasText: "FE-002" })).toBeVisible();
   await expect(page.locator(".th-event", { hasText: "FE-002 状态 READY → 执行中" })).toBeVisible();
-  await expect(page.getByText(/分支：main/)).toBeVisible();
+  await expect(page.getByText(/Git 仓库：main @ [0-9a-f]{7}/)).toBeVisible();
+  await expect(page.locator(".topbar__branch")).toContainText("main");
   await shot(page, "team-home");
 });
 
@@ -288,4 +366,126 @@ test("看板可显示已完成列，非法输入由后端拒绝（创建 READY �
   const banner = page.getByRole("alert");
   await expect(banner).toContainText("任务尚未就绪：至少需要一个文件引用");
   await shot(page, "task-create-rejected", banner);
+});
+
+test("普通文件夹作为工作空间：不显示分支，READY 任务可引用其中文件并能搜到", async ({ page }) => {
+  const plain = process.env.E2E_PLAIN_WORKSPACE ?? "";
+  expect(plain).not.toBe("");
+
+  await page.goto("/#/teams/new");
+  await page.getByLabel("团队名称").fill("素材整理组");
+  // 手动输入路径 + 检测（不经过系统对话框）
+  await page.getByLabel("手动输入工作空间路径").fill(plain);
+  await page.getByRole("button", { name: "检测", exact: true }).click();
+  await expect(page.getByText("普通文件夹", { exact: true })).toBeVisible();
+  await expect(page.getByText(/Git 仓库：/)).toHaveCount(0);
+  await addCustomRole(page, "整理员", "整理素材并编号", "R1");
+  await addCustomRole(page, "校对员", "", "R2");
+  await shot(page, "plain-folder-detected");
+
+  await page.getByRole("button", { name: "创建团队", exact: true }).click();
+  await expect(page).toHaveURL(/\/teams\/(?!new$)[^/]+$/);
+  await expect(page.getByRole("heading", { name: "团队空间" })).toBeVisible();
+  const teamId = teamIdOf(page);
+  const context = page.locator(".th-panel", { hasText: "团队共用的上下文" });
+  await expect(context.getByText("普通文件夹", { exact: true })).toBeVisible();
+  await expect(page.getByText(/Git 仓库：/)).toHaveCount(0);
+  // 顶栏：有「工作区」标签，但没有分支与提交
+  await expect(page.locator(".topbar__branch")).toContainText("工作区");
+  await expect(page.locator(".topbar__commit")).toHaveCount(0);
+  await shot(page, "plain-folder-team-home");
+
+  // 任务表单的文件搜索能搜到普通文件夹里的文件（含中文文件名），搜不到文件夹外的文件
+  await page.goto(`/#/teams/${teamId}/tasks/new`);
+  await page.getByLabel("任务名称").fill("整理拍摄素材");
+  const owner = page.getByLabel("负责人岗位");
+  await owner.selectOption(
+    await owner.locator("option", { hasText: "整理员" }).getAttribute("value"),
+  );
+  await page.locator("#task-file-search").fill("outline");
+  const suggestion = page.locator(".task-form__suggestion", { hasText: "notes/outline.md" });
+  await expect(suggestion).toBeVisible();
+  await shot(page, "plain-folder-file-search");
+  await suggestion.click();
+  await page.locator("#task-file-search").fill("素材清单");
+  await expect(page.locator(".task-form__suggestion", { hasText: "素材清单.txt" })).toBeVisible();
+  await page.locator("#task-file-search").fill("README");
+  await expect(page.locator(".task-form__suggestion")).toHaveCount(0);
+  await page.locator("#task-file-search").fill("");
+  await expect(page.locator(".task-form__chip", { hasText: "notes/outline.md" })).toBeVisible();
+  await page.getByRole("radio", { name: "READY", exact: true }).check();
+  await page.getByRole("button", { name: "创建并分配" }).click();
+  await expect(statusLine(page)).toContainText("READY / R1-001");
+  await expect(page.getByRole("heading", { name: "整理拍摄素材" })).toBeVisible();
+  await expect(page.getByText("notes/outline.md")).toBeVisible();
+  await shot(page, "plain-folder-task-ready");
+});
+
+test("不建任何岗位直接创建团队：团队空间显示添加岗位引导", async ({ page }) => {
+  await page.goto("/#/teams/new");
+  await page.getByLabel("团队名称").fill("暂无岗位团队");
+  await page.getByRole("button", { name: "选择工作空间" }).click();
+  await expect(page.getByText(/Git 仓库：main @ [0-9a-f]{7}/)).toBeVisible();
+  await page.getByRole("button", { name: "创建团队", exact: true }).click();
+
+  await expect(page).toHaveURL(/\/teams\/(?!new$)[^/]+$/);
+  const teamId = teamIdOf(page);
+  await expect(page.getByRole("heading", { name: "团队空间" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "还没有岗位" })).toBeVisible();
+  await expect(page.getByText("团队里还没有岗位，添加岗位后才能创建和派发任务。")).toBeVisible();
+  await expect(page.locator(".th-role")).toHaveCount(0);
+  await shot(page, "team-home-no-roles");
+
+  // 任务表单同样引导先添加岗位
+  await page.goto(`/#/teams/${teamId}/tasks/new`);
+  await expect(
+    page.getByText("任务必须指定负责岗位，请先在「岗位与绑定」里添加岗位。"),
+  ).toBeVisible();
+
+  // 引导按钮进入岗位页，在那里新增第一个岗位
+  await page.goto(`/#/teams/${teamId}`);
+  await page.getByRole("button", { name: "添加岗位", exact: true }).click();
+  await expect(page).toHaveURL(/\/teams\/[^/]+\/roles$/);
+  await expect(page.getByRole("heading", { name: "岗位与绑定" })).toBeVisible();
+  await page.getByRole("button", { name: "新增岗位" }).first().click();
+  const form = page.locator(".role-create");
+  await form.getByLabel("岗位名称").fill("策划");
+  await form.getByLabel("岗位名称").blur();
+  await expect(form.getByLabel("任务编号前缀")).toHaveValue("R1");
+  await form.getByRole("button", { name: "创建岗位" }).click();
+  await expect(page.locator(".role-chip", { hasText: "策划" })).toBeVisible();
+  await shot(page, "roles-first-role-added");
+});
+
+test("Git 仓库子目录作为工作空间：路径保持子目录，同时显示 Git 信息", async ({ page }) => {
+  const subdir = process.env.E2E_SUBDIR_WORKSPACE ?? "";
+  expect(subdir).toMatch(/packages[/\\]app$/);
+
+  await page.goto("/#/teams/new");
+  await page.getByLabel("团队名称").fill("子目录工作组");
+  await page.getByLabel("手动输入工作空间路径").fill(subdir);
+  await page.getByRole("button", { name: "检测", exact: true }).click();
+  await expect(page.getByText(/Git 仓库：main @ [0-9a-f]{7}/)).toBeVisible();
+  // 路径仍是所选子目录，没有被提升成仓库根
+  await expect(page.getByText(/packages\/app$/)).toBeVisible();
+  await addCustomRole(page, "App 开发", "", "AP");
+  await page.getByRole("button", { name: "创建团队", exact: true }).click();
+
+  await expect(page).toHaveURL(/\/teams\/(?!new$)[^/]+$/);
+  const teamId = teamIdOf(page);
+  const context = page.locator(".th-panel", { hasText: "团队共用的上下文" });
+  await expect(context.locator(".th-path")).toContainText(/packages\/app$/);
+  await expect(context.getByText(/Git 仓库：main @ [0-9a-f]{7}/)).toBeVisible();
+  await expect(page.locator(".topbar__branch")).toContainText("main");
+  await shot(page, "subdir-team-home");
+
+  // 文件搜索以子目录为根：路径相对子目录，搜不到仓库根的文件
+  await page.goto(`/#/teams/${teamId}/tasks/new`);
+  await page.locator("#task-file-search").fill("main");
+  await expect(
+    page.locator(".task-form__suggestion", { hasText: /^src\/main\.ts$/ }),
+  ).toBeVisible();
+  await page.locator("#task-file-search").fill("plan");
+  await expect(page.locator(".task-form__suggestion")).toHaveCount(0);
+  await shot(page, "subdir-file-search");
 });

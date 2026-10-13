@@ -36,6 +36,42 @@ async function ensureBaselineTask(page: Page): Promise<void> {
   }
 }
 
+/** 创建团队页：填名称、选工作空间、可选从示例添加岗位；只填表，不提交。 */
+async function fillCreateTeam(
+  page: Page,
+  input: { name: string; description?: string; examples?: string[] },
+): Promise<void> {
+  await page.goto("/#/teams/new");
+  await page.getByLabel("团队名称").fill(input.name);
+  if (input.description !== undefined) {
+    await page.getByLabel("说明").first().fill(input.description);
+  }
+  await page.getByRole("button", { name: "选择工作空间" }).click();
+  await expect(page.getByText(/Git 仓库：main @ [0-9a-f]{7}/)).toBeVisible();
+  const examples = input.examples ?? [];
+  if (examples.length > 0) {
+    await page.getByRole("button", { name: "从示例添加" }).click();
+    for (const example of examples) {
+      await page
+        .locator(".tc-example", { hasText: example })
+        .getByRole("button", { name: "添加" })
+        .click();
+    }
+  }
+}
+
+/** 创建团队并等待落到团队空间（`/teams/<id>`），返回团队 id。 */
+async function createTeamViaUi(
+  page: Page,
+  input: { name: string; description?: string; examples?: string[] },
+): Promise<string> {
+  await fillCreateTeam(page, input);
+  await page.getByRole("button", { name: "创建团队", exact: true }).click();
+  await expect(page).toHaveURL(/\/teams\/(?!new$)[^/]+$/);
+  await expect(page.getByRole("heading", { name: "团队空间" })).toBeVisible();
+  return /\/teams\/([^/]+)/.exec(page.url())?.[1] ?? "";
+}
+
 /** 获取或进入基础团队，并保证基础团队存在且有基线数据。 */
 async function gotoTeam(page: Page, path = ""): Promise<string> {
   if (baseTeamId !== "") {
@@ -50,12 +86,11 @@ async function gotoTeam(page: Page, path = ""): Promise<string> {
   await page.goto("/");
   await page.waitForURL(/\/teams\/.+$/);
   if (page.url().endsWith("/teams/new")) {
-    await page.getByLabel("Team 名称").fill("账号系统迭代");
-    await page.getByLabel("说明").first().fill("端到端测试团队");
-    await page.getByRole("button", { name: "选择工作空间" }).click();
-    await expect(page.getByText(/代码库已检测：main @ [0-9a-f]{7}/)).toBeVisible();
-    await page.getByRole("button", { name: "创建团队并配置岗位" }).click();
-    await expect(page).toHaveURL(/\/teams\/[^/]+\/roles$/);
+    await createTeamViaUi(page, {
+      name: "账号系统迭代",
+      description: "端到端测试团队",
+      examples: ["Leader", "前端开发", "QA 测试"],
+    });
   }
   const id = /\/teams\/([^/]+)/.exec(page.url())?.[1] ?? "";
   expect(id).not.toBe("");
@@ -171,8 +206,10 @@ test("03. 归档岗位：有未结束任务时被拒绝，任务结束后可归�
   await page.getByRole("button", { name: "新增岗位" }).click();
   const roleCreateForm = page.locator(".role-create");
   await roleCreateForm.getByLabel("岗位名称").fill("架构审查");
-  await roleCreateForm.getByLabel("岗位标识").fill("role_arch_review");
-  await roleCreateForm.getByLabel("编号前缀").fill("ARCH");
+  await roleCreateForm.getByLabel("岗位名称").blur();
+  // 中文名称没有字母，内核建议 R 系列前缀（避开团队已用前缀）；这里再手动改成 ARCH
+  await expect(roleCreateForm.getByLabel("任务编号前缀")).toHaveValue(/^R\d+$/);
+  await roleCreateForm.getByLabel("任务编号前缀").fill("ARCH");
   await roleCreateForm.getByLabel("职责").fill("负责代码架构把关");
   await roleCreateForm.getByRole("button", { name: "创建岗位" }).click();
 
@@ -323,34 +360,35 @@ test("05. 任务取消与恢复（CANCELLED → TODO）并在看板「显示已�
   await qaShot(page, "qa-11-task-restored-to-todo");
 });
 
-test("06. 岗位规则与边界：非法前缀、岗位 code 重复、第二个 Leader 被拒绝", async ({ page }) => {
+test("06. 岗位规则与边界：非法前缀、前缀重复、第二个 Leader 被拒绝", async ({ page }) => {
   await gotoTeam(page, "/roles");
   await page.getByRole("button", { name: "新增岗位" }).click();
   const roleCreateForm = page.locator(".role-create");
+  const prefixInput = roleCreateForm.getByLabel("任务编号前缀");
 
   // 1. 非法前缀：1 位字符
   await roleCreateForm.getByLabel("岗位名称").fill("非法前缀测试");
-  await roleCreateForm.getByLabel("岗位标识").fill("role_invalid_pre");
-  await roleCreateForm.getByLabel("编号前缀").fill("X");
+  await roleCreateForm.getByLabel("岗位名称").blur();
+  // 等自动建议填入后再手动改，避免建议值晚到覆盖手填内容
+  await expect(prefixInput).toHaveValue(/^R\d+$/);
+  await prefixInput.fill("X");
   await roleCreateForm.getByRole("button", { name: "创建岗位" }).click();
 
   const alert = roleCreateForm.getByRole("alert");
   await expect(alert).toBeVisible();
-  await expect(alert).toContainText("任务前缀「X」格式不正确：需为 2–4 位大写字母");
+  await expect(alert).toContainText("任务前缀「X」格式不正确：需为 2–4 位大写字母或数字");
   await qaShot(page, "qa-12-role-invalid-prefix", alert);
 
-  // 2. 岗位标识 code 重复
-  await roleCreateForm.getByLabel("编号前缀").fill("NORM");
-  await roleCreateForm.getByLabel("岗位标识").fill("role_frontend");
+  // 2. 前缀与现有岗位重复（岗位代码已由系统自动生成，不再由用户填写）
+  await prefixInput.fill("FE");
   await roleCreateForm.getByRole("button", { name: "创建岗位" }).click();
-  await expect(alert).toContainText("团队中已有岗位标识「role_frontend」");
-  await qaShot(page, "qa-13-role-duplicate-code", alert);
+  await expect(alert).toContainText("任务前缀「FE」已被岗位「前端开发」使用");
+  await qaShot(page, "qa-13-role-duplicate-prefix", alert);
 
   // 3. 第二个 Leader 被拒绝
-  await roleCreateForm.getByLabel("岗位模板").selectOption("role_leader");
   await roleCreateForm.getByLabel("岗位名称").fill("副团队长");
-  await roleCreateForm.getByLabel("岗位标识").fill("role_second_leader");
-  await roleCreateForm.getByLabel("编号前缀").fill("VLD");
+  await prefixInput.fill("VLD");
+  await roleCreateForm.getByLabel("设为 Leader").check();
   await roleCreateForm.getByRole("button", { name: "创建岗位" }).click();
   await expect(alert).toContainText(/团队已有 Leader「.*」，每个团队至多一个 Leader/);
   await qaShot(page, "qa-14-role-second-leader-rejected", alert);
@@ -402,11 +440,8 @@ test("07. 输入边界：超长标题、控制字符、首尾空格、重复名�
   await harnessCreateForm.getByRole("button", { name: "取消" }).click();
 
   // 5. 重复团队名称
-  await page.goto("/#/teams/new");
-  await page.getByLabel("Team 名称").fill("账号系统迭代");
-  await page.getByRole("button", { name: "选择工作空间" }).click();
-  await expect(page.getByText(/代码库已检测：main @ [0-9a-f]{7}/)).toBeVisible();
-  await page.getByRole("button", { name: "创建团队并配置岗位" }).click();
+  await fillCreateTeam(page, { name: "账号系统迭代" });
+  await page.getByRole("button", { name: "创建团队", exact: true }).click();
   const teamAlert = page.getByRole("alert");
   await expect(teamAlert).toContainText("已有同名团队「账号系统迭代」");
   await qaShot(page, "qa-19-input-boundary-duplicate-team", teamAlert);
@@ -454,15 +489,11 @@ test("08. 文件引用边界：父级目录 ..、绝对路径、超过 50 个引
 
 test("09. 团队切换与数据隔离：创建第二个团队并验证数据互不串", async ({ page }) => {
   // 1. 创建第二个团队
-  await page.goto("/#/teams/new");
-  await page.getByLabel("Team 名称").fill("研发效能保障组");
-  await page.getByLabel("说明").first().fill("独立测试团队数据隔离");
-  await page.getByRole("button", { name: "选择工作空间" }).click();
-  await expect(page.getByText(/代码库已检测：main @ [0-9a-f]{7}/)).toBeVisible();
-  await page.getByRole("button", { name: "创建团队并配置岗位" }).click();
-
-  await expect(page).toHaveURL(/\/teams\/[^/]+\/roles$/);
-  const team2Id = /\/teams\/([^/]+)/.exec(page.url())?.[1] ?? "";
+  const team2Id = await createTeamViaUi(page, {
+    name: "研发效能保障组",
+    description: "独立测试团队数据隔离",
+    examples: ["Leader"],
+  });
   expect(team2Id).not.toBe(baseTeamId);
   await qaShot(page, "qa-23-second-team-created");
 
@@ -523,13 +554,10 @@ test("10. 重新加载页面后状态保持", async ({ page }) => {
 
 test("11. 当团队所有任务均已取消时，看板保留工具栏并提示勾选「显示已取消」", async ({ page }) => {
   // 创建一个专属团队用于复现此缺陷
-  await page.goto("/#/teams/new");
-  await page.getByLabel("Team 名称").fill("缺陷复现-仅已取消团队");
-  await page.getByRole("button", { name: "选择工作空间" }).click();
-  await expect(page.getByText(/代码库已检测：main @ [0-9a-f]{7}/)).toBeVisible();
-  await page.getByRole("button", { name: "创建团队并配置岗位" }).click();
-  await expect(page).toHaveURL(/\/teams\/[^/]+\/roles$/);
-  const bugTeamId = /\/teams\/([^/]+)/.exec(page.url())?.[1] ?? "";
+  const bugTeamId = await createTeamViaUi(page, {
+    name: "缺陷复现-仅已取消团队",
+    examples: ["Leader"],
+  });
 
   // 在该团队创建 1 个任务并立即取消它
   await page.goto(`/#/teams/${bugTeamId}/tasks/new`);
