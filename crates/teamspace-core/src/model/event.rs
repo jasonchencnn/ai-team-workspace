@@ -20,6 +20,8 @@ pub enum EventKind {
     TaskCreated,
     TaskUpdated,
     TaskStatusChanged,
+    /// 岗位文件夹（`Teamspace/<岗位>/`）写入失败；同一问题只记录一次。
+    RoleFolderError,
 }
 
 /// 操作者。M1 只有 Human；后续里程碑会加入岗位 / Harness。

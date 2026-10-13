@@ -39,6 +39,29 @@ pub struct RoleView {
     pub open_task_count: u32,
     /// 该岗位负责的执行中任务数。
     pub doing_task_count: u32,
+    /// 岗位文件夹相对工作空间的路径（`/` 分隔），如 `Teamspace/前端开发`；尚未建立时为 `null`。
+    pub folder: Option<String>,
+    /// 岗位文件夹最近一次同步失败的中文说明（如工作空间不存在或不可写）；正常时为 `null`。
+    pub folder_problem: Option<String>,
+}
+
+/// 岗位文件夹（`get_role_folder` 的结果）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct RoleFolder {
+    pub role_id: String,
+    /// 相对工作空间的路径（`/` 分隔），如 `Teamspace/前端开发`；尚未建立时为 `null`。
+    pub relative_path: Option<String>,
+    /// 绝对路径；尚未建立时为 `null`。
+    pub path: Option<String>,
+    /// 文件夹当前是否存在于磁盘上。
+    pub exists: bool,
+    /// 工作日志最近的条目（默认 20 条），最新的在前；每条形如
+    /// `2026-10-13 14:05:01 UTC+08:00 · FE-001 · 状态 执行中 → 受阻：等待接口`。
+    pub journal: Vec<String>,
+    /// 文件夹不可用或读写失败时的中文说明；正常时为 `null`。
+    pub problem: Option<String>,
 }
 
 /// 任务等处引用岗位时使用的简要信息（岗位可能已归档）。

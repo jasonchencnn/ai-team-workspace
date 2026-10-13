@@ -5,6 +5,7 @@ pub mod api;
 pub mod error;
 pub mod model;
 pub mod probe;
+pub mod role_folder;
 mod service;
 mod store;
 pub mod system_probe;

@@ -1,6 +1,7 @@
 //! 通过 [`Teamspace`] 公开命令测试业务规则。全部使用临时目录和假探测，不调用真实 Git 或 CLI。
 
 mod events;
+mod folders;
 mod harnesses;
 mod roles;
 mod tasks;
@@ -19,6 +20,11 @@ use crate::probe::SystemProbe;
 /// 假探测：目录自身或任一上级目录含 `.git` 时视为 Git 仓库（分支 main、提交 a31f8c2），否则为普通
 /// 文件夹；文件搜索遍历目录（跳过以 `.` 开头的条目）；健康检查按约定返回。
 pub(crate) struct FakeProbe;
+
+thread_local! {
+    /// [`FakeProbe::reveal_path`] 收到的路径（每个测试线程各一份）。
+    pub(crate) static REVEALED: std::cell::RefCell<Vec<PathBuf>> = const { std::cell::RefCell::new(Vec::new()) };
+}
 
 /// 健康检查时 executable 为此路径则返回 error。
 pub(crate) const BROKEN_EXECUTABLE: &str = "/broken/claude";
@@ -73,6 +79,11 @@ impl SystemProbe for FakeProbe {
             version: Some("1.0.0".into()),
             error: None,
         }
+    }
+
+    fn reveal_path(&self, path: &Path) -> Result<()> {
+        REVEALED.with(|revealed| revealed.borrow_mut().push(path.to_path_buf()));
+        Ok(())
     }
 
     fn check_harness(&self, harness: &HarnessInstance) -> HealthCheck {

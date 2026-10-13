@@ -12,7 +12,7 @@ use time::OffsetDateTime;
 use crate::error::{Error, Result};
 
 /// 当前 schema 版本。
-pub(crate) const SCHEMA_VERSION: i64 = 2;
+pub(crate) const SCHEMA_VERSION: i64 = 3;
 
 const SCHEMA_V1: &str = r#"
 CREATE TABLE teams (
@@ -142,7 +142,17 @@ CREATE INDEX events_team ON events (team_id, seq);
 CREATE INDEX events_task ON events (task_id, seq);
 "#;
 
-const MIGRATIONS: &[&str] = &[SCHEMA_V1, SCHEMA_V2];
+/// v3：岗位文件夹（D14）。`folder` 为相对工作空间的文件夹路径（未建立时为 NULL），
+/// `folder_problem` 为最近一次同步失败的说明，`journaled_seq` 为已写入工作日志的最后一条活动序号。
+/// 已有岗位迁移后 `folder` 为 NULL、`journaled_seq` 为 0，在下一次同步（打开团队概览或任何写操作）
+/// 时补建文件夹并补写历史日志。
+const SCHEMA_V3: &str = r#"
+ALTER TABLE roles ADD COLUMN folder TEXT;
+ALTER TABLE roles ADD COLUMN folder_problem TEXT;
+ALTER TABLE roles ADD COLUMN journaled_seq INTEGER NOT NULL DEFAULT 0;
+"#;
+
+const MIGRATIONS: &[&str] = &[SCHEMA_V1, SCHEMA_V2, SCHEMA_V3];
 
 /// 打开数据库：WAL 日志、synchronous=NORMAL、开启外键，并迁移到当前版本。
 pub(crate) fn open(path: &Path) -> Result<Connection> {
@@ -311,6 +321,33 @@ mod tests {
             .collect::<rusqlite::Result<_>>()
             .unwrap();
         assert_eq!(rows, vec![(1, "e1".to_owned()), (2, "e2".to_owned())]);
+    }
+
+    #[test]
+    fn v2_roles_migrate_to_v3_without_folders() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("t.db");
+        {
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch(SCHEMA_V1).unwrap();
+            conn.execute_batch(SCHEMA_V2).unwrap();
+            conn.execute_batch(
+                "INSERT INTO teams VALUES ('t', 'T', '', '/w', 'a', 'a', NULL);
+                 INSERT INTO roles (id, team_id, name, code, task_prefix, created_at, updated_at)
+                     VALUES ('r', 't', '前端', 'role_fe', 'FE', 'a', 'a');
+                 PRAGMA user_version = 2;",
+            )
+            .unwrap();
+        }
+        let conn = open(&path).unwrap();
+        let row: (Option<String>, Option<String>, i64) = conn
+            .query_row(
+                "SELECT folder, folder_problem, journaled_seq FROM roles WHERE id = 'r'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(row, (None, None, 0));
     }
 
     #[test]

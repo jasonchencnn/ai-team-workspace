@@ -15,6 +15,7 @@ import type { FileSearchQuery } from "../bindings/FileSearchQuery.js";
 import type { HarnessDetection } from "../bindings/HarnessDetection.js";
 import type { HarnessInstance } from "../bindings/HarnessInstance.js";
 import type { Role } from "../bindings/Role.js";
+import type { RoleFolder } from "../bindings/RoleFolder.js";
 import type { RoleTemplate } from "../bindings/RoleTemplate.js";
 import type { RoleView } from "../bindings/RoleView.js";
 import type { SuggestTaskPrefixInput } from "../bindings/SuggestTaskPrefixInput.js";
@@ -89,6 +90,13 @@ export const bindRoleHarness = (roleId: string, harnessId: string) =>
 /** 解除岗位的 Harness 绑定。 */
 export const unbindRoleHarness = (roleId: string) =>
   invoke<RoleView>("unbind_role_harness", { roleId });
+
+/** 岗位文件夹：绝对路径、是否存在、最近的工作日志（默认 20 条，最新在前）。 */
+export const getRoleFolder = (roleId: string, limit?: number) =>
+  invoke<RoleFolder>("get_role_folder", { roleId, limit: limit ?? null });
+
+/** 在 Finder 中打开岗位文件夹；文件夹不存在时被拒绝。 */
+export const revealRoleFolder = (roleId: string) => invoke<null>("reveal_role_folder", { roleId });
 
 // ---------------------------------------------------------------- Harness
 

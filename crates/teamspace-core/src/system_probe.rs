@@ -400,6 +400,38 @@ impl SystemProbe for LocalProbe {
         let codex_home = codex_home_dir();
         self.check_with(harness, self.path_dirs(), &codex_home)
     }
+
+    /// 用系统自带命令打开目录（macOS `open`、Windows `explorer`、其他平台 `xdg-open`），不加插件。
+    fn reveal_path(&self, path: &Path) -> Result<()> {
+        if !path.is_dir() {
+            return Err(Error::not_found(format!(
+                "文件夹不存在：{}",
+                path.display()
+            )));
+        }
+        let opener = if cfg!(target_os = "macos") {
+            "/usr/bin/open"
+        } else if cfg!(windows) {
+            "explorer"
+        } else {
+            "xdg-open"
+        };
+        let status = Command::new(opener)
+            .arg(path)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .map_err(|err| Error::internal(format!("无法打开文件夹 {}：{err}", path.display())))?;
+        // Windows 的 explorer 即使成功也常返回非 0，只在其他平台检查退出码。
+        if !status.success() && !cfg!(windows) {
+            return Err(Error::internal(format!(
+                "无法打开文件夹 {}（{opener} 退出码 {status}）",
+                path.display()
+            )));
+        }
+        Ok(())
+    }
 }
 
 /// 一条子进程的执行结果。

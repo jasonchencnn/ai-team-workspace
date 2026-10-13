@@ -31,6 +31,8 @@ register_commands!(
     archive_role,
     bind_role_harness,
     unbind_role_harness,
+    get_role_folder,
+    reveal_role_folder,
     detect_harnesses,
     list_harnesses,
     get_harness,

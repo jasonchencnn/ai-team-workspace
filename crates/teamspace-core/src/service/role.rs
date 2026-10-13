@@ -74,11 +74,18 @@ pub(crate) fn view(conn: &Connection, role: Role) -> Result<RoleView> {
         params![role.id],
         |row| Ok((row.get(0)?, row.get(1)?)),
     )?;
+    let (folder, folder_problem) = conn.query_row(
+        "SELECT folder, folder_problem FROM roles WHERE id = ?1",
+        params![role.id],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )?;
     Ok(RoleView {
         role,
         harness,
         open_task_count: open,
         doing_task_count: doing,
+        folder,
+        folder_problem,
     })
 }
 
@@ -342,6 +349,16 @@ pub(crate) fn update(conn: &Connection, input: UpdateRoleInput) -> Result<RoleVi
         ],
     )?;
     let role = get_active(conn, &old.id)?;
+    let changed: Vec<&str> = [
+        ("name", old.name != role.name),
+        ("taskPrefix", old.task_prefix != role.task_prefix),
+        ("description", old.description != role.description),
+        ("guidelines", old.guidelines != role.guidelines),
+        ("isLeader", old.is_leader != role.is_leader),
+    ]
+    .into_iter()
+    .filter_map(|(field, changed)| changed.then_some(field))
+    .collect();
     event::record(
         conn,
         NewEvent {
@@ -353,6 +370,7 @@ pub(crate) fn update(conn: &Connection, input: UpdateRoleInput) -> Result<RoleVi
             data: json!({
                 "before": { "name": old.name, "taskPrefix": old.task_prefix, "isLeader": old.is_leader },
                 "after": { "name": role.name, "taskPrefix": role.task_prefix, "isLeader": role.is_leader },
+                "changed": changed,
             }),
         },
     )?;
@@ -407,6 +425,10 @@ pub(crate) fn bind(conn: &Connection, role_id: &str, harness_id: &str) -> Result
     if role.harness_id.as_deref() == Some(harness_id) {
         return view(conn, role);
     }
+    let previous_name = match &role.harness_id {
+        Some(id) => harness::get_any(conn, id)?.map(|h| h.name),
+        None => None,
+    };
     conn.execute(
         "UPDATE roles SET harness_id = ?2, updated_at = ?3 WHERE id = ?1",
         params![role_id, harness_id, now()],
@@ -419,7 +441,12 @@ pub(crate) fn bind(conn: &Connection, role_id: &str, harness_id: &str) -> Result
             role_id: Some(role_id),
             kind: EventKind::RoleHarnessBound,
             summary: format!("岗位「{}」绑定 Harness「{}」", role.name, harness.name),
-            data: json!({ "harnessId": harness_id, "previousHarnessId": role.harness_id }),
+            data: json!({
+                "harnessId": harness_id,
+                "harnessName": harness.name,
+                "previousHarnessId": role.harness_id,
+                "previousHarnessName": previous_name,
+            }),
         },
     )?;
     view(conn, get_active(conn, role_id)?)

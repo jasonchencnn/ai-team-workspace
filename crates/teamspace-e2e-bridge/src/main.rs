@@ -12,8 +12,42 @@ use std::thread;
 
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
+use teamspace_core::model::{
+    HarnessDetection, HarnessInstance, HarnessKind, HealthCheck, WorkspaceInfo,
+};
 use teamspace_core::system_probe::LocalProbe;
-use teamspace_core::{Error, ErrorPayload, Teamspace};
+use teamspace_core::{Error, ErrorPayload, SystemProbe, Teamspace};
+
+/// 真实探测，但「在 Finder 中打开」只打印路径，不在测试时弹出 Finder 窗口。
+struct BridgeProbe(LocalProbe);
+
+impl SystemProbe for BridgeProbe {
+    fn inspect_workspace(&self, path: &Path) -> teamspace_core::Result<WorkspaceInfo> {
+        self.0.inspect_workspace(path)
+    }
+
+    fn search_files(
+        &self,
+        workspace: &Path,
+        query: &str,
+        limit: usize,
+    ) -> teamspace_core::Result<Vec<String>> {
+        self.0.search_files(workspace, query, limit)
+    }
+
+    fn detect_harness(&self, kind: HarnessKind) -> HarnessDetection {
+        self.0.detect_harness(kind)
+    }
+
+    fn check_harness(&self, harness: &HarnessInstance) -> HealthCheck {
+        self.0.check_harness(harness)
+    }
+
+    fn reveal_path(&self, path: &Path) -> teamspace_core::Result<()> {
+        println!("reveal {}", path.display());
+        Ok(())
+    }
+}
 
 type CmdResult = Result<Value, ErrorPayload>;
 
@@ -23,7 +57,7 @@ fn main() {
         eprintln!("usage: teamspace-e2e-bridge <db-path> <port>");
         std::process::exit(2);
     };
-    let ts = Teamspace::open(Path::new(&db), Box::new(LocalProbe::new()))
+    let ts = Teamspace::open(Path::new(&db), Box::new(BridgeProbe(LocalProbe::new())))
         .unwrap_or_else(|err| panic!("open database: {err}"));
     let ts = Arc::new(ts);
     let listener = TcpListener::bind(format!("127.0.0.1:{port}"))
@@ -126,6 +160,11 @@ fn dispatch(ts: &Teamspace, cmd: &str, args: &Value) -> CmdResult {
             &arg::<String>(args, "harnessId")?,
         )),
         "unbind_role_harness" => out(ts.unbind_role_harness(&arg::<String>(args, "roleId")?)),
+        "get_role_folder" => out(ts.get_role_folder(
+            &arg::<String>(args, "roleId")?,
+            arg::<Option<u32>>(args, "limit")?,
+        )),
+        "reveal_role_folder" => out(ts.reveal_role_folder(&arg::<String>(args, "roleId")?)),
         "detect_harnesses" => out(Ok(ts.detect_harnesses())),
         "list_harnesses" => out(ts.list_harnesses(&arg::<String>(args, "teamId")?)),
         "get_harness" => out(ts.get_harness(&arg::<String>(args, "harnessId")?)),

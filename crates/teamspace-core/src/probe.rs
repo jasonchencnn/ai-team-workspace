@@ -39,4 +39,8 @@ pub trait SystemProbe: Send + Sync {
     /// Claude Code 若配置了 `profile`（settings 文件）需检查文件存在。
     /// 返回的 `checked_at` 可为 `None`，由内核写入检查时间。内核不会对 `mock` 调用此方法。
     fn check_harness(&self, harness: &HarnessInstance) -> HealthCheck;
+
+    /// 在系统文件管理器（macOS 为 Finder）中打开已存在的目录 `path`（内核已确认它存在）。
+    /// 打开失败时返回 internal 错误。
+    fn reveal_path(&self, path: &Path) -> Result<()>;
 }

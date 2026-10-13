@@ -17,4 +17,12 @@ openTaskCount: number,
 /**
  * 该岗位负责的执行中任务数。
  */
-doingTaskCount: number, };
+doingTaskCount: number, 
+/**
+ * 岗位文件夹相对工作空间的路径（`/` 分隔），如 `Teamspace/前端开发`；尚未建立时为 `null`。
+ */
+folder: string | null, 
+/**
+ * 岗位文件夹最近一次同步失败的中文说明（如工作空间不存在或不可写）；正常时为 `null`。
+ */
+folderProblem: string | null, };

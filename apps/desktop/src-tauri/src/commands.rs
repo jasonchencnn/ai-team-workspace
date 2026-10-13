@@ -75,6 +75,20 @@ pub fn unbind_role_harness(ts: State<'_, Teamspace>, role_id: &str) -> Result<Ro
 }
 
 #[tauri::command(async)]
+pub fn get_role_folder(
+    ts: State<'_, Teamspace>,
+    role_id: &str,
+    limit: Option<u32>,
+) -> Result<RoleFolder, Error> {
+    ts.get_role_folder(role_id, limit)
+}
+
+#[tauri::command(async)]
+pub fn reveal_role_folder(ts: State<'_, Teamspace>, role_id: &str) -> Result<(), Error> {
+    ts.reveal_role_folder(role_id)
+}
+
+#[tauri::command(async)]
 pub fn detect_harnesses(ts: State<'_, Teamspace>) -> Result<Vec<HarnessDetection>, Error> {
     Ok(ts.detect_harnesses())
 }
