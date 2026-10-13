@@ -19,3 +19,6 @@ pnpm-debug.log*
 # End-to-end test output
 apps/desktop/e2e-artifacts/
 apps/desktop/test-results/
+
+# Teamspace role folders created when this repo is used as a workspace
+/Teamspace/
