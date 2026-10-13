@@ -1,7 +1,8 @@
 //! 本机系统探测实现（M1-04）。
 //!
-//! [`LocalProbe`] 是 [`SystemProbe`] 的真实实现：只调用 Git 的只读查询和各 Harness CLI 的
-//! `--version`，不读取也不保存任何密钥，也不启动 Harness 执行任务。
+//! [`LocalProbe`] 是 [`SystemProbe`] 的真实实现：工作空间是任意已存在的本地文件夹，探测时看它是不是
+//! Git 仓库（是就附上分支与提交，不是也正常返回），文件搜索在 Git 目录里问 Git、在普通文件夹里遍历
+//! 目录；Harness CLI 只跑 `--version`。全程不读取也不保存任何密钥，也不启动 Harness 执行任务。
 //!
 //! macOS 上以 GUI 方式启动的应用继承不到登录 shell 的 PATH（Homebrew、NVM、Volta、Cargo
 //! 装的 CLI 都会找不到），因此这里先用 `$SHELL -ilc` 打印一段带标记的 PATH，再补上常见安装
@@ -21,7 +22,7 @@ use crate::model::{
     GitInfo, HarnessDetection, HarnessInstance, HarnessKind, HealthCheck, HealthStatus,
     WorkspaceInfo,
 };
-use crate::probe::SystemProbe;
+use crate::probe::{MAX_SCANNED_FILES, SystemProbe};
 
 /// 读取登录 shell PATH 的超时。
 const SHELL_PATH_TIMEOUT: Duration = Duration::from_secs(5);
@@ -220,6 +221,99 @@ impl LocalProbe {
         }
         Ok(first_non_empty_line(&output.stdout))
     }
+
+    /// `git ls-files` 列出的文件：相对 `workspace`、`/` 分隔，含已跟踪与未跟踪但未忽略的文件。
+    ///
+    /// `Ok(None)` 表示这个目录拿不到 Git 清单（不是仓库，或 Git 跑不起来），调用方改用目录遍历；
+    /// 只有 Git 卡住不动才算错误——那说明确实出了别的问题，不该悄悄换成遍历继续搜。
+    fn git_list_files(&self, workspace: &Path) -> Result<Option<Vec<String>>> {
+        let mut command = Command::new("git");
+        command.arg("-C").arg(workspace);
+        command.args([
+            "ls-files",
+            "--cached",
+            "--others",
+            "--exclude-standard",
+            "-z",
+        ]);
+        command.env("PATH", path_env(self.path_dirs()));
+        git_env(&mut command);
+
+        let output = match run_command(&mut command, GIT_TIMEOUT) {
+            Ok(output) => output,
+            // 没装 Git 或没执行权限不算搜索失败：这个目录本来就能当普通文件夹搜。
+            Err(_) => return Ok(None),
+        };
+        if output.timed_out {
+            return Err(Error::internal("搜索文件超时，请稍后重试"));
+        }
+        if !output.success {
+            return Ok(None);
+        }
+        Ok(Some(split_nul_paths(&output.stdout)))
+    }
+}
+
+/// 收集普通文件夹里的文件：相对 `root`、`/` 分隔，最多 `max_files` 个。
+///
+/// 跳过以 `.` 开头的文件和目录，以及 [`SKIPPED_DIRS`] 里的常见大目录；不跟随符号链接（指向目录的
+/// 链接不会被走进去，避免顺着链接爬出工作空间或绕成环）；单个子目录读不动（权限不足、刚好被删）
+/// 就跳过。一次搜索不该把整块硬盘读一遍，所以扫够 [`MAX_SCANNED_FILES`] 个文件就停。
+fn collect_files(root: &Path, max_files: usize) -> Vec<String> {
+    let mut files = Vec::new();
+    collect_files_into(root, root, max_files, &mut files);
+    files
+}
+
+/// 遍历普通文件夹时整棵跳过的目录（任何层级都跳）：装依赖和构建产物，文件多又不值得搜索。
+const SKIPPED_DIRS: [&str; 4] = ["node_modules", "target", "dist", "build"];
+
+/// 递归收集 `dir` 下的文件，结果相对 `root`（`root` 本身不必是 `dir`）。
+fn collect_files_into(root: &Path, dir: &Path, max_files: usize, files: &mut Vec<String>) {
+    if files.len() >= max_files {
+        return;
+    }
+    // 读不动就当这个子目录里没有文件，不因为一个子目录失败让整次搜索失败。
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+
+    for entry in entries.flatten() {
+        if files.len() >= max_files {
+            return;
+        }
+        let name = entry.file_name();
+        if name.to_string_lossy().starts_with('.') {
+            continue;
+        }
+        // file_type 取自 readdir，不跟随符号链接：链接到目录不会在这里被当成目录递归下去。
+        let Ok(kind) = entry.file_type() else {
+            continue;
+        };
+        if kind.is_dir() {
+            if SKIPPED_DIRS.contains(&name.to_string_lossy().as_ref()) {
+                continue;
+            }
+            collect_files_into(root, &entry.path(), max_files, files);
+        } else if kind.is_symlink() {
+            // 符号链接只当文件看待（与 git ls-files 一致）：指向文件的列出来，指向目录的直接跳过。
+            if entry.path().metadata().is_ok_and(|meta| meta.is_file()) {
+                files.push(relative_path(root, &entry.path()));
+            }
+        } else {
+            files.push(relative_path(root, &entry.path()));
+        }
+    }
+}
+
+/// 相对 `root` 的路径字符串，分隔符统一成 `/`（Windows 上也是），方便直接展示和作为任务引用。
+fn relative_path(root: &Path, path: &Path) -> String {
+    path.strip_prefix(root)
+        .unwrap_or(path)
+        .components()
+        .map(|component| component.as_os_str().to_string_lossy())
+        .collect::<Vec<_>>()
+        .join("/")
 }
 
 /// 给 Git 子进程统一设置的环境变量。
@@ -235,7 +329,8 @@ fn git_env(command: &mut Command) -> &mut Command {
 
 /// 探测前确认工作区目录还在且确实是目录。
 ///
-/// 目录不存在和目录不是仓库是两回事，得分开报错：前者通常是仓库被移动或删除，后者是选错了地方。
+/// 工作空间可以是任意本地文件夹，不要求是 Git 仓库，所以这里只区分「目录没了」和「这不是目录」
+/// （通常是选错了文件）；是不是 Git 仓库由 [`LocalProbe::git_text`] 再判断。
 fn ensure_workspace_dir(path: &Path) -> Result<()> {
     if !path.exists() {
         return Err(Error::invalid(format!(
@@ -256,9 +351,20 @@ impl SystemProbe for LocalProbe {
     fn inspect_workspace(&self, path: &Path) -> Result<WorkspaceInfo> {
         ensure_workspace_dir(path)?;
 
-        let root = self
+        // 工作空间就是所选目录本身：选中仓库子目录时也不提升为仓库根（内核同样会用规范化后的
+        // 所选目录覆盖这里的 path），所以直接原样返回传入的目录。
+        let selected = path.display().to_string();
+        // Git 在非仓库目录里正常拒绝（退出码非 0），即「普通文件夹」，git 为 None 而不是错误；
+        // 只有 Git 自己跑不起来才算错误。
+        if self
             .git_text(path, &["rev-parse", "--show-toplevel"])?
-            .ok_or_else(|| Error::invalid(format!("所选目录不是 Git 仓库：{}", path.display())))?;
+            .is_none()
+        {
+            return Ok(WorkspaceInfo {
+                path: selected,
+                git: None,
+            });
+        }
 
         // detached HEAD 时 symbolic-ref 退出码非 0，即分支为 None。
         let branch = self.git_text(path, &["symbolic-ref", "--short", "-q", "HEAD"])?;
@@ -266,39 +372,24 @@ impl SystemProbe for LocalProbe {
         let commit = self.git_text(path, &["rev-parse", "--short=7", "HEAD"])?;
 
         Ok(WorkspaceInfo {
-            path: root,
+            path: selected,
             git: Some(GitInfo { branch, commit }),
         })
     }
 
     fn search_files(&self, workspace: &Path, query: &str, limit: usize) -> Result<Vec<String>> {
         ensure_workspace_dir(workspace)?;
-
-        let mut command = Command::new("git");
-        command.arg("-C").arg(workspace);
-        command.args([
-            "ls-files",
-            "--cached",
-            "--others",
-            "--exclude-standard",
-            "-z",
-        ]);
-        command.env("PATH", path_env(self.path_dirs()));
-        git_env(&mut command);
-
-        let output = run_command(&mut command, GIT_TIMEOUT)
-            .map_err(|err| Error::internal(format!("无法运行 git：{err}")))?;
-        if output.timed_out {
-            return Err(Error::internal("搜索文件超时，请稍后重试"));
-        }
-        if !output.success {
-            return Err(Error::invalid(format!(
-                "所选目录不是 Git 仓库：{}",
-                workspace.display()
-            )));
+        if limit == 0 {
+            return Ok(Vec::new());
         }
 
-        Ok(select_files(&output.stdout, query, limit))
+        // Git 目录（含仓库子目录）走 git ls-files：路径相对所选目录、已跟踪与未跟踪但未忽略的
+        // 文件都在里面；不是仓库（或 Git 用不了）就退回遍历目录，普通文件夹照样能搜。
+        let paths = match self.git_list_files(workspace)? {
+            Some(paths) => paths,
+            None => collect_files(workspace, MAX_SCANNED_FILES),
+        };
+        Ok(select_files(paths, query, limit))
     }
 
     fn detect_harness(&self, kind: HarnessKind) -> HarnessDetection {
@@ -482,20 +573,18 @@ fn looks_like_version(token: &str) -> bool {
     !body.is_empty() && body.contains('.') && body.chars().all(|c| c.is_ascii_digit() || c == '.')
 }
 
-/// 取出 `git ls-files -z` 的输出并按规则筛选排序。
-///
-/// 命中判断不区分大小写；排序为「文件名命中 → 路径更短 → 字典序」，最多 `limit` 条。
-fn select_files(stdout: &str, query: &str, limit: usize) -> Vec<String> {
+/// 按规则筛选排序候选文件：命中判断不区分大小写，排序为「文件名命中 → 路径更短 → 字典序」，
+/// 最多 `limit` 条。Git 清单与目录遍历共用这一套，所以两种工作空间的搜索结果一致。
+fn select_files(paths: Vec<String>, query: &str, limit: usize) -> Vec<String> {
     if limit == 0 {
         return Vec::new();
     }
     let needle = query.trim().to_lowercase();
 
-    let mut files: Vec<String> = stdout
-        .split('\0')
+    let mut files: Vec<String> = paths
+        .into_iter()
         .filter(|path| !path.is_empty())
         .filter(|path| needle.is_empty() || path.to_lowercase().contains(&needle))
-        .map(str::to_string)
         .collect();
 
     files.sort_by(|a, b| {
@@ -506,6 +595,15 @@ fn select_files(stdout: &str, query: &str, limit: usize) -> Vec<String> {
     });
     files.truncate(limit);
     files
+}
+
+/// 拆开 `git ls-files -z` 的 NUL 分隔输出（路径里可以含换行，所以不能按行读）。
+fn split_nul_paths(stdout: &str) -> Vec<String> {
+    stdout
+        .split('\0')
+        .filter(|path| !path.is_empty())
+        .map(str::to_string)
+        .collect()
 }
 
 /// 命中层级：0 = 文件名命中，1 = 只在目录里命中，2 = 没命中。
@@ -857,14 +955,14 @@ mod tests {
     }
 
     #[test]
-    fn inspect_reports_top_level_branch_and_commit() {
+    fn inspect_reports_branch_and_commit_in_repository() {
         let dir = temp_repo(true);
         let probe = LocalProbe::new();
 
         let info = probe
             .inspect_workspace(dir.path())
             .expect("应识别为 Git 仓库");
-        assert_eq!(info.path, canonical(dir.path()));
+        assert_eq!(info.path, dir.path().display().to_string());
         let git = info.git.expect("应有 Git 信息");
         assert_eq!(git.branch.as_deref(), Some("probe-branch"));
         let commit = git.commit.expect("有提交时应返回短哈希");
@@ -873,7 +971,7 @@ mod tests {
     }
 
     #[test]
-    fn inspect_resolves_top_level_from_subdirectory() {
+    fn inspect_keeps_subdirectory_and_still_reports_git() {
         let dir = temp_repo(true);
         let nested = dir.path().join("crates");
         std::fs::create_dir_all(&nested).unwrap();
@@ -881,8 +979,13 @@ mod tests {
 
         let info = probe
             .inspect_workspace(&nested)
-            .expect("子目录也应解析到顶层");
-        assert_eq!(info.path, canonical(dir.path()));
+            .expect("仓库子目录也是合法工作空间");
+        // 工作空间就是所选目录本身，不提升为仓库根。
+        assert_eq!(info.path, nested.display().to_string());
+        assert_ne!(info.path, canonical(dir.path()));
+        let git = info.git.expect("仓库子目录仍应有 Git 信息");
+        assert_eq!(git.branch.as_deref(), Some("probe-branch"));
+        assert!(git.commit.is_some());
     }
 
     #[test]
@@ -891,7 +994,7 @@ mod tests {
         let probe = LocalProbe::new();
 
         let info = probe.inspect_workspace(dir.path()).expect("空仓库也是仓库");
-        assert_eq!(info.path, canonical(dir.path()));
+        assert_eq!(info.path, dir.path().display().to_string());
         let git = info.git.expect("应有 Git 信息");
         assert_eq!(git.commit, None);
         assert_eq!(git.branch.as_deref(), Some("probe-branch"));
@@ -935,15 +1038,18 @@ mod tests {
     }
 
     #[test]
-    fn inspect_rejects_directory_that_is_not_a_repository() {
+    fn inspect_accepts_plain_folder_without_git() {
         let dir = tempfile::tempdir().expect("创建临时目录");
+        std::fs::write(dir.path().join("notes.md"), "x").unwrap();
+        std::fs::create_dir_all(dir.path().join("src/deep")).unwrap();
+        std::fs::write(dir.path().join("src/deep/main.rs"), "fn main() {}").unwrap();
         let probe = LocalProbe::new();
 
-        let err = probe
+        let info = probe
             .inspect_workspace(dir.path())
-            .expect_err("非仓库目录应报错");
-        assert!(matches!(err, Error::Invalid(_)));
-        assert!(err.to_string().contains("不是 Git 仓库"));
+            .expect("普通文件夹也是合法工作空间");
+        assert_eq!(info.path, dir.path().display().to_string());
+        assert_eq!(info.git, None, "不是 Git 仓库时 git 为 None，不是错误");
     }
 
     #[test]
@@ -1042,15 +1148,135 @@ mod tests {
     }
 
     #[test]
-    fn search_rejects_directory_that_is_not_a_repository() {
-        let dir = tempfile::tempdir().expect("创建临时目录");
+    fn search_in_git_subdirectory_returns_only_files_inside() {
+        let dir = temp_repo(true);
+        let nested = dir.path().join("crates");
+        std::fs::create_dir_all(&nested).unwrap();
+        std::fs::write(dir.path().join("root.md"), "x").unwrap();
+        std::fs::write(nested.join("inside.md"), "x").unwrap();
+        git(dir.path(), &["add", "-A"]);
         let probe = LocalProbe::new();
 
-        let err = probe
-            .search_files(dir.path(), "", 10)
-            .expect_err("非仓库目录应报错");
-        assert!(matches!(err, Error::Invalid(_)));
-        assert!(err.to_string().contains("不是 Git 仓库"));
+        let files = probe.search_files(&nested, "", 50).expect("搜索应成功");
+        // 只列所选目录内的文件，且路径相对所选目录。
+        assert_eq!(files, vec!["inside.md".to_string()]);
+    }
+
+    #[test]
+    fn search_in_plain_folder_returns_files_relative_to_workspace() {
+        let dir = tempfile::tempdir().expect("创建临时目录");
+        std::fs::create_dir_all(dir.path().join("src/deep/nested")).unwrap();
+        std::fs::create_dir_all(dir.path().join("docs")).unwrap();
+        std::fs::write(dir.path().join("README.md"), "x").unwrap();
+        std::fs::write(dir.path().join("src/main.rs"), "x").unwrap();
+        std::fs::write(dir.path().join("src/deep/nested/target.rs"), "x").unwrap();
+        std::fs::write(dir.path().join("docs/guide.md"), "x").unwrap();
+        let probe = LocalProbe::new();
+
+        let files = probe
+            .search_files(dir.path(), "target", 50)
+            .expect("搜索应成功");
+        assert_eq!(files, vec!["src/deep/nested/target.rs".to_string()]);
+
+        // 与 Git 目录同一套排序：路径短者优先。
+        let all = probe.search_files(dir.path(), "", 50).expect("搜索应成功");
+        assert_eq!(
+            all,
+            vec![
+                "README.md".to_string(),
+                "src/main.rs".to_string(),
+                "docs/guide.md".to_string(),
+                "src/deep/nested/target.rs".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn search_in_plain_folder_is_case_insensitive_and_respects_limit() {
+        let dir = tempfile::tempdir().expect("创建临时目录");
+        std::fs::create_dir_all(dir.path().join("src")).unwrap();
+        std::fs::write(dir.path().join("src/Probe.TS"), "x").unwrap();
+        std::fs::write(dir.path().join("probe.md"), "x").unwrap();
+        std::fs::write(dir.path().join("other.md"), "x").unwrap();
+        let probe = LocalProbe::new();
+
+        let files = probe
+            .search_files(dir.path(), "PROBE", 50)
+            .expect("搜索应成功");
+        // 与 Git 目录同一套规则：文件名命中优先，其次路径短者优先。
+        assert_eq!(
+            files,
+            vec!["probe.md".to_string(), "src/Probe.TS".to_string()]
+        );
+
+        let limited = probe
+            .search_files(dir.path(), "probe", 1)
+            .expect("搜索应成功");
+        assert_eq!(limited, vec!["probe.md".to_string()]);
+        assert!(
+            probe
+                .search_files(dir.path(), "probe", 0)
+                .expect("搜索应成功")
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn search_in_plain_folder_skips_hidden_and_large_directories() {
+        let dir = tempfile::tempdir().expect("创建临时目录");
+        for relative in [
+            ".hidden/secret.md",
+            ".env",
+            "node_modules/pkg/index.js",
+            "target/debug/out.bin",
+            "dist/bundle.js",
+            "build/out.bin",
+            "keep.md",
+        ] {
+            let path = dir.path().join(relative);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, "x").unwrap();
+        }
+        let probe = LocalProbe::new();
+
+        let files = probe.search_files(dir.path(), "", 50).expect("搜索应成功");
+        assert_eq!(files, vec!["keep.md".to_string()]);
+    }
+
+    #[test]
+    fn search_in_plain_folder_does_not_follow_symlinks() {
+        use std::os::unix::fs::symlink;
+
+        let dir = tempfile::tempdir().expect("创建临时目录");
+        let outside = tempfile::tempdir().expect("创建目录外的目录");
+        std::fs::write(outside.path().join("secret.md"), "x").unwrap();
+        std::fs::write(dir.path().join("real.md"), "x").unwrap();
+        // 指向目录的链接不该被走进去（否则搜索会爬出工作空间，甚至绕成环）。
+        symlink(outside.path(), dir.path().join("linked-dir")).unwrap();
+        symlink(
+            outside.path().join("secret.md"),
+            dir.path().join("linked.md"),
+        )
+        .unwrap();
+        let probe = LocalProbe::new();
+
+        let files = probe.search_files(dir.path(), "", 50).expect("搜索应成功");
+        // 目录链接下的 secret.md 没有出现；指向文件的链接当文件看待（与 git ls-files 一致）。
+        assert_eq!(files, vec!["real.md".to_string(), "linked.md".to_string()]);
+    }
+
+    #[test]
+    fn plain_folder_scan_stops_at_file_limit() {
+        let dir = tempfile::tempdir().expect("创建临时目录");
+        for index in 0..8 {
+            std::fs::write(dir.path().join(format!("f{index}.md")), "x").unwrap();
+        }
+
+        // search_files 用 [`MAX_SCANNED_FILES`] 当上限，这里用小数字验证「扫够就停」这件事本身。
+        assert_eq!(collect_files(dir.path(), 3).len(), 3);
+        assert_eq!(collect_files(dir.path(), 8).len(), 8);
+        assert_eq!(collect_files(dir.path(), MAX_SCANNED_FILES).len(), 8);
+        assert!(collect_files(dir.path(), 0).is_empty());
     }
 
     #[test]
@@ -1084,22 +1310,23 @@ mod tests {
     }
 
     #[test]
-    fn missing_and_non_repository_directories_report_different_messages() {
+    fn plain_folder_is_usable_while_missing_directory_is_an_error() {
         let probe = LocalProbe::new();
         let plain = tempfile::tempdir().unwrap();
 
-        let missing = probe
-            .inspect_workspace(&gone_workspace())
-            .expect_err("目录不存在应报错")
-            .to_string();
-        let not_repo = probe
-            .inspect_workspace(plain.path())
-            .expect_err("非仓库目录应报错")
-            .to_string();
+        // 普通文件夹：探测与搜索都正常，探测不带 Git 信息。
+        assert!(probe.inspect_workspace(plain.path()).unwrap().git.is_none());
+        assert!(probe.search_files(plain.path(), "", 10).unwrap().is_empty());
 
-        assert!(missing.contains("不存在或已移动"), "实际错误：{missing}");
-        assert!(not_repo.contains("不是 Git 仓库"), "实际错误：{not_repo}");
-        assert_ne!(missing, not_repo);
+        // 目录不存在才是错误，且说的是「不存在或已移动」。
+        let err = probe
+            .inspect_workspace(&gone_workspace())
+            .expect_err("目录不存在应报错");
+        assert!(matches!(err, Error::Invalid(_)));
+        assert!(
+            err.to_string().contains("不存在或已移动"),
+            "实际错误：{err}"
+        );
     }
 
     #[test]
