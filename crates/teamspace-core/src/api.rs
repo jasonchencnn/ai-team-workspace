@@ -6,7 +6,7 @@
 //! 参数约定：ID 参数在前端以 camelCase 传入（`team_id` → `teamId`）；结构体参数统一命名为
 //! `input`。所有命令失败时返回 [`crate::Error`]（前端收到 `ErrorPayload`）。
 //!
-//! 文件系统和外部进程访问（工作空间文件存在性、Git、CLI）都在数据库锁之外完成。
+//! 文件系统和外部进程访问（工作空间文件存在性、Git、ACP Agent 握手、岗位文件夹读写）都在数据库锁之外完成。
 //!
 //! 所有写操作在同一事务内完成数据变更并追加一条 [`crate::model::Event`]（actor 为 human，中文摘要由后端生成）。
 //!
@@ -15,11 +15,12 @@
 //! 也会同步一次，从而为迁移前已有的岗位补建文件夹。文件写入失败不回滚已提交的数据，失败原因记入
 //! 岗位视图的 `folderProblem` 并记录一条 `role_folder_error` 活动。
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard};
 
 use rusqlite::Connection;
 
+use crate::acp::AgentLaunch;
 use crate::error::{Error, Result};
 use crate::model::*;
 use crate::probe::FILE_SEARCH_LIMIT;
@@ -52,7 +53,9 @@ pub const COMMANDS: &[&str] = &[
     "unbind_role_harness",
     "get_role_folder",
     "reveal_role_folder",
-    "detect_harnesses",
+    "get_role_workbench",
+    "open_role_path",
+    "list_acp_presets",
     "list_harnesses",
     "get_harness",
     "create_harness",
@@ -69,23 +72,67 @@ pub const COMMANDS: &[&str] = &[
     "list_events",
 ];
 
+/// 岗位工作台「最近任务」的条数。
+pub const WORKBENCH_TASK_LIMIT: usize = 8;
+/// 岗位工作台「最近文件」的条数。
+pub const WORKBENCH_FILE_LIMIT: usize = 10;
+
+/// 启动一个程序的命令（可执行文件路径 + 参数）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AgentCommand {
+    pub program: PathBuf,
+    pub args: Vec<String>,
+}
+
+/// 宿主程序（桌面应用、端到端测试桥接）提供给内核的配置。
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct HostConfig {
+    /// 启动内置 Mock Agent 的命令，通常是宿主程序自身路径 +
+    /// [`crate::mock_agent::MOCK_AGENT_FLAG`]。为 `None` 时 Mock 预设不可用（握手报错）。
+    pub mock_agent: Option<AgentCommand>,
+}
+
+impl HostConfig {
+    /// 以当前可执行文件作为 Mock Agent 宿主（宿主程序的 `main` 需要处理
+    /// [`crate::mock_agent::MOCK_AGENT_FLAG`]）。取不到当前可执行文件路径时不提供 Mock Agent。
+    pub fn with_current_exe_mock_agent() -> Self {
+        Self {
+            mock_agent: std::env::current_exe().ok().map(|program| AgentCommand {
+                program,
+                args: vec![crate::mock_agent::MOCK_AGENT_FLAG.to_owned()],
+            }),
+        }
+    }
+}
+
 /// 内核入口：持有 SQLite 存储和系统探测实现。
 ///
-/// 数据库连接由互斥锁保护；写命令在单个事务中执行。系统探测（Git、CLI）在锁外进行，
+/// 数据库连接由互斥锁保护；写命令在单个事务中执行。系统探测（Git、ACP 握手）在锁外进行，
 /// 避免慢操作阻塞其他命令。
 pub struct Teamspace {
     conn: Mutex<Connection>,
     probe: Box<dyn SystemProbe>,
+    config: HostConfig,
     /// 串行化岗位文件夹的文件 I/O（与数据库锁分开），避免并发同步重复追加日志或抢同一个文件夹名。
     folder_io: Mutex<()>,
 }
 
 impl Teamspace {
-    /// 打开（必要时创建并迁移）`db_path` 处的数据库。
+    /// 打开（必要时创建并迁移）`db_path` 处的数据库，不提供 Mock Agent。
     pub fn open(db_path: &Path, probe: Box<dyn SystemProbe>) -> Result<Self> {
+        Self::open_with(db_path, probe, HostConfig::default())
+    }
+
+    /// 打开数据库，并使用宿主程序提供的配置（如内置 Mock Agent 的启动命令）。
+    pub fn open_with(
+        db_path: &Path,
+        probe: Box<dyn SystemProbe>,
+        config: HostConfig,
+    ) -> Result<Self> {
         Ok(Self {
             conn: Mutex::new(store::open(db_path)?),
             probe,
+            config,
             folder_io: Mutex::new(()),
         })
     }
@@ -307,14 +354,110 @@ impl Teamspace {
         }
     }
 
+    /// 岗位工作台（未归档岗位）：岗位卡片（含绑定的 Harness 与最近握手结果）、岗位文件夹（路径、
+    /// 是否存在、问题、工作日志最近 20 条）、该岗位负责的最近 8 个任务（按更新时间倒序）与任务总数、
+    /// `过程文件/` 下最近修改的 10 个文件。先同步岗位文件夹；文件读取在数据库锁外进行。
+    pub fn get_role_workbench(&self, role_id: &str) -> Result<RoleWorkbench> {
+        role::get_active(&self.lock(), role_id)?;
+        let folder = self.get_role_folder(role_id, None)?;
+        let (view, recent_tasks, task_count) = {
+            let conn = self.lock();
+            let view = role::view(&conn, role::get_active(&conn, role_id)?)?;
+            let (tasks, total) = task::recent_for_owner(&conn, role_id, WORKBENCH_TASK_LIMIT)?;
+            (view, tasks, total)
+        };
+        let recent_files = match &folder.path {
+            Some(path) if folder.exists => {
+                role_folder::recent_process_files(Path::new(path), WORKBENCH_FILE_LIMIT)
+            }
+            _ => Vec::new(),
+        };
+        Ok(RoleWorkbench {
+            view,
+            folder,
+            recent_tasks,
+            task_count,
+            recent_files,
+        })
+    }
+
+    /// 在 Finder 中打开岗位文件夹内的文件或目录（如 `工作日志.md`、`过程文件/素材清单.md`）；
+    /// `relative_path` 缺省或为空时打开岗位文件夹本身。目录直接打开，文件在 Finder 中选中。
+    /// 路径须在岗位文件夹之内：绝对路径、`..`、规范化后越出岗位文件夹（含符号链接）一律 invalid；
+    /// 文件夹或目标不存在为 not_found。
+    pub fn open_role_path(&self, role_id: &str, relative_path: Option<&str>) -> Result<()> {
+        let folder = self.get_role_folder(role_id, Some(1))?;
+        let dir = match folder.path {
+            Some(path) if folder.exists => PathBuf::from(path),
+            _ => {
+                return Err(Error::not_found(
+                    folder
+                        .problem
+                        .unwrap_or_else(|| "岗位文件夹尚未建立".to_owned()),
+                ));
+            }
+        };
+        let target = role_folder::resolve_inside(&dir, relative_path)?;
+        self.probe.reveal_path(&target)
+    }
+
     // ---------------------------------------------------------------- Harness
 
-    /// 检测本机 Claude Code 与 Codex CLI（不含 mock），不写入任何数据。
-    pub fn detect_harnesses(&self) -> Vec<HarnessDetection> {
-        [HarnessKind::ClaudeCode, HarnessKind::Codex]
+    /// ACP 预设与本机检测结果（Claude Code、Codex、MiniMax Code、Gemini CLI、自定义、Mock），
+    /// 不写入任何数据：默认命令是否在 PATH 中、适配器依赖的底层 CLI 是否存在、缺少时的中文提示。
+    /// 只查找命令，不运行任何程序。
+    pub fn list_acp_presets(&self) -> Vec<AcpPresetInfo> {
+        AcpPreset::ALL
             .into_iter()
-            .map(|kind| self.probe.detect_harness(kind))
+            .map(|preset| self.preset_info(preset))
             .collect()
+    }
+
+    fn preset_info(&self, preset: AcpPreset) -> AcpPresetInfo {
+        let spec = harness::preset_spec(preset);
+        let command_path = match preset {
+            AcpPreset::Custom => None,
+            AcpPreset::Mock => self
+                .config
+                .mock_agent
+                .as_ref()
+                .map(|cmd| cmd.program.display().to_string()),
+            _ => spec
+                .command
+                .and_then(|command| self.probe.locate_command(command)),
+        };
+        let command_found = command_path.is_some();
+        let cli_found = spec
+            .requires_cli
+            .map(|cli| self.probe.locate_command(cli).is_some());
+        let mut missing = Vec::new();
+        if !command_found && let Some(install) = spec.install {
+            missing.push(install);
+        }
+        if cli_found == Some(false)
+            && let Some(install) = spec.install_cli
+        {
+            missing.push(install);
+        }
+        let hint = match preset {
+            AcpPreset::Mock if !command_found => {
+                Some("当前宿主程序没有提供内置 Mock Agent".to_owned())
+            }
+            _ if missing.is_empty() => None,
+            _ => Some(missing.join("；")),
+        };
+        AcpPresetInfo {
+            preset,
+            label: preset.label().to_owned(),
+            description: spec.description.to_owned(),
+            default_command: spec.command.map(str::to_owned),
+            default_args: spec.args.iter().map(|a| (*a).to_owned()).collect(),
+            command_path,
+            command_found,
+            requires_cli: spec.requires_cli.map(str::to_owned),
+            cli_found,
+            hint,
+        }
     }
 
     /// 列出团队的未归档 Harness 实例，按创建时间升序。
@@ -327,13 +470,14 @@ impl Teamspace {
         harness::get_active(&self.lock(), harness_id)
     }
 
-    /// 注册 Harness 实例：名称在团队未归档实例中唯一；executable 若填写须为绝对路径；
-    /// 空白字符串视为未填写。健康状态初始为 unknown。
+    /// 注册 Harness 实例（ACP Agent）：名称在团队未归档实例中唯一；启动命令缺省时用预设默认命令
+    /// （`custom` 必填，`mock` 固定），须为不含空格的命令名或绝对路径；参数缺省时用预设默认参数；
+    /// 环境配置档案若填写须为绝对路径（只记路径）。空白字符串视为未填写。握手状态初始为 unknown。
     pub fn create_harness(&self, input: CreateHarnessInput) -> Result<HarnessInstance> {
         self.write(|tx| harness::create(tx, input))
     }
 
-    /// 编辑 Harness 实例（kind 不可改）；健康状态重置为 unknown。
+    /// 编辑 Harness 实例（预设不可改，字段规则同创建）；握手状态重置为 unknown。
     /// 绑定该实例的岗位的岗位说明随之更新。
     pub fn update_harness(&self, input: UpdateHarnessInput) -> Result<HarnessInstance> {
         let instance = self.write(|tx| harness::update(tx, input))?;
@@ -346,20 +490,38 @@ impl Teamspace {
         self.write(|tx| harness::archive(tx, harness_id))
     }
 
-    /// 对实例做健康检查并持久化结果（mock 直接为 ok）；检查失败不是命令错误，体现在 `health` 中。
+    /// 对实例做 ACP 握手检查（启动 Agent → `initialize` → 终止进程，不发送 prompt、不消耗额度，
+    /// 超时 20 秒）并持久化结果；Mock 预设启动宿主内置的 Mock Agent。握手失败不是命令错误，
+    /// 体现在 `handshake` 中（`error` / `needs_auth` 与中文说明）。握手在数据库锁外进行。
     pub fn check_harness(&self, harness_id: &str) -> Result<HarnessInstance> {
         let instance = harness::get_active(&self.lock(), harness_id)?;
-        let mut health = match instance.kind {
-            HarnessKind::Mock => HealthCheck {
-                status: HealthStatus::Ok,
-                version: None,
-                detail: Some("Mock Harness，无需检测".to_owned()),
-                checked_at: None,
-            },
-            _ => self.probe.check_harness(&instance),
+        let mut handshake = match self.launch_for(&instance) {
+            Ok(launch) => self.probe.handshake(&launch),
+            Err(message) => Handshake::error(message),
         };
-        health.checked_at = Some(store::now());
-        self.write(|tx| harness::save_health(tx, harness_id, &health))
+        handshake.checked_at = Some(store::now());
+        self.write(|tx| harness::save_handshake(tx, harness_id, &handshake))
+    }
+
+    /// 实例的启动信息；Mock 预设使用宿主注入的命令。
+    fn launch_for(&self, instance: &HarnessInstance) -> std::result::Result<AgentLaunch, String> {
+        if instance.preset == AcpPreset::Mock {
+            let cmd = self
+                .config
+                .mock_agent
+                .as_ref()
+                .ok_or_else(|| "当前宿主程序没有提供内置 Mock Agent".to_owned())?;
+            return Ok(AgentLaunch {
+                command: cmd.program.display().to_string(),
+                args: cmd.args.clone(),
+                env_profile: None,
+            });
+        }
+        Ok(AgentLaunch {
+            command: instance.command.clone(),
+            args: instance.args.clone(),
+            env_profile: instance.env_profile.clone(),
+        })
     }
 
     // ---------------------------------------------------------------- 任务

@@ -242,11 +242,12 @@
   font-weight: 500;
 }
 
-.role-detail__health--ok {
+.role-detail__health--connected {
   color: var(--color-success);
 }
 
-.role-detail__health--error {
+.role-detail__health--error,
+.role-detail__health--needs_auth {
   color: var(--color-warning);
 }
 

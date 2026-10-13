@@ -21,7 +21,7 @@ use std::path::{Path, PathBuf};
 use chrono::{DateTime, Local, TimeZone};
 
 use crate::error::{Error, Result};
-use crate::model::{HarnessKind, Role};
+use crate::model::{AcpPreset, Role, RoleFileEntry};
 
 /// 工作空间下的岗位工作区根目录名。
 pub const ROOT_DIR: &str = "Teamspace";
@@ -230,12 +230,13 @@ pub fn read_recent_journal(folder: &Path, limit: usize) -> std::io::Result<Vec<S
 
 // ---------------------------------------------------------------- 生成内容
 
-fn harness_kind_label(kind: HarnessKind) -> &'static str {
-    match kind {
-        HarnessKind::ClaudeCode => "Claude Code",
-        HarnessKind::Codex => "Codex",
-        HarnessKind::Mock => "Mock",
-    }
+/// 岗位说明里显示的绑定信息。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct BoundHarness {
+    pub name: String,
+    pub preset: AcpPreset,
+    pub command: String,
+    pub args: Vec<String>,
 }
 
 fn section(body: &str) -> String {
@@ -250,7 +251,12 @@ fn section(body: &str) -> String {
 pub(crate) fn render_brief(plan: &RolePlan) -> String {
     let role = &plan.role;
     let harness = match &plan.harness {
-        Some((name, kind)) => format!("{name}（{}）", harness_kind_label(*kind)),
+        Some(h) => format!(
+            "{}（{} · ACP，启动命令 `{}`）",
+            h.name,
+            h.preset.label(),
+            crate::acp::command_line(Path::new(&h.command), &h.args)
+        ),
         None => "未绑定（暂不派工）".to_owned(),
     };
     let status = match &role.archived_at {
@@ -300,8 +306,8 @@ fn journal_header(role: &Role) -> String {
 pub(crate) struct RolePlan {
     pub role: Role,
     pub team_name: String,
-    /// 绑定的 Harness 名称与种类。
-    pub harness: Option<(String, HarnessKind)>,
+    /// 绑定的 Harness 名称、预设与启动命令。
+    pub harness: Option<BoundHarness>,
     /// 已登记的文件夹相对路径。
     pub folder: Option<String>,
     /// 上次记录的文件夹问题。
@@ -440,6 +446,123 @@ fn pick_free(workspace: &Path, base: &str, plan: &RolePlan) -> std::result::Resu
         .ok_or_else(|| format!("找不到可用的岗位文件夹名（「{base}」的候选名都已被占用）"))
 }
 
+// ---------------------------------------------------------------- 工作台：最近文件与路径校验
+
+/// 「最近文件」扫描的文件数上限，避免过程文件很多时一次请求读遍整棵目录。
+const MAX_SCANNED_PROCESS_FILES: usize = 5_000;
+
+/// `过程文件/` 下最近修改的 `limit` 个文件（递归），按修改时间倒序、同一时间按路径升序。
+///
+/// 跳过以 `.` 开头的文件和目录、符号链接（不跟随，避免越出岗位文件夹）以及 Teamspace 生成的
+/// `过程文件/README.md`；读不动的子目录跳过。目录不存在时返回空列表。
+pub fn recent_process_files(folder: &Path, limit: usize) -> Vec<RoleFileEntry> {
+    let mut found = Vec::new();
+    let mut scanned = 0usize;
+    let mut stack = vec![folder.join(PROCESS_DIR)];
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            if scanned >= MAX_SCANNED_PROCESS_FILES {
+                break;
+            }
+            if entry.file_name().to_string_lossy().starts_with('.') {
+                continue;
+            }
+            let Ok(kind) = entry.file_type() else {
+                continue;
+            };
+            let path = entry.path();
+            if kind.is_dir() {
+                stack.push(path);
+                continue;
+            }
+            if !kind.is_file() {
+                continue;
+            }
+            scanned += 1;
+            let rel = relative_to(folder, &path);
+            if rel == format!("{PROCESS_DIR}/{README_FILE}") {
+                continue;
+            }
+            let Ok(meta) = entry.metadata() else {
+                continue;
+            };
+            let modified = meta.modified().unwrap_or(std::time::UNIX_EPOCH);
+            found.push((modified, rel, meta.len()));
+        }
+    }
+    found.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
+    found.truncate(limit);
+    found
+        .into_iter()
+        .map(|(modified, relative_path, size)| RoleFileEntry {
+            relative_path,
+            size,
+            modified_at: chrono::DateTime::<chrono::Utc>::from(modified)
+                .format("%Y-%m-%dT%H:%M:%S%.3fZ")
+                .to_string(),
+        })
+        .collect()
+}
+
+/// 相对 `root` 的 `/` 分隔路径。
+fn relative_to(root: &Path, path: &Path) -> String {
+    path.strip_prefix(root)
+        .unwrap_or(path)
+        .components()
+        .map(|c| c.as_os_str().to_string_lossy())
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
+/// 把岗位文件夹内的相对路径解析为磁盘上的真实路径，确保它在岗位文件夹之内。
+///
+/// `relative` 为空时就是岗位文件夹本身。拒绝绝对路径、`..`、控制字符（invalid）；目标不存在为
+/// not_found；规范化（解析符号链接）后不在岗位文件夹内的同样拒绝（invalid），因此指向文件夹外的
+/// 符号链接无法被打开。
+pub fn resolve_inside(folder: &Path, relative: Option<&str>) -> Result<PathBuf> {
+    let base = folder
+        .canonicalize()
+        .map_err(|err| Error::not_found(format!("岗位文件夹不可用：{err}")))?;
+    let relative = relative.map(str::trim).unwrap_or_default();
+    if relative.is_empty() {
+        return Ok(base);
+    }
+    if relative.chars().any(char::is_control) {
+        return Err(Error::invalid("路径包含不允许的控制字符"));
+    }
+    if relative.starts_with('/') || relative.starts_with('\\') || Path::new(relative).is_absolute()
+    {
+        return Err(Error::invalid(format!(
+            "只能打开岗位文件夹内的相对路径：{relative}"
+        )));
+    }
+    let mut target = base.clone();
+    for part in relative.split(['/', '\\']) {
+        match part {
+            "" | "." => {}
+            ".." => {
+                return Err(Error::invalid(format!("路径不能包含「..」：{relative}")));
+            }
+            part => target.push(part),
+        }
+    }
+    if fs::symlink_metadata(&target).is_err() {
+        return Err(Error::not_found(format!("岗位文件夹中没有「{relative}」")));
+    }
+    let real = target
+        .canonicalize()
+        .map_err(|_| Error::not_found(format!("「{relative}」指向的位置不存在")))?;
+    if !real.starts_with(&base) {
+        return Err(Error::invalid(format!(
+            "「{relative}」指向岗位文件夹之外，不能打开"
+        )));
+    }
+    Ok(real)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -507,5 +630,101 @@ mod tests {
             "{recent:?}"
         );
         assert!(append_journal(&dir.path().join("missing"), &[entry(None, "x")]).is_err());
+    }
+
+    fn set_mtime(path: &Path, secs: u64) {
+        let file = fs::File::options().write(true).open(path).unwrap();
+        file.set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(secs))
+            .unwrap();
+    }
+
+    #[test]
+    fn recent_files_are_sorted_by_mtime_and_limited() {
+        let dir = tempfile::tempdir().unwrap();
+        let process = dir.path().join(PROCESS_DIR);
+        fs::create_dir_all(process.join("子目录/更深")).unwrap();
+        fs::create_dir_all(process.join(".hidden")).unwrap();
+        let files = [
+            ("a.md", 100),
+            ("b.md", 300),
+            ("子目录/c.srt", 200),
+            ("子目录/更深/d.prproj", 400),
+            ("e.md", 300),
+            (".secret", 999),
+            (".hidden/x.md", 999),
+            ("README.md", 999),
+        ];
+        for (rel, secs) in files {
+            let path = process.join(rel);
+            fs::write(&path, rel).unwrap();
+            set_mtime(&path, secs);
+        }
+        std::os::unix::fs::symlink(dir.path().join("岗位说明.md"), process.join("link.md"))
+            .unwrap();
+
+        let recent = recent_process_files(dir.path(), 10);
+        let paths: Vec<&str> = recent.iter().map(|f| f.relative_path.as_str()).collect();
+        assert_eq!(
+            paths,
+            [
+                "过程文件/子目录/更深/d.prproj",
+                "过程文件/b.md",
+                "过程文件/e.md",
+                "过程文件/子目录/c.srt",
+                "过程文件/a.md",
+            ]
+        );
+        assert_eq!(recent[0].size, "子目录/更深/d.prproj".len() as u64);
+        assert_eq!(recent[0].modified_at, "1970-01-01T00:06:40.000Z");
+
+        assert_eq!(recent_process_files(dir.path(), 2).len(), 2);
+        // 上限 10 条。
+        for i in 0..15 {
+            fs::write(process.join(format!("f{i}.txt")), "x").unwrap();
+        }
+        assert_eq!(recent_process_files(dir.path(), 10).len(), 10);
+        assert!(recent_process_files(&dir.path().join("missing"), 10).is_empty());
+    }
+
+    #[test]
+    fn resolve_inside_rejects_escapes() {
+        let root = tempfile::tempdir().unwrap();
+        let folder = root.path().join("Teamspace/剪辑师");
+        fs::create_dir_all(folder.join(PROCESS_DIR)).unwrap();
+        fs::write(folder.join(JOURNAL_FILE), "x").unwrap();
+        fs::write(folder.join(PROCESS_DIR).join("a.md"), "x").unwrap();
+        fs::write(root.path().join("secret.md"), "x").unwrap();
+        std::os::unix::fs::symlink(root.path().join("secret.md"), folder.join("out.md")).unwrap();
+        std::os::unix::fs::symlink(root.path(), folder.join(PROCESS_DIR).join("up")).unwrap();
+        std::os::unix::fs::symlink(folder.join(JOURNAL_FILE), folder.join("in.md")).unwrap();
+        let base = folder.canonicalize().unwrap();
+
+        assert_eq!(resolve_inside(&folder, None).unwrap(), base);
+        assert_eq!(resolve_inside(&folder, Some("  ")).unwrap(), base);
+        assert_eq!(
+            resolve_inside(&folder, Some(JOURNAL_FILE)).unwrap(),
+            base.join(JOURNAL_FILE)
+        );
+        assert_eq!(
+            resolve_inside(&folder, Some("过程文件/./a.md")).unwrap(),
+            base.join("过程文件/a.md")
+        );
+        assert_eq!(
+            resolve_inside(&folder, Some("in.md")).unwrap(),
+            base.join(JOURNAL_FILE)
+        );
+        for bad in [
+            "../../secret.md",
+            "过程文件/../../secret.md",
+            "/etc/hosts",
+            "out.md",
+            "过程文件/up/secret.md",
+            "a\u{0}b",
+        ] {
+            let err = resolve_inside(&folder, Some(bad)).unwrap_err();
+            assert_eq!(err.kind(), crate::ErrorKind::Invalid, "{bad}: {err}");
+        }
+        let err = resolve_inside(&folder, Some("过程文件/missing.md")).unwrap_err();
+        assert_eq!(err.kind(), crate::ErrorKind::NotFound);
     }
 }

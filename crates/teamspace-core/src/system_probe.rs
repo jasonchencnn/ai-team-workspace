@@ -1,8 +1,9 @@
-//! 本机系统探测实现（M1-04）。
+//! 本机系统探测实现（M1-04；M1.3 起 Harness 检查改为 ACP 握手）。
 //!
 //! [`LocalProbe`] 是 [`SystemProbe`] 的真实实现：工作空间是任意已存在的本地文件夹，探测时看它是不是
 //! Git 仓库（是就附上分支与提交，不是也正常返回），文件搜索在 Git 目录里问 Git、在普通文件夹里遍历
-//! 目录；Harness CLI 只跑 `--version`。全程不读取也不保存任何密钥，也不启动 Harness 执行任务。
+//! 目录；Harness 检查是 ACP `initialize` 握手（见 [`crate::acp`]），不发送 prompt。全程不读取也不
+//! 保存任何密钥，也不让 Harness 执行任务。
 //!
 //! macOS 上以 GUI 方式启动的应用继承不到登录 shell 的 PATH（Homebrew、NVM、Volta、Cargo
 //! 装的 CLI 都会找不到），因此这里先用 `$SHELL -ilc` 打印一段带标记的 PATH，再补上常见安装
@@ -17,17 +18,13 @@ use std::sync::mpsc::{self, Receiver};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use crate::acp::{self, AgentLaunch, HANDSHAKE_TIMEOUT, ScratchDir};
 use crate::error::{Error, Result};
-use crate::model::{
-    GitInfo, HarnessDetection, HarnessInstance, HarnessKind, HealthCheck, HealthStatus,
-    WorkspaceInfo,
-};
+use crate::model::{GitInfo, Handshake, WorkspaceInfo};
 use crate::probe::{MAX_SCANNED_FILES, SystemProbe};
 
 /// 读取登录 shell PATH 的超时。
 const SHELL_PATH_TIMEOUT: Duration = Duration::from_secs(5);
-/// 运行 `--version` 的超时。
-const VERSION_TIMEOUT: Duration = Duration::from_secs(10);
 /// Git 查询的超时（正常是毫秒级，给慢盘留余量）。
 const GIT_TIMEOUT: Duration = Duration::from_secs(30);
 /// 等待子进程退出时的轮询间隔。
@@ -58,13 +55,23 @@ const EXTRA_HOME_BIN_DIRS: [&str; 5] = [
     ".cargo/bin",
 ];
 
-/// [`SystemProbe`] 的真实实现，探测本机的 Git 工作区和 Harness CLI。
+/// [`SystemProbe`] 的真实实现，探测本机的 Git 工作区、命令和 ACP Agent。
 ///
 /// PATH 只解析一次并缓存在实例里（[`LocalProbe::new`] 之后不变），因此同一个实例的多次
 /// 探测看到的是同一份环境。
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct LocalProbe {
     path: OnceLock<Vec<PathBuf>>,
+    handshake_timeout: Duration,
+}
+
+impl Default for LocalProbe {
+    fn default() -> Self {
+        Self {
+            path: OnceLock::new(),
+            handshake_timeout: HANDSHAKE_TIMEOUT,
+        }
+    }
 }
 
 impl LocalProbe {
@@ -78,125 +85,37 @@ impl LocalProbe {
         self.path.get_or_init(resolve_path_dirs)
     }
 
-    /// 在给定 PATH 中查找 `kind` 对应的 CLI 并读取版本。
-    fn detect_with(&self, kind: HarnessKind, dirs: &[PathBuf]) -> HarnessDetection {
-        let command = match kind {
-            HarnessKind::ClaudeCode => "claude",
-            HarnessKind::Codex => "codex",
-            // 内核不会对 mock 调用探测；这里不启动任何外部程序。
-            HarnessKind::Mock => {
-                return HarnessDetection {
-                    kind,
-                    found: false,
-                    executable: None,
-                    version: None,
-                    error: Some("mock 不需要检测本机 CLI".to_string()),
-                };
-            }
-        };
-
-        let Some(executable) = find_in_path(command, dirs) else {
-            return HarnessDetection {
-                kind,
-                found: false,
-                executable: None,
-                version: None,
-                error: Some(format!("未找到 {command} 命令：请确认已安装并加入 PATH")),
-            };
-        };
-
-        match self.version_of(&executable, dirs, VERSION_TIMEOUT) {
-            Ok(version) => HarnessDetection {
-                kind,
-                found: true,
-                executable: Some(executable.display().to_string()),
-                version: Some(version),
-                error: None,
-            },
-            Err(message) => HarnessDetection {
-                kind,
-                found: false,
-                executable: None,
-                version: None,
-                error: Some(message),
-            },
-        }
-    }
-
-    /// 用给定 PATH 和 Codex 配置目录做健康检查（拆出来是为了能传临时目录进测试）。
-    fn check_with(
+    /// 用给定 PATH 和超时做握手（拆出来是为了能在测试里传临时目录和短超时）。
+    fn handshake_with(
         &self,
-        harness: &HarnessInstance,
-        dirs: &[PathBuf],
-        codex_home: &Path,
-    ) -> HealthCheck {
-        if harness.kind == HarnessKind::Mock {
-            // 内核不会对 mock 调用检查；不启动任何外部程序。
-            return HealthCheck {
-                status: HealthStatus::Unknown,
-                version: None,
-                detail: Some("mock 不做本机检查".to_string()),
-                checked_at: None,
-            };
-        }
-
-        let executable = match resolve_executable(harness, dirs) {
-            Ok(path) => path,
-            Err(message) => return health_error(None, message),
-        };
-
-        let version = match self.version_of(&executable, dirs, VERSION_TIMEOUT) {
-            Ok(version) => version,
-            Err(message) => return health_error(None, message),
-        };
-
-        let detail = format!("使用 {}（版本 {version}）", executable.display());
-        match check_profile(harness, codex_home) {
-            Ok(None) => HealthCheck {
-                status: HealthStatus::Ok,
-                version: Some(version),
-                detail: Some(detail),
-                checked_at: None,
-            },
-            Ok(Some(note)) => HealthCheck {
-                status: HealthStatus::Ok,
-                version: Some(version),
-                detail: Some(format!("{detail}；{note}")),
-                checked_at: None,
-            },
-            Err(message) => health_error(Some(version), message),
-        }
-    }
-
-    /// 运行 `<exe> --version` 并解析版本号，失败时给出中文原因。
-    fn version_of(
-        &self,
-        executable: &Path,
+        launch: &AgentLaunch,
         dirs: &[PathBuf],
         timeout: Duration,
-    ) -> std::result::Result<String, String> {
-        let mut command = Command::new(executable);
-        command.arg("--version");
-        command.env("PATH", path_env(dirs));
-        command.stdin(Stdio::null());
-
-        let output = run_command(&mut command, timeout)
-            .map_err(|err| format!("无法运行 {}：{err}", executable.display()))?;
-        if output.timed_out {
-            return Err(format!(
-                "{} --version 超时（超过 {} 秒）",
-                executable.display(),
-                timeout.as_secs()
-            ));
+    ) -> Handshake {
+        let command = launch.command.trim();
+        let Some(program) = find_in_path(command, dirs) else {
+            return Handshake::error(if command.contains('/') {
+                format!("启动命令不存在或不可执行：{command}")
+            } else {
+                format!("未找到命令 {command}：请确认已安装并加入 PATH")
+            });
+        };
+        if let Some(profile) = launch.env_profile.as_deref()
+            && !Path::new(profile).is_file()
+        {
+            return Handshake::error(format!("环境配置档案不存在：{profile}"));
         }
-        if !output.success {
-            let reason = first_non_empty_line(&output.stderr)
-                .or_else(|| first_non_empty_line(&output.stdout))
-                .unwrap_or_else(|| "无输出".to_string());
-            return Err(format!("{} --version 失败：{reason}", executable.display()));
-        }
-        parse_version(&output.stdout)
-            .ok_or_else(|| format!("{} 未返回可解析的版本号", executable.display()))
+        let scratch = match ScratchDir::new() {
+            Ok(dir) => dir,
+            Err(err) => return Handshake::error(format!("无法创建握手用的临时目录：{err}")),
+        };
+        acp::handshake_process(
+            &program,
+            &launch.args,
+            scratch.path(),
+            &path_env(dirs),
+            timeout,
+        )
     }
 
     /// 执行一条 Git 查询。`Ok(Some(text))` 为成功，`Ok(None)` 为 Git 正常拒绝（退出码非 0），
@@ -392,23 +311,21 @@ impl SystemProbe for LocalProbe {
         Ok(select_files(paths, query, limit))
     }
 
-    fn detect_harness(&self, kind: HarnessKind) -> HarnessDetection {
-        self.detect_with(kind, self.path_dirs())
+    fn locate_command(&self, command: &str) -> Option<String> {
+        find_in_path(command.trim(), self.path_dirs()).map(|path| path.display().to_string())
     }
 
-    fn check_harness(&self, harness: &HarnessInstance) -> HealthCheck {
-        let codex_home = codex_home_dir();
-        self.check_with(harness, self.path_dirs(), &codex_home)
+    fn handshake(&self, launch: &AgentLaunch) -> Handshake {
+        self.handshake_with(launch, self.path_dirs(), self.handshake_timeout)
     }
 
-    /// 用系统自带命令打开目录（macOS `open`、Windows `explorer`、其他平台 `xdg-open`），不加插件。
+    /// 用系统自带命令打开（macOS `open`、Windows `explorer`、其他平台 `xdg-open`），不加插件。
+    /// 文件：macOS 用 `open -R` 在 Finder 中选中，Windows 用 `explorer /select,`，其他平台打开所在目录。
     fn reveal_path(&self, path: &Path) -> Result<()> {
-        if !path.is_dir() {
-            return Err(Error::not_found(format!(
-                "文件夹不存在：{}",
-                path.display()
-            )));
+        if !path.exists() {
+            return Err(Error::not_found(format!("路径不存在：{}", path.display())));
         }
+        let is_file = !path.is_dir();
         let opener = if cfg!(target_os = "macos") {
             "/usr/bin/open"
         } else if cfg!(windows) {
@@ -416,17 +333,31 @@ impl SystemProbe for LocalProbe {
         } else {
             "xdg-open"
         };
-        let status = Command::new(opener)
-            .arg(path)
+        let mut command = Command::new(opener);
+        match (is_file, cfg!(target_os = "macos"), cfg!(windows)) {
+            (true, true, _) => {
+                command.arg("-R").arg(path);
+            }
+            (true, _, true) => {
+                command.arg(format!("/select,{}", path.display()));
+            }
+            (true, _, _) => {
+                command.arg(path.parent().unwrap_or(path));
+            }
+            (false, _, _) => {
+                command.arg(path);
+            }
+        }
+        let status = command
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .status()
-            .map_err(|err| Error::internal(format!("无法打开文件夹 {}：{err}", path.display())))?;
+            .map_err(|err| Error::internal(format!("无法打开 {}：{err}", path.display())))?;
         // Windows 的 explorer 即使成功也常返回非 0，只在其他平台检查退出码。
         if !status.success() && !cfg!(windows) {
             return Err(Error::internal(format!(
-                "无法打开文件夹 {}（{opener} 退出码 {status}）",
+                "无法打开 {}（{opener} 退出码 {status}）",
                 path.display()
             )));
         }
@@ -438,7 +369,6 @@ impl SystemProbe for LocalProbe {
 struct CommandOutput {
     success: bool,
     stdout: String,
-    stderr: String,
     timed_out: bool,
 }
 
@@ -465,6 +395,7 @@ fn run_command(command: &mut Command, timeout: Duration) -> std::io::Result<Comm
     // 读线程把结果发回通道而不是直接 join：万一有进程漏网一直占着管道，最多等 OUTPUT_GRACE，
     // 到点就放弃（线程随之detach），绝不能把界面卡在一次探测上。
     let out_rx = child.stdout.take().map(read_in_background);
+    // stderr 也要读走（避免写满管道卡住子进程），内容目前不用。
     let err_rx = child.stderr.take().map(read_in_background);
 
     let deadline = Instant::now() + timeout;
@@ -501,10 +432,10 @@ fn run_command(command: &mut Command, timeout: Duration) -> std::io::Result<Comm
             .and_then(|receiver| receiver.recv_timeout(OUTPUT_GRACE).ok())
             .unwrap_or_default()
     };
+    let _ = collect(err_rx);
     Ok(CommandOutput {
         success: status.success(),
         stdout: collect(out_rx),
-        stderr: collect(err_rx),
         timed_out,
     })
 }
@@ -514,24 +445,24 @@ fn run_command(command: &mut Command, timeout: Duration) -> std::io::Result<Comm
 /// 子进程的后代默认都继承这个进程组，所以一次 `kill` 能收干净整棵进程树；`spawn` 失败时调用方
 /// 直接报错，不会留下半启动的进程。非 Unix 平台没有进程组概念，退化为只杀直接子进程。
 #[cfg(unix)]
-fn isolate_in_process_group(command: &mut Command) {
+pub(crate) fn isolate_in_process_group(command: &mut Command) {
     use std::os::unix::process::CommandExt;
     // 0 表示「用子进程自己的 pid 作为进程组 id」，即 setpgid(0, 0)。
     command.process_group(0);
 }
 
 #[cfg(not(unix))]
-fn isolate_in_process_group(_command: &mut Command) {}
+pub(crate) fn isolate_in_process_group(_command: &mut Command) {}
 
 /// 杀掉子进程所在的整个进程组，再兜底杀一次子进程本身，最后由调用方 `wait` 回收。
 #[cfg(unix)]
-fn kill_process_group(child: &mut Child) {
+pub(crate) fn kill_process_group(child: &mut Child) {
     kill_group(child.id());
     let _ = child.kill();
 }
 
 #[cfg(not(unix))]
-fn kill_process_group(child: &mut Child) {
+pub(crate) fn kill_process_group(child: &mut Child) {
     let _ = child.kill();
 }
 
@@ -583,26 +514,6 @@ fn read_stream<R: std::io::Read>(mut stream: R) -> String {
     let mut buffer = Vec::new();
     let _ = stream.read_to_end(&mut buffer);
     String::from_utf8_lossy(&buffer).into_owned()
-}
-
-/// 解析 `--version` 的输出：取第一个非空行里的版本号，解析不到就保留原始首行。
-///
-/// `2.1.296 (Claude Code)` → `2.1.296`，`codex-cli 0.145.0` → `0.145.0`，`hello` → `hello`。
-fn parse_version(output: &str) -> Option<String> {
-    let line = first_non_empty_line(output)?;
-    if let Some(token) = line
-        .split_whitespace()
-        .find(|token| looks_like_version(token))
-    {
-        return Some(token.trim_start_matches('v').to_string());
-    }
-    Some(line)
-}
-
-/// 是否是 `2.1.296` / `v0.145.0` 这样的版本号。
-fn looks_like_version(token: &str) -> bool {
-    let body = token.strip_prefix('v').unwrap_or(token);
-    !body.is_empty() && body.contains('.') && body.chars().all(|c| c.is_ascii_digit() || c == '.')
 }
 
 /// 按规则筛选排序候选文件：命中判断不区分大小写，排序为「文件名命中 → 路径更短 → 字典序」，
@@ -753,115 +664,12 @@ fn is_executable(path: &Path) -> bool {
     path.is_file()
 }
 
-/// 实例要用的可执行文件：优先 `executable` 覆盖路径，否则按 kind 自动查找。
-fn resolve_executable(
-    harness: &HarnessInstance,
-    dirs: &[PathBuf],
-) -> std::result::Result<PathBuf, String> {
-    if let Some(configured) = harness
-        .executable
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-    {
-        let path = PathBuf::from(configured);
-        if is_executable(&path) {
-            return Ok(path);
-        }
-        return Err(format!("配置的可执行文件不存在或不可执行：{configured}"));
-    }
-
-    let command = match harness.kind {
-        HarnessKind::ClaudeCode => "claude",
-        HarnessKind::Codex => "codex",
-        HarnessKind::Mock => return Err("mock 不做本机检查".to_string()),
-    };
-    find_in_path(command, dirs)
-        .ok_or_else(|| format!("未找到 {command} 命令：请确认已安装并加入 PATH"))
-}
-
-/// 校验配置的 profile：Claude Code 是 settings 文件路径，Codex 是 `~/.codex` 里的 profile 名。
-///
-/// `Ok(None)` 表示没有配置 profile；`Ok(Some(note))` 表示已确认存在。
-fn check_profile(
-    harness: &HarnessInstance,
-    codex_home: &Path,
-) -> std::result::Result<Option<String>, String> {
-    let Some(profile) = harness
-        .profile
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-    else {
-        return Ok(None);
-    };
-
-    match harness.kind {
-        HarnessKind::ClaudeCode => {
-            let settings = Path::new(profile);
-            if settings.is_file() {
-                Ok(Some(format!("配置文件 {profile} 存在")))
-            } else {
-                Err(format!("未找到 Claude Code 配置文件：{profile}"))
-            }
-        }
-        HarnessKind::Codex => {
-            let standalone = codex_home.join(format!("{profile}.config.toml"));
-            if standalone.is_file() {
-                return Ok(Some(format!("profile 文件 {profile}.config.toml 存在")));
-            }
-            let config = codex_home.join("config.toml");
-            let matched = std::fs::read_to_string(&config)
-                .is_ok_and(|content| config_toml_has_profile(&content, profile));
-            if matched {
-                Ok(Some(format!("config.toml 中有 profile {profile}")))
-            } else {
-                Err(format!("未找到 Codex profile：{profile}"))
-            }
-        }
-        HarnessKind::Mock => Ok(None),
-    }
-}
-
-/// 简单文本匹配：`config.toml` 里是否有该 profile 的配置段。
-fn config_toml_has_profile(content: &str, profile: &str) -> bool {
-    if profile.is_empty() {
-        return false;
-    }
-    content.lines().any(|line| {
-        let Some(section) = line
-            .trim()
-            .strip_prefix('[')
-            .and_then(|rest| rest.split_once(']').map(|(head, _)| head))
-        else {
-            return false;
-        };
-        let section = unquote(section.trim());
-        section == profile
-            || section
-                .strip_prefix("profiles.")
-                .is_some_and(|rest| unquote(rest) == profile)
-    })
-}
-
-fn unquote(value: &str) -> &str {
-    value.trim_matches('"').trim_matches('\'')
-}
-
 /// 进程当前的用户主目录。
 fn home_dir() -> Option<PathBuf> {
     std::env::var_os("HOME")
         .filter(|home| !home.is_empty())
         .or_else(|| std::env::var_os("USERPROFILE").filter(|home| !home.is_empty()))
         .map(PathBuf::from)
-}
-
-/// Codex 配置目录，优先 `$CODEX_HOME`，否则 `~/.codex`。
-fn codex_home_dir() -> PathBuf {
-    if let Some(configured) = std::env::var_os("CODEX_HOME").filter(|home| !home.is_empty()) {
-        return PathBuf::from(configured);
-    }
-    home_dir().map_or_else(|| PathBuf::from(".codex"), |home| home.join(".codex"))
 }
 
 /// 把目录列表拼成给子进程用的 `PATH`。
@@ -875,15 +683,6 @@ fn first_non_empty_line(text: &str) -> Option<String> {
         .map(str::trim)
         .find(|line| !line.is_empty())
         .map(str::to_string)
-}
-
-fn health_error(version: Option<String>, message: String) -> HealthCheck {
-    HealthCheck {
-        status: HealthStatus::Error,
-        version,
-        detail: Some(message),
-        checked_at: None,
-    }
 }
 
 #[cfg(test)]
@@ -946,27 +745,6 @@ mod tests {
         drop(dir);
         assert!(!gone.exists());
         gone
-    }
-
-    fn harness(kind: HarnessKind) -> HarnessInstance {
-        HarnessInstance {
-            id: "harness-1".to_string(),
-            team_id: "team-1".to_string(),
-            name: "local".to_string(),
-            kind,
-            executable: None,
-            model: None,
-            profile: None,
-            health: HealthCheck {
-                status: HealthStatus::Unknown,
-                version: None,
-                detail: None,
-                checked_at: None,
-            },
-            created_at: "2026-01-01T00:00:00Z".to_string(),
-            updated_at: "2026-01-01T00:00:00Z".to_string(),
-            archived_at: None,
-        }
     }
 
     /// 在 `dir` 里放一个假可执行脚本并返回它的路径。
@@ -1362,32 +1140,6 @@ mod tests {
     }
 
     #[test]
-    fn parse_version_reads_claude_and_codex_output() {
-        assert_eq!(
-            parse_version("2.1.296 (Claude Code)\n").as_deref(),
-            Some("2.1.296")
-        );
-        assert_eq!(
-            parse_version("codex-cli 0.145.0\r\n").as_deref(),
-            Some("0.145.0")
-        );
-        assert_eq!(parse_version("v1.0.22\n").as_deref(), Some("1.0.22"));
-        assert_eq!(
-            parse_version("\n  0.4.1  \n1.0.0\n").as_deref(),
-            Some("0.4.1")
-        );
-    }
-
-    #[test]
-    fn parse_version_falls_back_to_raw_line_or_none() {
-        assert_eq!(
-            parse_version("totally unknown\n").as_deref(),
-            Some("totally unknown")
-        );
-        assert_eq!(parse_version("   \n\n"), None);
-    }
-
-    #[test]
     fn extract_shell_path_reads_only_marked_segment() {
         let output =
             format!("zsh: noise\n{PATH_START_MARKER}/usr/bin:/bin{PATH_END_MARKER}\nbye\n");
@@ -1403,167 +1155,6 @@ mod tests {
         assert_eq!(
             extract_shell_path(&format!("{PATH_END_MARKER}/bin{PATH_START_MARKER}")),
             None
-        );
-    }
-
-    #[test]
-    fn config_toml_matches_profile_sections() {
-        let content = "model = \"gpt-5\"\n\n[profiles.work]\nmodel = \"gpt-5-codex\"\n";
-        assert!(config_toml_has_profile(content, "work"));
-        assert!(!config_toml_has_profile(content, "home"));
-
-        let quoted = "[profiles.\"review\"]\nmodel = \"gpt-5\"\n";
-        assert!(config_toml_has_profile(quoted, "review"));
-        assert!(config_toml_has_profile("[solo]\n", "solo"));
-        assert!(!config_toml_has_profile("[profiles.work.env]\n", "work"));
-        assert!(!config_toml_has_profile("", "work"));
-        assert!(!config_toml_has_profile("[profiles.work]\n", ""));
-    }
-
-    #[test]
-    fn detect_reads_version_from_fake_cli() {
-        let dir = tempfile::tempdir().unwrap();
-        let executable = fake_executable(dir.path(), "claude", "echo '2.1.296 (Claude Code)'");
-        let probe = LocalProbe::new();
-        let dirs = test_dirs(dir.path());
-
-        let detected = probe.detect_with(HarnessKind::ClaudeCode, &dirs);
-        assert!(detected.found);
-        assert_eq!(detected.version.as_deref(), Some("2.1.296"));
-        assert_eq!(
-            detected.executable.as_deref(),
-            Some(executable.to_str().unwrap())
-        );
-        assert_eq!(detected.error, None);
-    }
-
-    #[test]
-    fn detect_reads_codex_version_through_path() {
-        let dir = tempfile::tempdir().unwrap();
-        fake_executable(dir.path(), "codex", "echo 'codex-cli 0.145.0'");
-        let probe = LocalProbe::new();
-
-        let detected = probe.detect_with(HarnessKind::Codex, &test_dirs(dir.path()));
-        assert!(detected.found);
-        assert_eq!(detected.version.as_deref(), Some("0.145.0"));
-    }
-
-    #[test]
-    fn detect_reports_missing_cli_in_chinese() {
-        let dir = tempfile::tempdir().unwrap();
-        let probe = LocalProbe::new();
-
-        let detected = probe.detect_with(HarnessKind::ClaudeCode, &test_dirs(dir.path()));
-        assert!(!detected.found);
-        assert_eq!(detected.executable, None);
-        assert_eq!(detected.version, None);
-        assert_eq!(
-            detected.error.as_deref(),
-            Some("未找到 claude 命令：请确认已安装并加入 PATH")
-        );
-    }
-
-    #[test]
-    fn detect_does_not_run_anything_for_mock() {
-        let probe = LocalProbe::new();
-        let detected = probe.detect_with(HarnessKind::Mock, &[]);
-
-        assert!(!detected.found);
-        assert!(detected.error.unwrap().contains("mock"));
-    }
-
-    #[test]
-    fn check_uses_executable_override() {
-        let dir = tempfile::tempdir().unwrap();
-        let executable = fake_executable(dir.path(), "my-claude", "echo '2.1.296 (Claude Code)'");
-        let codex_home = tempfile::tempdir().unwrap();
-        let mut instance = harness(HarnessKind::ClaudeCode);
-        instance.executable = Some(executable.display().to_string());
-        let probe = LocalProbe::new();
-
-        let check = probe.check_with(&instance, &test_dirs(dir.path()), codex_home.path());
-        assert_eq!(check.status, HealthStatus::Ok);
-        assert_eq!(check.version.as_deref(), Some("2.1.296"));
-        assert!(
-            check
-                .detail
-                .unwrap()
-                .contains(&executable.display().to_string())
-        );
-        assert_eq!(check.checked_at, None);
-    }
-
-    #[test]
-    fn check_falls_back_to_path_lookup() {
-        let dir = tempfile::tempdir().unwrap();
-        fake_executable(dir.path(), "codex", "echo 'codex-cli 0.145.0'");
-        let codex_home = tempfile::tempdir().unwrap();
-        let probe = LocalProbe::new();
-
-        let check = probe.check_with(
-            &harness(HarnessKind::Codex),
-            &test_dirs(dir.path()),
-            codex_home.path(),
-        );
-        assert_eq!(check.status, HealthStatus::Ok);
-        assert_eq!(check.version.as_deref(), Some("0.145.0"));
-    }
-
-    #[test]
-    fn check_reports_missing_executable_override() {
-        let dir = tempfile::tempdir().unwrap();
-        let codex_home = tempfile::tempdir().unwrap();
-        let mut instance = harness(HarnessKind::ClaudeCode);
-        instance.executable = Some(dir.path().join("absent").display().to_string());
-        let probe = LocalProbe::new();
-
-        let check = probe.check_with(&instance, &[], codex_home.path());
-        assert_eq!(check.status, HealthStatus::Error);
-        assert_eq!(check.version, None);
-        assert_eq!(check.checked_at, None);
-        assert!(check.detail.unwrap().contains("不存在或不可执行"));
-    }
-
-    #[test]
-    fn check_reports_failing_cli() {
-        let dir = tempfile::tempdir().unwrap();
-        let executable = fake_executable(dir.path(), "claude", "echo 'boom' >&2\nexit 3");
-        let codex_home = tempfile::tempdir().unwrap();
-        let mut instance = harness(HarnessKind::ClaudeCode);
-        instance.executable = Some(executable.display().to_string());
-        let probe = LocalProbe::new();
-
-        let check = probe.check_with(&instance, &test_dirs(dir.path()), codex_home.path());
-        assert_eq!(check.status, HealthStatus::Error);
-        assert!(check.detail.unwrap().contains("boom"));
-    }
-
-    #[test]
-    fn version_command_times_out_and_kills_process() {
-        let dir = tempfile::tempdir().unwrap();
-        // 脚本在后台再 fork 一个孙进程，两个都攥着 stdout/stderr 管道不放。
-        let executable = fake_executable(
-            dir.path(),
-            "claude",
-            "/bin/sh -c 'exec /bin/sleep 30' &\n/bin/sleep 30",
-        );
-        let probe = LocalProbe::new();
-
-        let started = Instant::now();
-        let err = probe
-            .version_of(
-                &executable,
-                &test_dirs(dir.path()),
-                Duration::from_millis(300),
-            )
-            .expect_err("超时应报错");
-        assert!(err.contains("超时"), "实际错误：{err}");
-        // 硬上限是「超时 + 两条管道各等 OUTPUT_GRACE」≈ 4.5 秒，这里留足机器繁忙的余量；
-        // 「孙进程是否真的被杀干净」由 run_command_kills_whole_process_group 断言。
-        assert!(
-            started.elapsed() < Duration::from_secs(8),
-            "应尽快杀掉整组进程，实际耗时 {:?}",
-            started.elapsed()
         );
     }
 
@@ -1624,103 +1215,6 @@ mod tests {
     }
 
     #[test]
-    fn version_command_without_output_is_an_error() {
-        let dir = tempfile::tempdir().unwrap();
-        let executable = fake_executable(dir.path(), "claude", "exit 0");
-        let probe = LocalProbe::new();
-
-        let err = probe
-            .version_of(&executable, &test_dirs(dir.path()), Duration::from_secs(5))
-            .expect_err("无版本输出应报错");
-        assert!(err.contains("未返回可解析的版本号"), "实际错误：{err}");
-    }
-
-    #[test]
-    fn check_claude_profile_requires_existing_settings_file() {
-        let dir = tempfile::tempdir().unwrap();
-        let executable = fake_executable(dir.path(), "claude", "echo '2.1.296 (Claude Code)'");
-        let settings = dir.path().join("settings.json");
-        std::fs::write(&settings, "{}\n").unwrap();
-        let codex_home = tempfile::tempdir().unwrap();
-        let probe = LocalProbe::new();
-        let mut instance = harness(HarnessKind::ClaudeCode);
-        instance.executable = Some(executable.display().to_string());
-
-        instance.profile = Some(settings.display().to_string());
-        let ok = probe.check_with(&instance, &test_dirs(dir.path()), codex_home.path());
-        assert_eq!(ok.status, HealthStatus::Ok);
-        assert!(ok.detail.unwrap().contains("settings.json"));
-
-        instance.profile = Some(dir.path().join("absent.json").display().to_string());
-        let err = probe.check_with(&instance, &test_dirs(dir.path()), codex_home.path());
-        assert_eq!(err.status, HealthStatus::Error);
-        assert_eq!(err.version.as_deref(), Some("2.1.296"));
-        assert!(err.detail.unwrap().contains("未找到 Claude Code 配置文件"));
-    }
-
-    #[test]
-    fn check_codex_profile_reads_config_toml_and_standalone_file() {
-        let dir = tempfile::tempdir().unwrap();
-        let executable = fake_executable(dir.path(), "codex", "echo 'codex-cli 0.145.0'");
-        let codex_home = tempfile::tempdir().unwrap();
-        std::fs::write(
-            codex_home.path().join("config.toml"),
-            "[profiles.work]\nmodel = \"gpt-5\"\n",
-        )
-        .unwrap();
-        let probe = LocalProbe::new();
-        let mut instance = harness(HarnessKind::Codex);
-        instance.executable = Some(executable.display().to_string());
-
-        instance.profile = Some("work".to_string());
-        let ok = probe.check_with(&instance, &test_dirs(dir.path()), codex_home.path());
-        assert_eq!(ok.status, HealthStatus::Ok);
-        assert!(ok.detail.unwrap().contains("config.toml"));
-
-        instance.profile = Some("missing".to_string());
-        let err = probe.check_with(&instance, &test_dirs(dir.path()), codex_home.path());
-        assert_eq!(err.status, HealthStatus::Error);
-        assert!(
-            err.detail
-                .unwrap()
-                .contains("未找到 Codex profile：missing")
-        );
-
-        std::fs::write(
-            codex_home.path().join("solo.config.toml"),
-            "model = \"gpt-5\"\n",
-        )
-        .unwrap();
-        instance.profile = Some("solo".to_string());
-        let standalone = probe.check_with(&instance, &test_dirs(dir.path()), codex_home.path());
-        assert_eq!(standalone.status, HealthStatus::Ok);
-    }
-
-    #[test]
-    fn check_skips_profile_lookup_when_not_configured() {
-        let dir = tempfile::tempdir().unwrap();
-        let executable = fake_executable(dir.path(), "claude", "echo '2.1.296 (Claude Code)'");
-        let codex_home = tempfile::tempdir().unwrap();
-        let mut instance = harness(HarnessKind::ClaudeCode);
-        instance.executable = Some(executable.display().to_string());
-        instance.profile = Some("   ".to_string());
-        let probe = LocalProbe::new();
-
-        let check = probe.check_with(&instance, &test_dirs(dir.path()), codex_home.path());
-        assert_eq!(check.status, HealthStatus::Ok);
-    }
-
-    #[test]
-    fn check_does_not_run_anything_for_mock() {
-        let probe = LocalProbe::new();
-        let check = probe.check_with(&harness(HarnessKind::Mock), &[], Path::new("/nonexistent"));
-
-        assert_eq!(check.status, HealthStatus::Unknown);
-        assert_eq!(check.version, None);
-        assert!(check.detail.unwrap().contains("mock"));
-    }
-
-    #[test]
     fn path_dirs_are_deduplicated_and_include_common_install_dirs() {
         let dirs = resolve_path_dirs();
         let mut unique = dirs.clone();
@@ -1743,6 +1237,82 @@ mod tests {
         let second = probe.path_dirs().to_vec();
         assert_eq!(first, second);
         assert!(!first.is_empty());
+    }
+
+    #[test]
+    fn locate_command_searches_given_path_or_checks_absolute_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let exe = fake_executable(dir.path(), "claude-code-acp", "exit 0");
+        std::fs::write(dir.path().join("not-exec"), "x").unwrap();
+        let dirs = test_dirs(dir.path());
+        assert_eq!(find_in_path("claude-code-acp", &dirs), Some(exe.clone()));
+        assert_eq!(find_in_path("not-exec", &dirs), None);
+        assert_eq!(find_in_path("codex-acp", &dirs), None);
+        assert_eq!(find_in_path(exe.to_str().unwrap(), &[]), Some(exe));
+    }
+
+    fn launch(command: &str, args: &[&str]) -> AgentLaunch {
+        AgentLaunch {
+            command: command.into(),
+            args: args.iter().map(|a| a.to_string()).collect(),
+            env_profile: None,
+        }
+    }
+
+    #[test]
+    fn handshake_finds_agent_in_path_and_passes_args() {
+        let dir = tempfile::tempdir().unwrap();
+        fake_executable(
+            dir.path(),
+            "mcode",
+            r#"[ "$1" = "acp" ] || { echo "missing acp arg" >&2; exit 2; }
+read line
+echo '{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":1,"agentInfo":{"name":"mcode","version":"3.1.0"}}}'"#,
+        );
+        let probe = LocalProbe::new();
+        let hs = probe.handshake_with(
+            &launch("mcode", &["acp"]),
+            &test_dirs(dir.path()),
+            Duration::from_secs(10),
+        );
+        assert_eq!(
+            hs.status,
+            crate::model::HandshakeStatus::Connected,
+            "{:?}",
+            hs.detail
+        );
+        assert_eq!(hs.agent.unwrap().version.as_deref(), Some("3.1.0"));
+    }
+
+    #[test]
+    fn handshake_reports_missing_command_and_env_profile() {
+        let dir = tempfile::tempdir().unwrap();
+        let probe = LocalProbe::new();
+        let dirs = test_dirs(dir.path());
+
+        let hs = probe.handshake_with(&launch("gemini", &[]), &dirs, Duration::from_secs(1));
+        assert_eq!(hs.status, crate::model::HandshakeStatus::Error);
+        assert_eq!(
+            hs.detail.as_deref(),
+            Some("未找到命令 gemini：请确认已安装并加入 PATH")
+        );
+
+        let absent = dir.path().join("absent-agent").display().to_string();
+        let hs = probe.handshake_with(&launch(&absent, &[]), &dirs, Duration::from_secs(1));
+        assert!(hs.detail.unwrap().contains("不存在或不可执行"));
+
+        // 环境配置档案只检查存在，不读取内容；不存在时不启动进程。
+        let marker = dir.path().join("started");
+        fake_executable(
+            dir.path(),
+            "agent",
+            &format!("/usr/bin/touch '{}'", marker.display()),
+        );
+        let mut with_profile = launch("agent", &[]);
+        with_profile.env_profile = Some(dir.path().join("missing.env").display().to_string());
+        let hs = probe.handshake_with(&with_profile, &dirs, Duration::from_secs(1));
+        assert!(hs.detail.unwrap().contains("环境配置档案不存在"));
+        assert!(!marker.exists(), "档案缺失时不应启动 Agent");
     }
 
     #[test]

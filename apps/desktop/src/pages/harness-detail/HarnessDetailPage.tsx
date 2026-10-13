@@ -22,8 +22,10 @@ import {
   formatDateTime,
   formatVersion,
   harnessKindLabel,
+  agentVersion,
   healthLabel,
   healthTone,
+  splitArgs,
   isTestHarness,
 } from "./harnessFormat.js";
 import "./harness-detail.css";
@@ -150,9 +152,9 @@ function HarnessDetailView({
 }: HarnessDetailViewProps) {
   const queryClient = useQueryClient();
   const [name, setName] = useState(harness.name);
-  const [executable, setExecutable] = useState(harness.executable ?? "");
-  const [model, setModel] = useState(harness.model ?? "");
-  const [profile, setProfile] = useState(harness.profile ?? "");
+  const [command, setCommand] = useState(harness.command);
+  const [args, setArgs] = useState(harness.args.join(" "));
+  const [envProfile, setEnvProfile] = useState(harness.envProfile ?? "");
 
   const trimmed = (value: string) => (value.trim() === "" ? null : value.trim());
 
@@ -165,9 +167,9 @@ function HarnessDetailView({
       updateHarness({
         harnessId: harness.id,
         name: name.trim(),
-        executable: trimmed(executable),
-        model: trimmed(model),
-        profile: trimmed(profile),
+        command: trimmed(command),
+        args: splitArgs(args),
+        envProfile: trimmed(envProfile),
       }),
     onSuccess: invalidate,
   });
@@ -180,13 +182,13 @@ function HarnessDetailView({
     },
   });
 
-  const health = harness.health;
+  const health = harness.handshake;
 
   const dirty =
     name !== harness.name ||
-    (harness.executable ?? "") !== executable ||
-    (harness.model ?? "") !== model ||
-    (harness.profile ?? "") !== profile;
+    harness.command !== command ||
+    harness.args.join(" ") !== args ||
+    (harness.envProfile ?? "") !== envProfile;
 
   return (
     <div className="harness-detail">
@@ -212,34 +214,34 @@ function HarnessDetailView({
               setName(event.target.value);
             }}
           />
-          <SelectField label="类型" value={harness.kind} disabled hint="创建后不可修改。">
-            <option value={harness.kind}>
-              {harnessKindLabel(harness.kind)}
-              {isTestHarness(harness.kind) ? `（${TEST_HARNESS_LABEL}）` : ""}
+          <SelectField label="类型" value={harness.preset} disabled hint="创建后不可修改。">
+            <option value={harness.preset}>
+              {harnessKindLabel(harness.preset)}
+              {isTestHarness(harness.preset) ? `（${TEST_HARNESS_LABEL}）` : ""}
             </option>
           </SelectField>
           <InputField
-            label="可执行文件路径"
-            hint="可留空；留空则使用本机检测到的路径，填写时须为绝对路径。"
-            value={executable}
+            label="启动命令"
+            hint="命令名或绝对路径；留空则使用预设默认命令。"
+            value={command}
             onChange={(event) => {
-              setExecutable(event.target.value);
+              setCommand(event.target.value);
             }}
           />
           <InputField
-            label="模型"
-            hint="可留空，原样传给 CLI。"
-            value={model}
+            label="参数"
+            hint="空格分隔。"
+            value={args}
             onChange={(event) => {
-              setModel(event.target.value);
+              setArgs(event.target.value);
             }}
           />
           <InputField
-            label="Profile"
-            hint="Claude Code 为 settings 文件路径，Codex 为 profile 名。"
-            value={profile}
+            label="环境配置档案"
+            hint="可留空；填写时须为绝对路径，只记录路径，不保存密钥。"
+            value={envProfile}
             onChange={(event) => {
-              setProfile(event.target.value);
+              setEnvProfile(event.target.value);
             }}
           />
 
@@ -260,8 +262,8 @@ function HarnessDetailView({
           <h2 className="harness-detail__title">健康检查结果</h2>
 
           <p className="harness-detail__instance">
-            实例 {harness.name} · {harnessKindLabel(harness.kind)}
-            {isTestHarness(harness.kind) ? `（${TEST_HARNESS_LABEL}）` : ""}
+            实例 {harness.name} · {harnessKindLabel(harness.preset)}
+            {isTestHarness(harness.preset) ? `（${TEST_HARNESS_LABEL}）` : ""}
           </p>
 
           <div className="harness-detail__health-head">
@@ -275,7 +277,7 @@ function HarnessDetailView({
             <p className="harness-detail__detail">{health.detail}</p>
           )}
 
-          <p className="harness-detail__version">版本：{formatVersion(health.version)}</p>
+          <p className="harness-detail__version">版本：{formatVersion(agentVersion(health))}</p>
 
           {checkError === null ? null : <ErrorBanner error={checkError} />}
 

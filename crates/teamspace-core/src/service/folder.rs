@@ -18,7 +18,7 @@ use super::event::{self, NewEvent};
 use super::harness;
 use crate::error::{Error, Result};
 use crate::model::{EventKind, Role};
-use crate::role_folder::{self, JournalEntry, RolePlan, SyncOutcome};
+use crate::role_folder::{self, BoundHarness, JournalEntry, RolePlan, SyncOutcome};
 use crate::store::enum_col;
 
 const ROLE_COLS: &str = "r.id, r.team_id, r.name, r.code, r.task_prefix, r.description, \
@@ -132,14 +132,19 @@ pub(crate) fn plans(conn: &Connection, team_id: &str) -> Result<(PathBuf, Vec<Ro
         .optional()?
         .ok_or_else(|| Error::not_found("团队不存在或已归档"))?;
     let mut stmt = conn.prepare(&format!(
-        "SELECT {ROLE_COLS}, h.name, h.kind FROM roles r
+        "SELECT {ROLE_COLS}, h.name, h.preset, h.command, h.args FROM roles r
          LEFT JOIN harnesses h ON h.id = r.harness_id
          WHERE r.team_id = ?1 ORDER BY r.created_at, r.id"
     ))?;
     let rows = stmt
         .query_map(params![team_id], |row| {
             let harness = match row.get::<_, Option<String>>(15)? {
-                Some(name) => Some((name, enum_col(row, 16)?)),
+                Some(name) => Some(BoundHarness {
+                    name,
+                    preset: enum_col(row, 16)?,
+                    command: row.get(17)?,
+                    args: serde_json::from_str(&row.get::<_, String>(18)?).unwrap_or_default(),
+                }),
                 None => None,
             };
             Ok((

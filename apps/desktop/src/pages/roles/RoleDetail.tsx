@@ -58,7 +58,7 @@ export function RoleDetail({
     guidelines !== role.guidelines;
 
   const pendingHarness = harnesses.find((instance) => instance.id === pendingHarnessId);
-  const pendingIsTestHarness = pendingHarness !== undefined && isTestHarness(pendingHarness.kind);
+  const pendingIsTestHarness = pendingHarness !== undefined && isTestHarness(pendingHarness.preset);
 
   return (
     <article className="role-detail">
@@ -74,14 +74,16 @@ export function RoleDetail({
       ) : (
         <Card title={`当前绑定 ${harness.name}`} tone="info" className="role-detail__binding">
           <p className="role-detail__binding-meta">
-            <span>{harnessKindLabel(harness.kind)}</span>
+            <span>{harnessKindLabel(harness.preset)}</span>
             <span aria-hidden="true"> · </span>
-            <span className={`role-detail__health role-detail__health--${harness.health.status}`}>
-              {healthLabel(harness.health.status)}
+            <span
+              className={`role-detail__health role-detail__health--${harness.handshake.status}`}
+            >
+              {healthLabel(harness.handshake.status)}
             </span>
           </p>
-          {harness.health.detail === null ? null : (
-            <p className="role-detail__binding-detail">{harness.health.detail}</p>
+          {harness.handshake.detail === null ? null : (
+            <p className="role-detail__binding-detail">{harness.handshake.detail}</p>
           )}
         </Card>
       )}
@@ -201,9 +203,9 @@ export function RoleDetail({
                 <option value="">请选择实例</option>
                 {harnesses.map((instance) => (
                   <option key={instance.id} value={instance.id}>
-                    {harnessKindLabel(instance.kind)}
-                    {isTestHarness(instance.kind) ? `（${TEST_HARNESS_LABEL}）` : ""} /{" "}
-                    {instance.name}（{healthLabel(instance.health.status)}）
+                    {harnessKindLabel(instance.preset)}
+                    {isTestHarness(instance.preset) ? `（${TEST_HARNESS_LABEL}）` : ""} /{" "}
+                    {instance.name}（{healthLabel(instance.handshake.status)}）
                   </option>
                 ))}
               </SelectField>

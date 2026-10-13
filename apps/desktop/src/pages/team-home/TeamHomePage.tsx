@@ -3,8 +3,8 @@ import { useNavigate, useParams } from "react-router";
 
 import { getTeamOverview } from "../../api/commands.js";
 import { queryKeys } from "../../api/queryKeys.js";
-import type { HarnessKind } from "../../bindings/HarnessKind.js";
-import type { HealthStatus } from "../../bindings/HealthStatus.js";
+import type { AcpPreset } from "../../bindings/AcpPreset.js";
+import type { HandshakeStatus } from "../../bindings/HandshakeStatus.js";
 import type { TaskStatus } from "../../bindings/TaskStatus.js";
 import {
   Button,
@@ -22,20 +22,25 @@ import { formatLocalDateTime } from "./formatLocalDateTime.js";
 import "./team-home.css";
 
 /** Harness 类型的中文展示名；mock 是测试用执行器，标注出来避免误当成真实执行环境。 */
-const HARNESS_LABEL: Record<HarnessKind, string> = {
+const HARNESS_LABEL: Record<AcpPreset, string> = {
   claude_code: "Claude Code",
   codex: "Codex",
+  minimax_code: "MiniMax Code",
+  gemini_cli: "Gemini CLI",
+  custom: "自定义 ACP Agent",
   mock: "Mock（测试用）",
 };
 
-const HEALTH_TONE: Record<HealthStatus, TagTone> = {
-  ok: "success",
+const HEALTH_TONE: Record<HandshakeStatus, TagTone> = {
+  connected: "success",
+  needs_auth: "warning",
   error: "danger",
   unknown: "neutral",
 };
 
-const HEALTH_LABEL: Record<HealthStatus, string> = {
-  ok: "在线",
+const HEALTH_LABEL: Record<HandshakeStatus, string> = {
+  connected: "已连接",
+  needs_auth: "需要登录",
   error: "异常",
   unknown: "未检测",
 };
@@ -140,15 +145,15 @@ export function TeamHomePage() {
                 ) : (
                   <>
                     <p>
-                      当前绑定 {HARNESS_LABEL[item.harness.kind]}
+                      当前绑定 {HARNESS_LABEL[item.harness.preset]}
                       {item.harness.name === "" ? "" : ` · ${item.harness.name}`}
                     </p>
                     <div className="th-health">
-                      <Tag tone={HEALTH_TONE[item.harness.health.status]}>
-                        {HEALTH_LABEL[item.harness.health.status]}
+                      <Tag tone={HEALTH_TONE[item.harness.handshake.status]}>
+                        {HEALTH_LABEL[item.harness.handshake.status]}
                       </Tag>
-                      {item.harness.health.detail ? (
-                        <span className="th-note">{item.harness.health.detail}</span>
+                      {item.harness.handshake.detail ? (
+                        <span className="th-note">{item.harness.handshake.detail}</span>
                       ) : null}
                     </div>
                   </>

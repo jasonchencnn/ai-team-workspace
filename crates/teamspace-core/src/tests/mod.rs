@@ -1,4 +1,4 @@
-//! 通过 [`Teamspace`] 公开命令测试业务规则。全部使用临时目录和假探测，不调用真实 Git 或 CLI。
+//! 通过 [`Teamspace`] 公开命令测试业务规则。全部使用临时目录和假探测，不调用真实 Git、CLI 或 Agent。
 
 mod events;
 mod folders;
@@ -6,28 +6,38 @@ mod harnesses;
 mod roles;
 mod tasks;
 mod teams;
+mod workbench;
 
 use std::fs;
 use std::path::{Path, PathBuf};
 
 use tempfile::TempDir;
 
-use crate::Teamspace;
+use crate::acp::AgentLaunch;
 use crate::error::{Error, ErrorKind, Result};
 use crate::model::*;
 use crate::probe::SystemProbe;
+use crate::{AgentCommand, HostConfig, Teamspace};
 
 /// 假探测：目录自身或任一上级目录含 `.git` 时视为 Git 仓库（分支 main、提交 a31f8c2），否则为普通
-/// 文件夹；文件搜索遍历目录（跳过以 `.` 开头的条目）；健康检查按约定返回。
+/// 文件夹；文件搜索遍历目录（跳过以 `.` 开头的条目）；命令查找与握手按约定返回。
 pub(crate) struct FakeProbe;
 
 thread_local! {
     /// [`FakeProbe::reveal_path`] 收到的路径（每个测试线程各一份）。
     pub(crate) static REVEALED: std::cell::RefCell<Vec<PathBuf>> = const { std::cell::RefCell::new(Vec::new()) };
+    /// [`FakeProbe::handshake`] 收到的启动信息。
+    pub(crate) static LAUNCHED: std::cell::RefCell<Vec<AgentLaunch>> = const { std::cell::RefCell::new(Vec::new()) };
 }
 
-/// 健康检查时 executable 为此路径则返回 error。
-pub(crate) const BROKEN_EXECUTABLE: &str = "/broken/claude";
+/// 握手时命令为此值则返回 error。
+pub(crate) const BROKEN_COMMAND: &str = "/broken/agent";
+/// 握手时命令为此值则返回 needs_auth。
+pub(crate) const NEEDS_AUTH_COMMAND: &str = "needs-auth-agent";
+/// 测试宿主注入的 Mock Agent 命令。
+pub(crate) const MOCK_HOST: &str = "/opt/teamspace/host";
+/// 假探测在本机「找不到」的命令。
+pub(crate) const MISSING_COMMANDS: &[&str] = &["codex-acp", "gemini", "claude"];
 
 impl SystemProbe for FakeProbe {
     fn inspect_workspace(&self, path: &Path) -> Result<WorkspaceInfo> {
@@ -71,37 +81,42 @@ impl SystemProbe for FakeProbe {
             .collect())
     }
 
-    fn detect_harness(&self, kind: HarnessKind) -> HarnessDetection {
-        HarnessDetection {
-            kind,
-            found: true,
-            executable: Some("/usr/local/bin/fake".into()),
-            version: Some("1.0.0".into()),
-            error: None,
+    fn locate_command(&self, command: &str) -> Option<String> {
+        (!MISSING_COMMANDS.contains(&command)).then(|| format!("/usr/local/bin/{command}"))
+    }
+
+    fn handshake(&self, launch: &AgentLaunch) -> Handshake {
+        LAUNCHED.with(|launched| launched.borrow_mut().push(launch.clone()));
+        match launch.command.as_str() {
+            BROKEN_COMMAND => Handshake::error("无法启动 /broken/agent"),
+            NEEDS_AUTH_COMMAND => Handshake {
+                status: HandshakeStatus::NeedsAuth,
+                auth_methods: vec!["ChatGPT 登录".into()],
+                detail: Some("Agent 要求先登录".into()),
+                ..Handshake::unknown()
+            },
+            command => Handshake {
+                status: HandshakeStatus::Connected,
+                protocol_version: Some(1),
+                agent: Some(AgentInfo {
+                    name: command.rsplit('/').next().unwrap_or(command).to_owned(),
+                    title: None,
+                    version: Some("0.9.2".into()),
+                }),
+                capabilities: Some(AcpCapabilities {
+                    load_session: true,
+                    ..AcpCapabilities::default()
+                }),
+                auth_methods: Vec::new(),
+                detail: Some("握手成功".into()),
+                checked_at: None,
+            },
         }
     }
 
     fn reveal_path(&self, path: &Path) -> Result<()> {
         REVEALED.with(|revealed| revealed.borrow_mut().push(path.to_path_buf()));
         Ok(())
-    }
-
-    fn check_harness(&self, harness: &HarnessInstance) -> HealthCheck {
-        if harness.executable.as_deref() == Some(BROKEN_EXECUTABLE) {
-            HealthCheck {
-                status: HealthStatus::Error,
-                version: None,
-                detail: Some("无法运行可执行文件".into()),
-                checked_at: None,
-            }
-        } else {
-            HealthCheck {
-                status: HealthStatus::Ok,
-                version: Some("2.1.288 (Claude Code)".into()),
-                detail: None,
-                checked_at: None,
-            }
-        }
     }
 }
 
@@ -123,7 +138,18 @@ pub(crate) fn plain_fixture() -> Fixture {
     let dir = tempfile::tempdir().unwrap();
     let ws = dir.path().join("ws");
     fs::create_dir_all(&ws).unwrap();
-    let ts = Teamspace::open(&dir.path().join("teamspace.db"), Box::new(FakeProbe)).unwrap();
+    let config = HostConfig {
+        mock_agent: Some(AgentCommand {
+            program: MOCK_HOST.into(),
+            args: vec![crate::mock_agent::MOCK_AGENT_FLAG.into()],
+        }),
+    };
+    let ts = Teamspace::open_with(
+        &dir.path().join("teamspace.db"),
+        Box::new(FakeProbe),
+        config,
+    )
+    .unwrap();
     Fixture { dir, ws, ts }
 }
 
@@ -162,15 +188,15 @@ impl Fixture {
             .unwrap()
     }
 
-    pub fn harness(&self, team_id: &str, name: &str, kind: HarnessKind) -> HarnessInstance {
+    pub fn harness(&self, team_id: &str, name: &str, preset: AcpPreset) -> HarnessInstance {
         self.ts
             .create_harness(CreateHarnessInput {
                 team_id: team_id.into(),
                 name: name.into(),
-                kind,
-                executable: None,
-                model: None,
-                profile: None,
+                preset,
+                command: None,
+                args: None,
+                env_profile: None,
             })
             .unwrap()
     }

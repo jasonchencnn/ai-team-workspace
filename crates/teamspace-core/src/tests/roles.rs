@@ -221,8 +221,8 @@ fn bind_and_unbind_harness() {
     let f = fixture();
     let team = f.team("T");
     let fe = f.role(&team.id, "role_frontend");
-    let h1 = f.harness(&team.id, "frontend-local", HarnessKind::ClaudeCode);
-    let h2 = f.harness(&team.id, "codex-local", HarnessKind::Codex);
+    let h1 = f.harness(&team.id, "frontend-local", AcpPreset::ClaudeCode);
+    let h2 = f.harness(&team.id, "codex-local", AcpPreset::Codex);
 
     let view = f.ts.bind_role_harness(&fe.id, &h1.id).unwrap();
     assert_eq!(view.role.harness_id.as_deref(), Some(h1.id.as_str()));
@@ -256,7 +256,7 @@ fn bind_and_unbind_harness() {
 
     // 其他团队或已归档的 Harness 不能绑定。
     let other = f.team("U");
-    let foreign = f.harness(&other.id, "x", HarnessKind::Mock);
+    let foreign = f.harness(&other.id, "x", AcpPreset::Mock);
     assert_kind(
         f.ts.bind_role_harness(&fe.id, &foreign.id),
         ErrorKind::NotFound,
@@ -300,7 +300,7 @@ fn archiving_a_role_clears_its_harness_binding() {
     let f = fixture();
     let team = f.team("T");
     let pm = f.role(&team.id, "role_product");
-    let h = f.harness(&team.id, "h", HarnessKind::Mock);
+    let h = f.harness(&team.id, "h", AcpPreset::Mock);
     f.ts.bind_role_harness(&pm.id, &h.id).unwrap();
     let archived = f.ts.archive_role(&pm.id).unwrap();
     assert!(archived.harness_id.is_none());

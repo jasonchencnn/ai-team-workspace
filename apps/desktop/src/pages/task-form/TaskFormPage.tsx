@@ -4,7 +4,7 @@ import type { FormEvent } from "react";
 import { useNavigate, useParams } from "react-router";
 
 import type { FileRef } from "../../bindings/FileRef.js";
-import type { HealthStatus } from "../../bindings/HealthStatus.js";
+import type { HandshakeStatus } from "../../bindings/HandshakeStatus.js";
 import type { RoleView } from "../../bindings/RoleView.js";
 import type { TaskStatus } from "../../bindings/TaskStatus.js";
 import type { TaskSummary } from "../../bindings/TaskSummary.js";
@@ -71,9 +71,12 @@ function statusTone(status: TaskStatus): TagTone {
   }
 }
 
-function healthLabel(status: HealthStatus): string {
-  if (status === "ok") {
-    return "在线";
+function healthLabel(status: HandshakeStatus): string {
+  if (status === "connected") {
+    return "已连接";
+  }
+  if (status === "needs_auth") {
+    return "需要登录";
   }
   if (status === "error") {
     return "异常";
@@ -87,6 +90,15 @@ function harnessKindLabel(kind: string): string {
   }
   if (kind === "codex") {
     return "Codex";
+  }
+  if (kind === "minimax_code") {
+    return "MiniMax Code";
+  }
+  if (kind === "gemini_cli") {
+    return "Gemini CLI";
+  }
+  if (kind === "custom") {
+    return "自定义 ACP Agent";
   }
   return "Mock";
 }
@@ -397,8 +409,8 @@ export function TaskFormPage() {
                 <>未绑定 Harness · 暂不派工</>
               ) : (
                 <>
-                  当前 Binding：{selectedHarness.name}（{harnessKindLabel(selectedHarness.kind)} ·{" "}
-                  {healthLabel(selectedHarness.health.status)}）
+                  当前 Binding：{selectedHarness.name}（{harnessKindLabel(selectedHarness.preset)} ·{" "}
+                  {healthLabel(selectedHarness.handshake.status)}）
                 </>
               )}
             </p>

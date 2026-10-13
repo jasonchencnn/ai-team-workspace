@@ -3,8 +3,8 @@
 mod commands;
 
 use tauri::Manager;
-use teamspace_core::Teamspace;
 use teamspace_core::system_probe::LocalProbe;
+use teamspace_core::{HostConfig, Teamspace};
 
 /// 同时生成命令名常量与 `generate_handler!`，保证二者不会漂移。
 macro_rules! register_commands {
@@ -33,7 +33,9 @@ register_commands!(
     unbind_role_harness,
     get_role_folder,
     reveal_role_folder,
-    detect_harnesses,
+    get_role_workbench,
+    open_role_path,
+    list_acp_presets,
     list_harnesses,
     get_harness,
     create_harness,
@@ -60,7 +62,9 @@ pub fn run() -> tauri::Result<()> {
             std::fs::create_dir_all(&dir)
                 .map_err(|err| format!("无法创建数据目录 {}：{err}", dir.display()))?;
             let db_path = dir.join("teamspace.db");
-            let teamspace = Teamspace::open(&db_path, Box::new(LocalProbe::new()))
+            // 内置 Mock Agent 由本程序以 `--teamspace-mock-agent` 参数启动（见 main.rs）。
+            let config = HostConfig::with_current_exe_mock_agent();
+            let teamspace = Teamspace::open_with(&db_path, Box::new(LocalProbe::new()), config)
                 .map_err(|err| format!("无法打开数据库 {}：{err}", db_path.display()))?;
             app.manage(teamspace);
             Ok(())

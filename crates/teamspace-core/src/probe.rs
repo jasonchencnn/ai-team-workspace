@@ -1,12 +1,14 @@
-//! 系统探测接口（M1-04 实现）。
+//! 系统探测接口（M1-04 实现，M1.3 改为 ACP 握手）。
 //!
-//! 内核通过 [`SystemProbe`] 访问 Git、工作空间文件和本机 CLI，便于在测试中替换为假实现。
-//! 实现不得读取或保存任何密钥，也不得启动 Harness 执行任务；只允许 `--version` 一类只读调用。
+//! 内核通过 [`SystemProbe`] 访问 Git、工作空间文件、本机命令和 ACP Agent 进程，便于在测试中替换为
+//! 假实现。实现不得读取或保存任何密钥，也不得让 Harness 执行任务；对 Agent 只允许 ACP 握手
+//! （`initialize`），不发送 prompt。
 
 use std::path::Path;
 
+use crate::acp::AgentLaunch;
 use crate::error::Result;
-use crate::model::{HarnessDetection, HarnessInstance, HarnessKind, HealthCheck, WorkspaceInfo};
+use crate::model::{Handshake, WorkspaceInfo};
 
 /// 工作空间文件搜索的返回上限。
 pub const FILE_SEARCH_LIMIT: usize = 50;
@@ -31,16 +33,17 @@ pub trait SystemProbe: Send + Sync {
     ///   `dist`、`build` 等常见大目录，扫描 [`MAX_SCANNED_FILES`] 个文件后停止。
     fn search_files(&self, workspace: &Path, query: &str, limit: usize) -> Result<Vec<String>>;
 
-    /// 在本机查找 `kind` 对应的 CLI（`claude` / `codex`）并读取版本。
-    /// PATH 需补充登录 shell 的 PATH 和常见安装目录。内核不会对 `mock` 调用此方法。
-    fn detect_harness(&self, kind: HarnessKind) -> HarnessDetection;
+    /// 在补全后的 PATH（进程 PATH + 登录 shell 的 PATH + 常见安装目录）中查找命令，返回可执行文件的
+    /// 绝对路径；`command` 含 `/` 时按路径判断是否可执行。不运行任何程序。
+    fn locate_command(&self, command: &str) -> Option<String>;
 
-    /// 对已注册的实例做健康检查：使用 `executable` 覆盖路径（否则自动查找）运行版本命令；
-    /// Claude Code 若配置了 `profile`（settings 文件）需检查文件存在。
-    /// 返回的 `checked_at` 可为 `None`，由内核写入检查时间。内核不会对 `mock` 调用此方法。
-    fn check_harness(&self, harness: &HarnessInstance) -> HealthCheck;
+    /// 对 ACP Agent 做握手检查（见 [`crate::acp`]）：用补全后的 PATH 启动 `launch` 描述的进程
+    /// （工作目录为临时目录，不注入额外环境变量），发送 `initialize`，解析响应后整组终止进程，
+    /// 超时 [`crate::acp::HANDSHAKE_TIMEOUT`]。配置了 `env_profile` 时只检查文件存在，不读取内容。
+    /// 失败体现在返回值中；`checked_at` 由内核写入。
+    fn handshake(&self, launch: &AgentLaunch) -> Handshake;
 
-    /// 在系统文件管理器（macOS 为 Finder）中打开已存在的目录 `path`（内核已确认它存在）。
-    /// 打开失败时返回 internal 错误。
+    /// 在系统文件管理器（macOS 为 Finder）中打开已存在的路径（内核已校验）：目录直接打开，
+    /// 文件则打开所在目录并选中该文件。打开失败时返回 internal 错误。
     fn reveal_path(&self, path: &Path) -> Result<()>;
 }

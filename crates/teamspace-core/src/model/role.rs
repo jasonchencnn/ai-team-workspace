@@ -64,6 +64,37 @@ pub struct RoleFolder {
     pub problem: Option<String>,
 }
 
+/// 岗位文件夹 `过程文件/` 下的一个文件（岗位工作台「最近文件」）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct RoleFileEntry {
+    /// 相对岗位文件夹的路径（`/` 分隔），如 `过程文件/素材清单.md`；可直接传给 `open_role_path`。
+    pub relative_path: String,
+    /// 文件大小（字节）。
+    pub size: u64,
+    /// 最后修改时间（UTC RFC3339）。
+    pub modified_at: String,
+}
+
+/// 岗位工作台（`get_role_workbench` 的结果）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct RoleWorkbench {
+    /// 岗位卡片：岗位、绑定的 Harness 实例（含最近握手结果）、任务统计、文件夹登记信息。
+    pub view: RoleView,
+    /// 岗位文件夹：路径、是否存在、问题、工作日志最近 20 条（最新的在前）。
+    pub folder: RoleFolder,
+    /// 该岗位负责的最近任务（任何状态），按更新时间倒序，最多 8 条。
+    pub recent_tasks: Vec<super::TaskSummary>,
+    /// 该岗位负责的任务总数（用于「查看全部」）。
+    pub task_count: u32,
+    /// `过程文件/` 下最近修改的文件（递归，跳过隐藏文件与目录、符号链接和 Teamspace 生成的
+    /// `过程文件/README.md`），按修改时间倒序，最多 10 条；文件夹不存在时为空。
+    pub recent_files: Vec<RoleFileEntry>,
+}
+
 /// 任务等处引用岗位时使用的简要信息（岗位可能已归档）。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]

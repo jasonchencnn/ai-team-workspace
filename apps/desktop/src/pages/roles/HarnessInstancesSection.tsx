@@ -2,7 +2,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { useNavigate } from "react-router";
 
-import { createHarness, detectHarnesses } from "../../api/commands.js";
+import { createHarness, listAcpPresets } from "../../api/commands.js";
 import { queryKeys } from "../../api/queryKeys.js";
 import {
   Button,
@@ -16,15 +16,19 @@ import {
   Tag,
 } from "../../components/index.js";
 import type { HarnessInstance } from "../../bindings/HarnessInstance.js";
-import type { HarnessKind } from "../../bindings/HarnessKind.js";
+import type { AcpPreset } from "../../bindings/AcpPreset.js";
+import type { CreateHarnessInput } from "../../bindings/CreateHarnessInput.js";
 import {
   TEST_HARNESS_LABEL,
+  agentVersion,
+  commandLine,
   formatRelative,
   formatVersion,
   harnessKindLabel,
   healthLabel,
   healthTone,
   isTestHarness,
+  splitArgs,
 } from "../harness-detail/harnessFormat.js";
 
 export interface HarnessInstancesSectionProps {
@@ -102,30 +106,30 @@ export function HarnessInstancesSection({
             <Card
               title={
                 <span className="harness-card__title">
-                  {harnessKindLabel(instance.kind)}
-                  {isTestHarness(instance.kind) ? `（${TEST_HARNESS_LABEL}）` : ""} /{" "}
+                  {harnessKindLabel(instance.preset)}
+                  {isTestHarness(instance.preset) ? `（${TEST_HARNESS_LABEL}）` : ""} /{" "}
                   {instance.name}
                 </span>
               }
-              tone={instance.health.status === "error" ? "warning" : "default"}
+              tone={instance.handshake.status === "error" ? "warning" : "default"}
               className="harness-card__inner"
             >
-              <p className="harness-card__meta">版本：{formatVersion(instance.health.version)}</p>
               <p className="harness-card__meta">
-                <Tag tone={healthTone(instance.health.status)}>
-                  {healthLabel(instance.health.status)}
+                版本：{formatVersion(agentVersion(instance.handshake))}
+              </p>
+              <p className="harness-card__meta">
+                <Tag tone={healthTone(instance.handshake.status)}>
+                  {healthLabel(instance.handshake.status)}
                 </Tag>
                 <span className="harness-card__checked">
-                  最近检查 {formatRelative(instance.health.checkedAt, Date.now())}
+                  最近检查 {formatRelative(instance.handshake.checkedAt, Date.now())}
                 </span>
               </p>
               <p className="harness-card__config">
-                配置：
-                {instance.model === null ? "默认模型" : `model ${instance.model}`}
-                {instance.profile === null ? "" : ` · profile ${instance.profile}`}
+                启动命令：{commandLine(instance.command, instance.args)}
               </p>
-              {instance.health.status === "error" && instance.health.detail !== null ? (
-                <p className="harness-card__detail">{instance.health.detail}</p>
+              {instance.handshake.status !== "connected" && instance.handshake.detail !== null ? (
+                <p className="harness-card__detail">{instance.handshake.detail}</p>
               ) : null}
               <div className="harness-card__actions">
                 <Button
@@ -159,11 +163,11 @@ export function HarnessInstancesSection({
   );
 }
 
-/** 「检测本机 CLI」：按需查询，用户点击后才调用。 */
+/** 「检测本机 ACP Agent」：按需查询，用户点击后才调用。 */
 function HarnessDetection() {
   const detection = useQuery({
-    queryKey: queryKeys.harnessDetections,
-    queryFn: detectHarnesses,
+    queryKey: queryKeys.acpPresets,
+    queryFn: listAcpPresets,
     enabled: false,
   });
 
@@ -176,7 +180,7 @@ function HarnessDetection() {
           void detection.refetch();
         }}
       >
-        检测本机 CLI
+        检测本机 ACP Agent
       </Button>
 
       {detection.error === null ? null : <ErrorBanner error={detection.error} />}
@@ -184,15 +188,12 @@ function HarnessDetection() {
       {detection.data === undefined ? null : (
         <ul className="harness-detection__list">
           {detection.data.map((item) => (
-            <li key={item.kind} className="harness-detection__item">
-              <Tag tone={item.found ? "success" : "warning"}>{harnessKindLabel(item.kind)}</Tag>
-              {item.found ? (
-                <span className="harness-detection__text">
-                  已找到 · 版本 {item.version ?? "未知"}
-                </span>
-              ) : (
-                <span className="harness-detection__text">{item.error ?? "未找到可执行文件"}</span>
-              )}
+            <li key={item.preset} className="harness-detection__item">
+              <Tag tone={item.commandFound ? "success" : "warning"}>{item.label}</Tag>
+              <span className="harness-detection__text">
+                {item.hint ??
+                  (item.commandFound ? `已找到 ${item.commandPath ?? ""}` : item.description)}
+              </span>
             </li>
           ))}
         </ul>
@@ -205,14 +206,7 @@ interface HarnessCreateFormProps {
   teamId: string;
   isPending: boolean;
   error: Error | null;
-  onSubmit: (input: {
-    teamId: string;
-    name: string;
-    kind: HarnessKind;
-    executable: string | null;
-    model: string | null;
-    profile: string | null;
-  }) => void;
+  onSubmit: (input: CreateHarnessInput) => void;
   onCancel: () => void;
 }
 
@@ -224,10 +218,10 @@ function HarnessCreateForm({
   onCancel,
 }: HarnessCreateFormProps) {
   const [name, setName] = useState("");
-  const [kind, setKind] = useState<HarnessKind>("claude_code");
-  const [executable, setExecutable] = useState("");
-  const [model, setModel] = useState("");
-  const [profile, setProfile] = useState("");
+  const [preset, setPreset] = useState<AcpPreset>("claude_code");
+  const [command, setCommand] = useState("");
+  const [args, setArgs] = useState("");
+  const [envProfile, setEnvProfile] = useState("");
 
   const trimmed = (value: string) => (value.trim() === "" ? null : value.trim());
 
@@ -239,10 +233,10 @@ function HarnessCreateForm({
         onSubmit({
           teamId,
           name: name.trim(),
-          kind,
-          executable: trimmed(executable),
-          model: trimmed(model),
-          profile: trimmed(profile),
+          preset,
+          command: trimmed(command),
+          args: args.trim() === "" ? null : splitArgs(args),
+          envProfile: trimmed(envProfile),
         });
       }}
     >
@@ -260,37 +254,40 @@ function HarnessCreateForm({
       <SelectField
         label="类型"
         required
-        value={kind}
+        value={preset}
         onChange={(event) => {
-          setKind(event.target.value as HarnessKind);
+          setPreset(event.target.value as AcpPreset);
         }}
       >
         <option value="claude_code">Claude Code</option>
         <option value="codex">Codex</option>
+        <option value="minimax_code">MiniMax Code</option>
+        <option value="gemini_cli">Gemini CLI</option>
+        <option value="custom">自定义 ACP Agent</option>
         <option value="mock">Mock（测试用）</option>
       </SelectField>
       <InputField
-        label="可执行文件路径"
-        hint="可留空；留空则使用本机检测到的路径，填写时须为绝对路径。"
-        value={executable}
+        label="启动命令"
+        hint="可留空；留空则使用预设默认命令（自定义 ACP Agent 必填）。"
+        value={command}
         onChange={(event) => {
-          setExecutable(event.target.value);
+          setCommand(event.target.value);
         }}
       />
       <InputField
-        label="模型"
-        hint="可留空，原样传给 CLI。"
-        value={model}
+        label="参数"
+        hint="可留空；空格分隔，留空则使用预设默认参数。"
+        value={args}
         onChange={(event) => {
-          setModel(event.target.value);
+          setArgs(event.target.value);
         }}
       />
       <InputField
-        label="Profile"
-        hint="Claude Code 为 settings 文件路径，Codex 为 profile 名。"
-        value={profile}
+        label="环境配置档案"
+        hint="可留空；填写时须为绝对路径，只记录路径，不保存密钥。"
+        value={envProfile}
         onChange={(event) => {
-          setProfile(event.target.value);
+          setEnvProfile(event.target.value);
         }}
       />
 

@@ -183,7 +183,7 @@ fn archiving_keeps_the_folder() {
     let f = fixture();
     let team = f.team("T");
     let qa = f.role(&team.id, "role_qa");
-    let mock = f.harness(&team.id, "Mock", HarnessKind::Mock);
+    let mock = f.harness(&team.id, "Mock", AcpPreset::Mock);
     f.ts.bind_role_harness(&qa.id, &mock.id).unwrap();
     f.ts.archive_role(&qa.id).unwrap();
     let dir = f.ws.join("Teamspace/QA 测试");
@@ -210,26 +210,29 @@ fn journal_records_bindings_dispatch_and_status_changes_in_order() {
     let team = f.team("T");
     let fe = f.role(&team.id, "role_frontend");
     let be = f.role(&team.id, "role_backend");
-    let a = f.harness(&team.id, "Claude A", HarnessKind::ClaudeCode);
-    let b = f.harness(&team.id, "Codex B", HarnessKind::Codex);
+    let a = f.harness(&team.id, "Claude A", AcpPreset::ClaudeCode);
+    let b = f.harness(&team.id, "Codex B", AcpPreset::Codex);
     f.ts.bind_role_harness(&fe.id, &a.id).unwrap();
     assert!(
-        read(&f.ws.join("Teamspace/前端开发").join(BRIEF_FILE))
-            .contains("- 当前绑定 Harness：Claude A（Claude Code）")
+        read(&f.ws.join("Teamspace/前端开发").join(BRIEF_FILE)).contains(
+            "- 当前绑定 Harness：Claude A（Claude Code · ACP，启动命令 `claude-code-acp`）"
+        )
     );
     f.ts.bind_role_harness(&fe.id, &b.id).unwrap();
     // 改 Harness 名称后岗位说明随之更新。
     f.ts.update_harness(UpdateHarnessInput {
         harness_id: b.id.clone(),
         name: "Codex 二号".into(),
-        executable: None,
-        model: None,
-        profile: None,
+        command: Some("/opt/bin/codex-acp".into()),
+        args: Some(vec!["--profile".into(), "work dir".into()]),
+        env_profile: None,
     })
     .unwrap();
     assert!(
         read(&f.ws.join("Teamspace/前端开发").join(BRIEF_FILE))
-            .contains("- 当前绑定 Harness：Codex 二号（Codex）")
+            .contains(
+                "- 当前绑定 Harness：Codex 二号（Codex · ACP，启动命令 `/opt/bin/codex-acp --profile \"work dir\"`）"
+            )
     );
     f.ts.unbind_role_harness(&fe.id).unwrap();
 
@@ -373,7 +376,7 @@ fn missing_workspace_is_reported_without_failing_commands() {
     let f = fixture();
     let team = f.team("T");
     let fe = f.role(&team.id, "role_frontend");
-    let mock = f.harness(&team.id, "Mock", HarnessKind::Mock);
+    let mock = f.harness(&team.id, "Mock", AcpPreset::Mock);
     fs::remove_dir_all(&f.ws).unwrap();
     let bound = f.ts.bind_role_harness(&fe.id, &mock.id).unwrap();
     assert_eq!(bound.role.harness_id.as_deref(), Some(mock.id.as_str()));

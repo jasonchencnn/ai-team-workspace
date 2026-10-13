@@ -16,6 +16,7 @@ pub enum EventKind {
     HarnessCreated,
     HarnessUpdated,
     HarnessArchived,
+    /// Harness 握手检查（ACP `initialize`）。
     HarnessChecked,
     TaskCreated,
     TaskUpdated,

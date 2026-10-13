@@ -14,7 +14,7 @@ fn every_change_writes_an_event_with_chinese_summary() {
     let f = fixture();
     let team = f.team("T");
     let fe = f.role(&team.id, "role_frontend");
-    let h = f.harness(&team.id, "frontend-local", HarnessKind::Mock);
+    let h = f.harness(&team.id, "frontend-local", AcpPreset::Mock);
     f.ts.bind_role_harness(&fe.id, &h.id).unwrap();
     let t = f.readyable(&team.id, &fe, "登录页");
     f.move_to(&t.task.id, TaskStatus::Ready).unwrap();
@@ -69,7 +69,7 @@ fn events_are_paginated_newest_first_with_cursor() {
     let f = fixture();
     let team = f.team("T");
     for i in 0..6 {
-        f.harness(&team.id, &format!("h{i}"), HarnessKind::Mock);
+        f.harness(&team.id, &format!("h{i}"), AcpPreset::Mock);
     }
     // 共 7 条：1 条建团队 + 6 条注册 Harness。
     let all = page(&f, &team.id, None, None);
@@ -108,7 +108,7 @@ fn events_are_scoped_to_team() {
     let f = fixture();
     let a = f.team("A");
     let b = f.team("B");
-    f.harness(&b.id, "h", HarnessKind::Mock);
+    f.harness(&b.id, "h", AcpPreset::Mock);
     assert_eq!(page(&f, &a.id, None, None).events.len(), 1);
     assert_eq!(page(&f, &b.id, None, None).events.len(), 2);
     assert_kind(
@@ -140,7 +140,7 @@ fn events_keep_write_order_within_the_same_millisecond() {
     let f = fixture();
     let team = f.team("T");
     for i in 0..30 {
-        f.harness(&team.id, &format!("h{i:02}"), HarnessKind::Mock);
+        f.harness(&team.id, &format!("h{i:02}"), AcpPreset::Mock);
     }
     let summaries: Vec<_> = page(&f, &team.id, None, Some(30))
         .events

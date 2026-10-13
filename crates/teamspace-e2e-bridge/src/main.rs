@@ -2,6 +2,7 @@
 //!
 //! 用法：`teamspace-e2e-bridge <数据库路径> <端口>`。只监听 127.0.0.1，只提供 `POST /invoke`，
 //! 请求体 `{ "cmd": "...", "args": {...} }`，响应 `{ "ok": 值 }` 或 `{ "err": ErrorPayload }`。
+//! 以 `--teamspace-mock-agent` 参数启动时作为内置 Mock ACP Agent 运行（Mock 预设的握手会这样启动它）。
 //! 不属于正式应用。
 
 use std::io::{BufRead, BufReader, Read, Write};
@@ -12,11 +13,10 @@ use std::thread;
 
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
-use teamspace_core::model::{
-    HarnessDetection, HarnessInstance, HarnessKind, HealthCheck, WorkspaceInfo,
-};
+use teamspace_core::acp::AgentLaunch;
+use teamspace_core::model::{Handshake, WorkspaceInfo};
 use teamspace_core::system_probe::LocalProbe;
-use teamspace_core::{Error, ErrorPayload, SystemProbe, Teamspace};
+use teamspace_core::{Error, ErrorPayload, HostConfig, SystemProbe, Teamspace, mock_agent};
 
 /// 真实探测，但「在 Finder 中打开」只打印路径，不在测试时弹出 Finder 窗口。
 struct BridgeProbe(LocalProbe);
@@ -35,12 +35,12 @@ impl SystemProbe for BridgeProbe {
         self.0.search_files(workspace, query, limit)
     }
 
-    fn detect_harness(&self, kind: HarnessKind) -> HarnessDetection {
-        self.0.detect_harness(kind)
+    fn locate_command(&self, command: &str) -> Option<String> {
+        self.0.locate_command(command)
     }
 
-    fn check_harness(&self, harness: &HarnessInstance) -> HealthCheck {
-        self.0.check_harness(harness)
+    fn handshake(&self, launch: &AgentLaunch) -> Handshake {
+        self.0.handshake(launch)
     }
 
     fn reveal_path(&self, path: &Path) -> teamspace_core::Result<()> {
@@ -52,13 +52,24 @@ impl SystemProbe for BridgeProbe {
 type CmdResult = Result<Value, ErrorPayload>;
 
 fn main() {
+    if std::env::args().nth(1).as_deref() == Some(mock_agent::MOCK_AGENT_FLAG) {
+        if let Err(err) = mock_agent::run_stdio() {
+            eprintln!("mock agent: {err}");
+            std::process::exit(1);
+        }
+        return;
+    }
     let mut args = std::env::args().skip(1);
     let (Some(db), Some(port)) = (args.next(), args.next()) else {
         eprintln!("usage: teamspace-e2e-bridge <db-path> <port>");
         std::process::exit(2);
     };
-    let ts = Teamspace::open(Path::new(&db), Box::new(BridgeProbe(LocalProbe::new())))
-        .unwrap_or_else(|err| panic!("open database: {err}"));
+    let ts = Teamspace::open_with(
+        Path::new(&db),
+        Box::new(BridgeProbe(LocalProbe::new())),
+        HostConfig::with_current_exe_mock_agent(),
+    )
+    .unwrap_or_else(|err| panic!("open database: {err}"));
     let ts = Arc::new(ts);
     let listener = TcpListener::bind(format!("127.0.0.1:{port}"))
         .unwrap_or_else(|err| panic!("bind port {port}: {err}"));
@@ -165,7 +176,12 @@ fn dispatch(ts: &Teamspace, cmd: &str, args: &Value) -> CmdResult {
             arg::<Option<u32>>(args, "limit")?,
         )),
         "reveal_role_folder" => out(ts.reveal_role_folder(&arg::<String>(args, "roleId")?)),
-        "detect_harnesses" => out(Ok(ts.detect_harnesses())),
+        "get_role_workbench" => out(ts.get_role_workbench(&arg::<String>(args, "roleId")?)),
+        "open_role_path" => out(ts.open_role_path(
+            &arg::<String>(args, "roleId")?,
+            arg::<Option<String>>(args, "relativePath")?.as_deref(),
+        )),
+        "list_acp_presets" => out(Ok(ts.list_acp_presets())),
         "list_harnesses" => out(ts.list_harnesses(&arg::<String>(args, "teamId")?)),
         "get_harness" => out(ts.get_harness(&arg::<String>(args, "harnessId")?)),
         "create_harness" => out(ts.create_harness(arg(args, "input")?)),

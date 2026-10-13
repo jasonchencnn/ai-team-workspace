@@ -15,6 +15,6 @@ export const queryKeys = {
   task: (teamId: string, taskId: string) => ["teams", teamId, "tasks", "detail", taskId] as const,
   events: (teamId: string, query: EventQuery) => ["teams", teamId, "events", query] as const,
   roleTemplates: ["role-templates"] as const,
-  harnessDetections: ["harness-detections"] as const,
+  acpPresets: ["acp-presets"] as const,
   taskStatuses: ["task-statuses"] as const,
 } as const;

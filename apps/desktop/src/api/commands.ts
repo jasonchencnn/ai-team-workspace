@@ -3,6 +3,7 @@
 // 业务规则（流转、就绪条件等）以后端返回为准，这里不做任何校验。
 import { invoke } from "@tauri-apps/api/core";
 
+import type { AcpPresetInfo } from "../bindings/AcpPresetInfo.js";
 import type { ChangeTaskStatusInput } from "../bindings/ChangeTaskStatusInput.js";
 import type { CreateHarnessInput } from "../bindings/CreateHarnessInput.js";
 import type { CreateRoleInput } from "../bindings/CreateRoleInput.js";
@@ -12,12 +13,12 @@ import type { ErrorPayload } from "../bindings/ErrorPayload.js";
 import type { EventPage } from "../bindings/EventPage.js";
 import type { EventQuery } from "../bindings/EventQuery.js";
 import type { FileSearchQuery } from "../bindings/FileSearchQuery.js";
-import type { HarnessDetection } from "../bindings/HarnessDetection.js";
 import type { HarnessInstance } from "../bindings/HarnessInstance.js";
 import type { Role } from "../bindings/Role.js";
 import type { RoleFolder } from "../bindings/RoleFolder.js";
 import type { RoleTemplate } from "../bindings/RoleTemplate.js";
 import type { RoleView } from "../bindings/RoleView.js";
+import type { RoleWorkbench } from "../bindings/RoleWorkbench.js";
 import type { SuggestTaskPrefixInput } from "../bindings/SuggestTaskPrefixInput.js";
 import type { TaskBoard } from "../bindings/TaskBoard.js";
 import type { TaskBoardQuery } from "../bindings/TaskBoardQuery.js";
@@ -98,16 +99,24 @@ export const getRoleFolder = (roleId: string, limit?: number) =>
 /** 在 Finder 中打开岗位文件夹；文件夹不存在时被拒绝。 */
 export const revealRoleFolder = (roleId: string) => invoke<null>("reveal_role_folder", { roleId });
 
+/** 岗位工作台：岗位卡片（含绑定与握手结果）、文件夹与工作日志、最近 8 个任务、最近 10 个过程文件。 */
+export const getRoleWorkbench = (roleId: string) =>
+  invoke<RoleWorkbench>("get_role_workbench", { roleId });
+
+/** 在 Finder 中打开岗位文件夹内的文件或目录（相对岗位文件夹；缺省为文件夹本身）；越界路径被拒绝。 */
+export const openRolePath = (roleId: string, relativePath?: string) =>
+  invoke<null>("open_role_path", { roleId, relativePath: relativePath ?? null });
+
 // ---------------------------------------------------------------- Harness
 
-/** 检测本机 Claude Code 与 Codex CLI。 */
-export const detectHarnesses = () => invoke<HarnessDetection[]>("detect_harnesses");
+/** ACP 预设与本机检测结果（默认命令、底层 CLI 是否存在、缺少时的提示）。 */
+export const listAcpPresets = () => invoke<AcpPresetInfo[]>("list_acp_presets");
 
 /** 团队的未归档 Harness 实例。 */
 export const listHarnesses = (teamId: string) =>
   invoke<HarnessInstance[]>("list_harnesses", { teamId });
 
-/** 单个 Harness 实例（含最近健康检查）。 */
+/** 单个 Harness 实例（含最近握手结果）。 */
 export const getHarness = (harnessId: string) =>
   invoke<HarnessInstance>("get_harness", { harnessId });
 
@@ -115,7 +124,7 @@ export const getHarness = (harnessId: string) =>
 export const createHarness = (input: CreateHarnessInput) =>
   invoke<HarnessInstance>("create_harness", { input });
 
-/** 编辑 Harness 实例（健康状态重置为 unknown）。 */
+/** 编辑 Harness 实例（握手状态重置为 unknown）。 */
 export const updateHarness = (input: UpdateHarnessInput) =>
   invoke<HarnessInstance>("update_harness", { input });
 
@@ -123,7 +132,7 @@ export const updateHarness = (input: UpdateHarnessInput) =>
 export const archiveHarness = (harnessId: string) =>
   invoke<HarnessInstance>("archive_harness", { harnessId });
 
-/** 健康检查并保存结果。 */
+/** ACP 握手检查（initialize，不发送 prompt）并保存结果。 */
 export const checkHarness = (harnessId: string) =>
   invoke<HarnessInstance>("check_harness", { harnessId });
 

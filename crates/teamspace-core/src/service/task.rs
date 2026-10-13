@@ -125,6 +125,18 @@ pub(crate) fn counts(conn: &Connection, team_id: &str) -> Result<Vec<StatusCount
         .collect())
 }
 
+/// 岗位负责的最近任务（任何状态），按更新时间倒序，最多 `limit` 条；以及该岗位负责的任务总数。
+pub(crate) fn recent_for_owner(
+    conn: &Connection,
+    role_id: &str,
+    limit: usize,
+) -> Result<(Vec<TaskSummary>, u32)> {
+    let mut tasks = summaries(conn, "t.owner_role_id = ?1", role_id)?;
+    let total = u32::try_from(tasks.len()).unwrap_or(u32::MAX);
+    tasks.truncate(limit);
+    Ok((tasks, total))
+}
+
 /// 进行中的任务（执行中、受阻、待验收）。
 pub(crate) fn active(conn: &Connection, team_id: &str) -> Result<Vec<TaskSummary>> {
     summaries(

@@ -89,8 +89,22 @@ pub fn reveal_role_folder(ts: State<'_, Teamspace>, role_id: &str) -> Result<(),
 }
 
 #[tauri::command(async)]
-pub fn detect_harnesses(ts: State<'_, Teamspace>) -> Result<Vec<HarnessDetection>, Error> {
-    Ok(ts.detect_harnesses())
+pub fn get_role_workbench(ts: State<'_, Teamspace>, role_id: &str) -> Result<RoleWorkbench, Error> {
+    ts.get_role_workbench(role_id)
+}
+
+#[tauri::command(async)]
+pub fn open_role_path(
+    ts: State<'_, Teamspace>,
+    role_id: &str,
+    relative_path: Option<String>,
+) -> Result<(), Error> {
+    ts.open_role_path(role_id, relative_path.as_deref())
+}
+
+#[tauri::command(async)]
+pub fn list_acp_presets(ts: State<'_, Teamspace>) -> Result<Vec<AcpPresetInfo>, Error> {
+    Ok(ts.list_acp_presets())
 }
 
 #[tauri::command(async)]

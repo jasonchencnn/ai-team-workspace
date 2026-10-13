@@ -179,7 +179,7 @@ fn overview_reports_unavailable_workspace_without_failing() {
 }
 
 #[test]
-fn inspect_workspace_and_detect_harnesses_delegate_to_probe() {
+fn inspect_workspace_delegates_to_probe() {
     let f = fixture();
     assert_eq!(
         f.ts.inspect_workspace(&f.ws.to_string_lossy())
@@ -190,12 +190,6 @@ fn inspect_workspace_and_detect_harnesses_delegate_to_probe() {
             .as_deref(),
         Some("a31f8c2")
     );
-    let kinds: Vec<_> =
-        f.ts.detect_harnesses()
-            .into_iter()
-            .map(|d| d.kind)
-            .collect();
-    assert_eq!(kinds, [HarnessKind::ClaudeCode, HarnessKind::Codex]);
 }
 
 #[test]
