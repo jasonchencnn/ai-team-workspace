@@ -115,7 +115,7 @@ export function TeamHomePage() {
             <EmptyState
               bare
               title="还没有岗位"
-              description="团队已创建，先建立岗位再派工。"
+              description="团队里还没有岗位，添加岗位后才能创建和派发任务。"
               action={
                 <Button
                   variant="neutral"
@@ -123,7 +123,7 @@ export function TeamHomePage() {
                     void navigate(`/teams/${data.team.id}/roles`);
                   }}
                 >
-                  建立岗位
+                  添加岗位
                 </Button>
               }
             />
@@ -229,9 +229,11 @@ export function TeamHomePage() {
                   <span className="nowrap">路径：</span>
                   <span title={data.workspace.path}>{data.workspace.path}</span>
                 </p>
-                {data.workspace.git === null ? null : (
+                {data.workspace.git === null ? (
+                  <p>普通文件夹</p>
+                ) : (
                   <p>
-                    分支：{data.workspace.git.branch ?? "detached HEAD"} · 提交：
+                    Git 仓库：{data.workspace.git.branch ?? "detached HEAD"} @{" "}
                     {data.workspace.git.commit ?? "暂无提交"}
                   </p>
                 )}

@@ -308,7 +308,7 @@ export function TaskFormPage() {
         description={
           isEdit
             ? "修改任务面板保存的结构化协作信息；任务状态在任务详情页变更。"
-            : "任务面板保存结构化协作信息；需求正文的维护在 Workspace 文件中。"
+            : "任务面板保存结构化协作信息；需求正文放在工作空间的文件里。"
         }
       />
 
@@ -426,7 +426,7 @@ export function TaskFormPage() {
                 id="task-file-search"
                 className="ui-field__control"
                 value={fileInput}
-                placeholder="搜索工作区文件，或直接输入 路径#锚点"
+                placeholder="搜索工作空间内的文件，或直接输入 路径#锚点"
                 onChange={(event) => {
                   setFileInput(event.target.value);
                 }}
@@ -449,7 +449,7 @@ export function TaskFormPage() {
             </div>
 
             <p className="ui-field__hint">
-              输入时实时搜索工作区文件；用 # 追加锚点可直达具体章节，引用文件需包含验收标准。
+              输入时实时搜索工作空间内的文件；用 # 追加锚点可直达具体章节，引用文件需包含验收标准。
             </p>
 
             {searchPending ? (
@@ -470,7 +470,7 @@ export function TaskFormPage() {
             ) : null}
 
             {searchReady && fileSearchQuery.isSuccess && suggestions.length === 0 ? (
-              <p className="ui-field__hint">没有匹配的文件；可以直接输入工作区内的相对路径。</p>
+              <p className="ui-field__hint">没有匹配的文件；可以直接输入工作空间内的相对路径。</p>
             ) : null}
 
             {suggestions.length > 0 ? (

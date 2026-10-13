@@ -67,7 +67,7 @@ function RolesView({ teamId }: { teamId: string }) {
 
   return (
     <div className="roles-page">
-      <PageHeader title="岗位与绑定" description="岗位身份长期保留，执行 Harness 可以随时调整。" />
+      <PageHeader title="岗位与绑定" description="岗位由你自定义，执行工具可以随时调整。" />
 
       <div className="roles-tabs" role="tablist" aria-label="岗位与 Harness 实例">
         <button
@@ -165,7 +165,7 @@ function RolesView({ teamId }: { teamId: string }) {
                 <Panel>
                   <EmptyState
                     title="还没有岗位"
-                    description="先新增岗位，再为它绑定一个 Harness 执行者。"
+                    description="先新增岗位，再为它绑定一个执行工具。"
                     action={
                       <Button
                         onClick={() => {

@@ -15,63 +15,71 @@ import type { WorkspaceInfo } from "../../bindings/WorkspaceInfo.js";
 import {
   Button,
   Card,
+  EmptyState,
   ErrorBanner,
   InputField,
   PageHeader,
-  Spinner,
   TextareaField,
 } from "../../components/index.js";
+import {
+  EMPTY_ROLE_DRAFT,
+  TASK_PREFIX_HINT,
+  draftFromTemplate,
+  roleNameError,
+  useTaskPrefixSuggester,
+} from "../roles/roleForm.js";
+import type { RoleDraft } from "../roles/roleForm.js";
 import "./team-create.css";
 
-/** 默认勾选的岗位模板（与设计稿 13:353 一致）。code 来自内核的 list_role_templates。 */
-const DEFAULT_SELECTED = new Set(["role_leader", "role_frontend", "role_qa"]);
+/** 表单内每个岗位卡的临时键；岗位代码由后端生成，这里只用它区分多行输入。 */
+type DraftKey = string;
 
-interface RoleDraft {
-  enabled: boolean;
-  name: string;
-  taskPrefix: string;
-  description: string;
+interface DraftEntry {
+  key: DraftKey;
+  draft: RoleDraft;
 }
 
-function defaultDraft(template: RoleTemplate): RoleDraft {
-  return {
-    enabled: DEFAULT_SELECTED.has(template.code),
-    name: template.name,
-    taskPrefix: template.taskPrefix,
-    description: template.description,
-  };
-}
+let draftSequence = 0;
+const nextKey = (): DraftKey => {
+  draftSequence += 1;
+  return `draft-${String(draftSequence)}`;
+};
 
-/** 分支或提交缺失时如实说明，不编造。 */
-function repoLine(workspace: WorkspaceInfo): string {
-  if (workspace.git === null) return "普通文件夹（不是 Git 仓库）";
+/** 工作空间类型说明：Git 仓库显示分支与提交，普通文件夹如实说明，不编造分支。 */
+function workspaceLine(workspace: WorkspaceInfo): string {
+  if (workspace.git === null) {
+    return "普通文件夹";
+  }
   const branch = workspace.git.branch ?? "detached HEAD";
   const commit = workspace.git.commit ?? "暂无提交";
-  return `${branch} @ ${commit}`;
+  return `Git 仓库：${branch} @ ${commit}`;
 }
 
 export function TeamCreatePage() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
 
-  const templates = useQuery({ queryKey: queryKeys.roleTemplates, queryFn: listRoleTemplates });
-
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
   const [workspacePath, setWorkspacePath] = useState("");
   const [workspace, setWorkspace] = useState<WorkspaceInfo | null>(null);
-  const [drafts, setDrafts] = useState<Record<string, RoleDraft>>({});
+
+  const [entries, setEntries] = useState<DraftEntry[]>([]);
+  const [showExamples, setShowExamples] = useState(false);
   const [submitted, setSubmitted] = useState(false);
 
-  const draftOf = (template: RoleTemplate): RoleDraft =>
-    drafts[template.code] ?? defaultDraft(template);
+  // 团队尚未创建，teamId 传空；已填前缀一起传出去，建议值不会与表单内其它岗位撞号。
+  const suggestPrefix = useTaskPrefixSuggester(
+    undefined,
+    entries.map((entry) => entry.draft.taskPrefix),
+  );
 
-  const patchDraft = (template: RoleTemplate, patch: Partial<RoleDraft>) => {
-    setDrafts((previous) => ({
-      ...previous,
-      [template.code]: { ...(previous[template.code] ?? defaultDraft(template)), ...patch },
-    }));
-  };
+  // 示例默认不加载：只有用户点开「从示例添加」才去取 list_role_templates。
+  const templates = useQuery({
+    queryKey: queryKeys.roleTemplates,
+    queryFn: listRoleTemplates,
+    enabled: showExamples,
+  });
 
   const pick = useMutation({
     mutationFn: pickWorkspaceFolder,
@@ -97,39 +105,51 @@ export function TeamCreatePage() {
     mutationFn: createTeam,
     onSuccess: async (team) => {
       await queryClient.invalidateQueries({ queryKey: queryKeys.teams });
-      void navigate(`/teams/${team.id}/roles`);
+      void navigate(`/teams/${team.id}`);
     },
   });
 
-  const draftList = templates.data ?? [];
-  const nameError = submitted && name.trim() === "" ? "请填写 Team 名称" : undefined;
+  const addDraft = (draft: RoleDraft = EMPTY_ROLE_DRAFT) => {
+    setEntries((previous) => [...previous, { key: nextKey(), draft }]);
+  };
+
+  const removeDraft = (key: DraftKey) => {
+    setEntries((previous) => previous.filter((entry) => entry.key !== key));
+  };
+
+  const patchDraft = (key: DraftKey, patch: Partial<RoleDraft>) => {
+    setEntries((previous) =>
+      previous.map((entry) =>
+        entry.key === key ? { ...entry, draft: { ...entry.draft, ...patch } } : entry,
+      ),
+    );
+  };
 
   const submit = () => {
     setSubmitted(true);
-    const roles: NewRole[] = draftList
-      .filter((template) => draftOf(template).enabled)
-      .map((template) => {
-        const draft = draftOf(template);
-        return {
-          name: draft.name,
-          code: template.code,
-          taskPrefix: draft.taskPrefix,
-          description: draft.description,
-          guidelines: template.guidelines,
-          isLeader: template.isLeader,
-        };
-      });
+    const roles: NewRole[] = entries
+      .filter((entry) => entry.draft.name.trim() !== "" || entry.draft.taskPrefix.trim() !== "")
+      .map((entry) => ({
+        name: entry.draft.name.trim(),
+        taskPrefix: entry.draft.taskPrefix.trim().toUpperCase(),
+        description: entry.draft.description,
+        guidelines: entry.draft.guidelines,
+        isLeader: entry.draft.isLeader,
+      }));
     create.mutate({ name, description, workspacePath, roles });
   };
+
+  const nameError = submitted && name.trim() === "" ? "请填写团队名称" : undefined;
+  const exampleList: RoleTemplate[] = templates.data ?? [];
 
   return (
     <div className="tc-page">
       <PageHeader
-        title="创建 Team"
-        description="先建立协作边界，再创建稳定岗位并连接执行工具。"
+        title="创建团队"
+        description="给一组岗位起个名字，指定一个本地文件夹作为共同工作空间。"
         actions={
           <Button loading={create.isPending} onClick={submit}>
-            创建团队并配置岗位
+            创建团队
           </Button>
         }
       />
@@ -143,7 +163,7 @@ export function TeamCreatePage() {
           <Card title={name.trim() === "" ? "未命名团队" : name} className="tc-stack-card">
             <div className="tc-stack">
               <InputField
-                label="Team 名称"
+                label="团队名称"
                 required
                 value={name}
                 error={nameError}
@@ -160,22 +180,17 @@ export function TeamCreatePage() {
                   setDescription(event.currentTarget.value);
                 }}
               />
-              <p className="tc-note">团队状态：草稿 · 保存后创建</p>
             </div>
           </Card>
 
-          <Card tone="info" title="本地 Git 工作空间" className="tc-stack-card">
+          <Card tone="info" title="本地工作空间" className="tc-stack-card">
             <div className="tc-stack">
+              <p className="tc-note">任意本地文件夹；若是 Git 仓库会显示分支与提交。</p>
               <p>
                 <span className="nowrap">路径：</span>
                 {workspacePath.trim() === "" ? "尚未选择工作空间" : workspacePath}
               </p>
-              <p>共享工作区 + 任务执行工作区</p>
-              <p>
-                {workspace === null
-                  ? "代码库状态：尚未检测"
-                  : `代码库已检测：${repoLine(workspace)}`}
-              </p>
+              <p>{workspace === null ? "尚未检测" : workspaceLine(workspace)}</p>
             </div>
           </Card>
 
@@ -184,7 +199,7 @@ export function TeamCreatePage() {
               label="手动输入工作空间路径"
               value={workspacePath}
               placeholder="/Users/you/projects/app"
-              hint="填写后点「检测」按该路径重新检测 Git 仓库。"
+              hint="填写后点「检测」按该路径重新检测。"
               onChange={(event) => {
                 setWorkspacePath(event.currentTarget.value);
                 // 路径变了，之前的检测结果不再可信，回到未检测状态；校验态只由提交控制，不在这里重置。
@@ -220,83 +235,158 @@ export function TeamCreatePage() {
 
         <section className="tc-column" aria-labelledby="tc-roles-heading">
           <h2 className="tc-column__title" id="tc-roles-heading">
-            2. 建立岗位（可在稍后调整）
+            2. 建立岗位
           </h2>
 
-          {templates.isPending ? <Spinner label="正在加载岗位模板" /> : null}
-          {templates.isError ? (
-            <ErrorBanner
-              error={templates.error}
-              action={
-                <Button
-                  variant="neutral"
-                  onClick={() => {
-                    void templates.refetch();
-                  }}
-                >
-                  重试
-                </Button>
-              }
+          <div className="tc-actions">
+            <Button
+              variant="neutral"
+              onClick={() => {
+                addDraft();
+              }}
+            >
+              + 添加岗位
+            </Button>
+            <Button
+              variant="subtle"
+              onClick={() => {
+                setShowExamples((previous) => !previous);
+              }}
+            >
+              从示例添加
+            </Button>
+          </div>
+
+          {showExamples ? (
+            <div className="tc-examples">
+              {templates.isPending ? <p className="tc-note">正在加载示例…</p> : null}
+              {templates.isError ? (
+                <ErrorBanner
+                  error={templates.error}
+                  action={
+                    <Button
+                      variant="neutral"
+                      onClick={() => {
+                        void templates.refetch();
+                      }}
+                    >
+                      重试
+                    </Button>
+                  }
+                />
+              ) : null}
+              {!templates.isPending && !templates.isError && exampleList.length === 0 ? (
+                <p className="tc-note">没有可用的示例岗位，直接用「+ 添加岗位」自定义即可。</p>
+              ) : null}
+              {exampleList.length > 0 ? (
+                <ul className="tc-example-list">
+                  {exampleList.map((template) => (
+                    <li key={template.code} className="tc-example">
+                      <div className="tc-example__info">
+                        <span className="tc-example__name">{template.name}</span>
+                        <span className="tc-note">{template.description}</span>
+                      </div>
+                      <Button
+                        variant="neutral"
+                        onClick={() => {
+                          addDraft(draftFromTemplate(template));
+                        }}
+                      >
+                        添加
+                      </Button>
+                    </li>
+                  ))}
+                </ul>
+              ) : null}
+            </div>
+          ) : null}
+
+          {entries.length === 0 && !showExamples ? (
+            <EmptyState
+              bare
+              title="还没有岗位"
+              description="岗位完全由你定义；也可以先创建团队，稍后在「岗位与绑定」中添加。"
             />
           ) : null}
 
-          {draftList.map((template) => {
-            const draft = draftOf(template);
+          {entries.map((entry, index) => {
+            const draft = entry.draft;
             return (
               <Card
-                key={template.code}
+                key={entry.key}
                 className="tc-stack-card tc-role"
-                title={
-                  <label className="tc-role__head">
+                title={`岗位 ${String(index + 1)}`}
+              >
+                <div className="tc-stack tc-role__fields">
+                  <InputField
+                    label="岗位名称"
+                    required
+                    value={draft.name}
+                    error={roleNameError(draft.name, submitted)}
+                    placeholder="例如：资料整理"
+                    onChange={(event) => {
+                      patchDraft(entry.key, { name: event.currentTarget.value });
+                    }}
+                    onBlur={() => {
+                      suggestPrefix(entry.key, draft.name, draft.taskPrefix, (prefix) => {
+                        patchDraft(entry.key, { taskPrefix: prefix });
+                      });
+                    }}
+                  />
+                  <InputField
+                    label="任务编号前缀"
+                    required
+                    hint={TASK_PREFIX_HINT}
+                    value={draft.taskPrefix}
+                    onChange={(event) => {
+                      patchDraft(entry.key, { taskPrefix: event.currentTarget.value });
+                    }}
+                  />
+                  <TextareaField
+                    label="职责"
+                    value={draft.description}
+                    placeholder="这个岗位负责什么"
+                    onChange={(event) => {
+                      patchDraft(entry.key, { description: event.currentTarget.value });
+                    }}
+                  />
+                  <TextareaField
+                    label="工作约定"
+                    value={draft.guidelines}
+                    placeholder="协作时希望遵守的约定"
+                    onChange={(event) => {
+                      patchDraft(entry.key, { guidelines: event.currentTarget.value });
+                    }}
+                  />
+                  <label className="tc-role__leader">
                     <input
                       className="tc-role__checkbox"
                       type="checkbox"
-                      checked={draft.enabled}
+                      checked={draft.isLeader}
                       onChange={(event) => {
-                        patchDraft(template, { enabled: event.currentTarget.checked });
+                        patchDraft(entry.key, { isLeader: event.currentTarget.checked });
                       }}
                     />
-                    <span>{draft.name}</span>
-                    <span className="tc-role__code">/ {template.code}</span>
+                    <span>设为 Leader</span>
                   </label>
-                }
-              >
-                <div className="tc-stack">
-                  {draft.enabled ? null : <p>{draft.description}</p>}
-                  {draft.enabled ? (
-                    <div className="tc-stack tc-role__fields">
-                      <InputField
-                        label="岗位名称"
-                        value={draft.name}
-                        onChange={(event) => {
-                          patchDraft(template, { name: event.currentTarget.value });
-                        }}
-                      />
-                      <InputField
-                        label="任务前缀"
-                        value={draft.taskPrefix}
-                        hint="2–4 位大写字母，团队内唯一。"
-                        onChange={(event) => {
-                          patchDraft(template, { taskPrefix: event.currentTarget.value });
-                        }}
-                      />
-                      <TextareaField
-                        label="职责"
-                        value={draft.description}
-                        onChange={(event) => {
-                          patchDraft(template, { description: event.currentTarget.value });
-                        }}
-                      />
-                    </div>
-                  ) : null}
+                  <div className="tc-actions">
+                    <Button
+                      variant="subtle"
+                      onClick={() => {
+                        removeDraft(entry.key);
+                      }}
+                    >
+                      删除岗位
+                    </Button>
+                  </div>
                 </div>
               </Card>
             );
           })}
 
-          {templates.isSuccess && draftList.length === 0 ? (
-            <p className="tc-note">内核没有返回岗位模板，可先创建团队再补岗位。</p>
-          ) : null}
+          <p className="tc-note">
+            可以不建任何岗位直接创建团队，也可以稍后在「岗位与绑定」中添加。
+          </p>
         </section>
       </div>
 
