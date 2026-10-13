@@ -184,6 +184,7 @@ async function createTask(
   title: string,
   owner: string,
   status: "TODO" | "READY",
+  withRef = true,
 ): Promise<TaskRef> {
   await page.goto(`/#/teams/${team}/tasks/new`);
   await page.getByLabel("任务名称").fill(title);
@@ -191,8 +192,10 @@ async function createTask(
   await select.selectOption(
     (await select.locator("option", { hasText: owner }).getAttribute("value")) ?? "",
   );
-  await page.locator("#task-file-search").fill("brief");
-  await page.locator(".task-form__suggestion", { hasText: "brief.txt" }).click();
+  if (withRef) {
+    await page.locator("#task-file-search").fill("brief");
+    await page.locator(".task-form__suggestion", { hasText: "brief.txt" }).click();
+  }
   await page.getByRole("radio", { name: status, exact: true }).check();
   await page.getByRole("button", { name: "创建并分配" }).click();
   await expect(page.locator(".task-detail__status")).toContainText(status);
@@ -330,6 +333,16 @@ test("普通文件夹成功流程：原地执行，待验收，摘要与改动�
   await expect(recent).toContainText(HARNESS);
   await expect(recent).toContainText("已完成");
   await shot(page, "workbench-recent-run-and-journal");
+});
+
+test("没有文件引用的 READY 任务可以开始执行并成功", async ({ page }) => {
+  await createTask(page, teamP, "无文件引用的任务", ROLE, "READY", false);
+  await expect(startButton(page)).toBeEnabled();
+  await startRun(page);
+  const success = page.locator(".run-outcome--success");
+  await expect(success).toBeVisible({ timeout: TIMEOUT });
+  await expect(success).toContainText("执行完成");
+  await expect(statusLine(page)).toContainText("待验收");
 });
 
 test("[mock:perm]：权限弹窗自动出现，进度流有消息/计划/工具调用，允许一次后完成", async ({

@@ -456,10 +456,7 @@ export function TaskFormPage() {
         <Panel className="task-form__block">
           <div className="task-form__files">
             <label className="task-form__label" htmlFor="task-file-search">
-              关联文件
-              <span className="task-form__required" aria-hidden="true">
-                *
-              </span>
+              关联文件（可选）
             </label>
 
             <div className="task-form__file-controls">
@@ -705,8 +702,7 @@ export function TaskFormPage() {
         </Card>
 
         <p className="task-form__note task-form__note--rules">
-          校验规则：TODO 不能被领取；READY
-          必须具备负责人、有效引用与已满足依赖。循环依赖会阻止保存。
+          READY 必须具备负责人与已满足的依赖；填写的引用文件必须存在。循环依赖会阻止保存。
         </p>
 
         <div className="task-form__actions">

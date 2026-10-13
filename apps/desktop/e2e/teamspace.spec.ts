@@ -350,18 +350,28 @@ test("编辑任务：修改标题与说明后详情页立即更新", async ({ pa
   await shot(page, "task-edited");
 });
 
-test("看板可显示已完成列，非法输入由后端拒绝（创建 READY 任务但没有文件引用）", async ({
-  page,
-}) => {
+test("看板可显示已完成列；文件引用可选，引用不存在的文件由后端拒绝", async ({ page }) => {
   await gotoTeam(page, "/tasks");
   await page.getByLabel("显示已完成（1）").check();
   await expect(page.locator(".task-board__heading", { hasText: "已完成 1" })).toBeVisible();
   await shot(page, "tasks-board-with-done");
 
+  // 没有文件引用也能创建 READY 任务。
   await createTask(page, { title: "无引用的就绪任务", owner: "前端开发", status: "READY" });
+  await expect(page.getByRole("heading", { name: "无引用的就绪任务" })).toBeVisible();
+
+  // 引用不存在的文件仍被拒绝。
+  await createTask(page, {
+    title: "引用缺失文件的就绪任务",
+    owner: "前端开发",
+    file: "docs/不存在的文件.md",
+    status: "READY",
+  });
   await expect(page.getByRole("heading", { name: "创建任务" })).toBeVisible();
   const banner = page.getByRole("alert");
-  await expect(banner).toContainText("任务尚未就绪：至少需要一个文件引用");
+  await expect(banner).toContainText(
+    "任务尚未就绪：引用的文件在工作区中不存在：docs/不存在的文件.md",
+  );
   await shot(page, "task-create-rejected", banner);
 });
 

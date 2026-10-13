@@ -93,9 +93,6 @@ function lastLine(task: TaskSummary): string | null {
     return "已就绪，可派工";
   }
   if (task.status === "todo") {
-    if (task.fileRefCount === 0) {
-      return "尚未引用文件，暂不能标记为 READY";
-    }
     if (task.openDependencyCount > 0) {
       return null; // 第二行已写明在等待依赖，不重复。
     }

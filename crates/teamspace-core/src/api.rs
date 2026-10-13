@@ -656,7 +656,7 @@ impl Teamspace {
     }
 
     /// 按流转规则变更状态：进入 ready 或 doing（含 blocked → doing）需满足就绪条件
-    /// （负责岗位有效、≥1 个存在于工作区的引用、所有依赖已完成）；进入 blocked 必须给出原因，
+    /// （负责岗位有效、文件引用可选，填写的引用须存在于工作区、所有依赖已完成）；进入 blocked 必须给出原因，
     /// 离开 blocked 清空原因。
     pub fn change_task_status(&self, input: ChangeTaskStatusInput) -> Result<TaskDetail> {
         let (workspace, refs) = task::workspace_and_refs(&self.lock(), &input.task_id)?;

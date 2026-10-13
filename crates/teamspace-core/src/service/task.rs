@@ -347,9 +347,6 @@ pub(crate) fn readiness(
         Ok(_) => {}
         Err(_) => problems.push("未指定负责岗位".to_owned()),
     }
-    if refs.is_empty() {
-        problems.push("至少需要一个文件引用".to_owned());
-    }
     for r in refs {
         if !files.exists(&r.path) {
             problems.push(format!("引用的文件在工作区中不存在：{}", r.path));

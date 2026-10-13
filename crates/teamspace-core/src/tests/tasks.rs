@@ -180,16 +180,15 @@ fn create_stores_normalized_refs_and_deps() {
 }
 
 #[test]
-fn ready_requires_refs_existing_files_and_done_dependencies() {
+fn ready_requires_existing_refs_if_any_and_done_dependencies() {
     let f = fixture();
     let team = f.team("T");
     let fe = f.role(&team.id, "role_frontend");
 
-    // 没有引用。
+    // 没有引用也可以就绪（D16：引用可选）。
     let t = f.task(&team.id, &fe, "a");
-    assert_eq!(t.readiness, ["至少需要一个文件引用"]);
-    assert!(!t.allowed_transitions.contains(&Ready));
-    assert_kind(f.move_to(&t.task.id, Ready), ErrorKind::Conflict);
+    assert!(t.readiness.is_empty(), "{:?}", t.readiness);
+    assert!(t.allowed_transitions.contains(&Ready));
 
     // 引用的文件不存在。
     let t = edit(&f, &t, vec!["docs/spec.md"], vec![]).unwrap();
@@ -279,10 +278,12 @@ fn editing_a_ready_task_must_keep_it_ready() {
     let fe = f.role(&team.id, "role_frontend");
     let t = f.readyable(&team.id, &fe, "a");
     let t = f.move_to(&t.task.id, Ready).unwrap();
-    assert_kind(edit(&f, &t, vec![], vec![]), ErrorKind::Conflict);
     assert_kind(edit(&f, &t, vec!["nope.md"], vec![]), ErrorKind::Conflict);
     f.touch("other.md");
     let t = edit(&f, &t, vec!["other.md"], vec![]).unwrap();
+    assert_eq!(t.task.status, Ready);
+    // 引用可选：清空引用仍然就绪。
+    let t = edit(&f, &t, vec![], vec![]).unwrap();
     assert_eq!(t.task.status, Ready);
     // TODO 任务可以随意编辑。
     let todo = f.task(&team.id, &fe, "b");
@@ -500,12 +501,18 @@ fn doing_requires_readiness_including_from_blocked() {
     let fe = f.role(&team.id, "role_frontend");
     let t = f.readyable(&team.id, &fe, "a");
     f.drive(&t.task.id, &[Ready, Doing, Blocked]);
-    // 受阻期间清空引用，恢复执行被拒绝，且 doing 不在可执行流转中。
-    let t = edit(&f, &f.ts.get_task(&t.task.id).unwrap(), vec![], vec![]).unwrap();
+    // 受阻期间引用了不存在的文件，恢复执行被拒绝，且 doing 不在可执行流转中。
+    let t = edit(
+        &f,
+        &f.ts.get_task(&t.task.id).unwrap(),
+        vec!["docs/missing.md"],
+        vec![],
+    )
+    .unwrap();
     assert_eq!(t.task.status, Blocked);
     assert_eq!(t.allowed_transitions, [Cancelled]);
     let msg = assert_kind(f.move_to(&t.task.id, Doing), ErrorKind::Conflict);
-    assert!(msg.contains("至少需要一个文件引用"), "{msg}");
+    assert!(msg.contains("docs/missing.md"), "{msg}");
     let t = edit(&f, &t, vec!["docs/spec.md"], vec![]).unwrap();
     assert_eq!(t.allowed_transitions, [Ready, Doing, Cancelled]);
     assert_eq!(f.move_to(&t.task.id, Doing).unwrap().task.status, Doing);

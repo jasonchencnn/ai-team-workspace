@@ -36,7 +36,7 @@ fn run_problems_explain_why_start_is_refused() {
     let todo = f.task(&team.id, &fe, "无引用");
     let problems = todo.run_problems.join("\n");
     assert!(problems.contains("任务状态为「TODO」"), "{problems}");
-    assert!(problems.contains("至少需要一个文件引用"), "{problems}");
+    assert!(!problems.contains("文件引用"), "{problems}");
     assert!(problems.contains("未绑定 Harness"), "{problems}");
     let err = assert_kind(f.ts.start_run(&todo.task.id), ErrorKind::Conflict);
     assert!(err.starts_with("不能开始执行："), "{err}");
@@ -313,4 +313,19 @@ fn editing_is_refused_only_while_a_run_is_active() {
     // 人工接管后同样允许编辑。
     ts.takeover_run(&a).unwrap();
     assert_eq!(edit(&ts).unwrap().task.title, "改名");
+}
+
+#[test]
+fn task_without_file_refs_can_be_ready_and_start_a_run() {
+    let f = plain_fixture();
+    let team = f.team("T");
+    let fe = f.role(&team.id, "role_frontend");
+    let h = f.harness(&team.id, "Mock", AcpPreset::Mock);
+    f.ts.bind_role_harness(&fe.id, &h.id).unwrap();
+    let task = f.task(&team.id, &fe, "无引用");
+    assert!(task.task.file_refs.is_empty());
+    let task = f.move_to(&task.task.id, TaskStatus::Ready).unwrap();
+    assert!(task.run_problems.is_empty(), "{:?}", task.run_problems);
+    let run = f.ts.start_run(&task.task.id).unwrap();
+    wait_end(&f, &run.id);
 }
