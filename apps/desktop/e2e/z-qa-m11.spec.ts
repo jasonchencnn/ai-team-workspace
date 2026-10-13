@@ -305,12 +305,7 @@ test.describe("M1.1 回归与探索测试套件", () => {
     await captureQaShot(page, "prefix-matrix-comprehensive-validation");
   });
 
-  test("02b. [缺陷] 名称快速多次修改时前缀建议因在途并发竞争导致停留于旧值", async ({ page }) => {
-    test.fail(
-      true,
-      "产品缺陷：前端 useTaskPrefixSuggester 基于单个 useMutation 管理建议请求。当用户快速连续修改岗位名称并失焦时，在途请求 observer 状态被覆写，导致最终建议值停留于早先请求结果（期望 FD，实际停留于 SO）",
-    );
-
+  test("02b. 名称快速多次修改时前缀建议只采用最新名称的结果", async ({ page }) => {
     await page.goto("/#/teams/new");
     await page.getByLabel("团队名称").fill("快速输入竞态验证团队");
     await page.getByRole("button", { name: "+ 添加岗位" }).click();
@@ -322,8 +317,9 @@ test.describe("M1.1 回归与探索测试套件", () => {
     await nameField.blur();
     await nameField.fill("Final Delivery");
     await nameField.blur();
-    await captureQaShot(page, "defect-prefix-rapid-edits-stuck-old-value", rapidCard);
-    // 最终前缀应匹配最后一次名称 "Final Delivery" -> "FD"，但由于缺陷停留在 "SO"
+    await captureQaShot(page, "prefix-rapid-edits-latest-name-wins", rapidCard);
+    // 三次建议请求并发在途且可能乱序返回，最终前缀必须停在最后一次名称 "Final Delivery" -> "FD"，
+    // 不能被迟到的旧响应（SO / ST）覆盖。
     await expect(rapidCard.getByLabel("任务编号前缀")).toHaveValue("FD");
   });
 
