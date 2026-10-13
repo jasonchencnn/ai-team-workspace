@@ -644,7 +644,8 @@ impl Teamspace {
     }
 
     /// 编辑任务内容（不改状态，编号不变）；保存依赖时拒绝成环并指出环路；
-    /// 任务处于 ready 而修改后不再满足就绪条件时拒绝（conflict）。
+    /// 任务处于 ready 而修改后不再满足就绪条件时拒绝（conflict）；任务有活动执行（排队、运行、
+    /// 等待授权）时整个编辑被拒绝（conflict）。
     pub fn update_task(&self, mut input: UpdateTaskInput) -> Result<TaskDetail> {
         input.file_refs = task::normalize_refs(input.file_refs)?;
         let (workspace, _) = task::workspace_and_refs(&self.lock(), &input.task_id)?;

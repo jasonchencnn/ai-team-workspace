@@ -282,3 +282,35 @@ fn run_lookups_validate_input() {
     );
     assert_kind(f.ts.mark_run_failed(&run.id), ErrorKind::Conflict);
 }
+
+#[test]
+fn editing_is_refused_only_while_a_run_is_active() {
+    let f = plain_fixture();
+    let (_, _, h, task) = setup(&f);
+    let a = insert_active_run(&f, &task.task, &h, Some("s-1"));
+    let edit = |ts: &Teamspace| {
+        ts.update_task(UpdateTaskInput {
+            task_id: task.task.id.clone(),
+            title: "改名".into(),
+            description: task.task.description.clone(),
+            owner_role_id: task.task.owner_role_id.clone(),
+            file_refs: task.task.file_refs.clone(),
+            depends_on: task.task.depends_on.clone(),
+        })
+    };
+    // 活动执行（running）：整个编辑被拒绝，标题不变。
+    let ts = &f.ts;
+    let msg = assert_kind(edit(ts), ErrorKind::Conflict);
+    assert_eq!(msg, "任务正在执行中，结束或取消执行后才能编辑");
+    assert_eq!(ts.get_task(&task.task.id).unwrap().task.title, "登录页");
+
+    // 重启后执行被标记为中断，任务仍为 DOING：允许编辑。
+    let ts =
+        Teamspace::open_with(&f.db_path(), Box::new(FakeProbe), HostConfig::default()).unwrap();
+    assert_eq!(ts.get_run(&a).unwrap().status, RunStatus::Interrupted);
+    assert_eq!(edit(&ts).unwrap().task.title, "改名");
+
+    // 人工接管后同样允许编辑。
+    ts.takeover_run(&a).unwrap();
+    assert_eq!(edit(&ts).unwrap().task.title, "改名");
+}

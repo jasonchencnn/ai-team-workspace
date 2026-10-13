@@ -188,9 +188,14 @@ export function TaskDetailPage() {
           <>
             {backButton}
             {runHeaderActions}
-            <Button variant="neutral" onClick={() => void navigate(`${boardPath}/${task.id}/edit`)}>
-              编辑
-            </Button>
+            {active ? null : (
+              <Button
+                variant="neutral"
+                onClick={() => void navigate(`${boardPath}/${task.id}/edit`)}
+              >
+                编辑
+              </Button>
+            )}
           </>
         }
       />

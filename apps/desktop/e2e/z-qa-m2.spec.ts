@@ -313,37 +313,46 @@ test("03. 权限弹窗选择后立即刷新页面：决策正确生效，执行�
 
 // ---------------------------------------------------------------- 2. 执行中的约束与保护
 
-test("04. 产品缺陷：任务执行中直接编辑任务并改派负责人未被阻止（应予拒绝或明确提示）", async ({
-  page,
-}) => {
-  test.fail(
-    true,
-    "产品缺陷：任务正在执行（Doing）时，任务详情页仍提供「编辑」按钮，编辑表单 TaskFormPage 允许无警告修改标题与改派负责人，后端 update_task 亦未做单任务活动执行校验",
-  );
-
+test("04. 任务执行中不能编辑或改派负责人；执行取消后可以编辑", async ({ page }) => {
   const title = "执行中尝试改派与编辑 [mock:hang]";
   const ref = await createTask(page, teamA, title, ROLE_A1, "READY");
   await startRun(page);
   await expect(infoStrip(page)).toContainText("执行中");
 
-  try {
-    // 点击编辑
-    await page.getByRole("button", { name: "编辑" }).click();
-    await expect(page).toHaveURL(new RegExp(`/tasks/${ref.id}/edit$`));
-    await shot(page, "edit-task-form-during-run");
+  // 详情页没有编辑入口
+  await expect(page.getByRole("button", { name: "编辑" })).toHaveCount(0);
 
-    // 预期规范：执行中的任务编辑应被拒绝或负责人选择框应被禁用/警告
-    const ownerSelect = page.getByLabel("负责人岗位");
-    await expect(ownerSelect).toBeDisabled({ timeout: 2_000 });
-  } finally {
-    // 清理：取消执行，释放工作空间，避免影响后续测试
-    await openTask(page, title);
-    const cancelBtn = page.getByRole("button", { name: "取消执行" });
-    if (await cancelBtn.isVisible()) {
-      await cancelBtn.click();
-      await expect(page.locator(".run-outcome--cancelled")).toBeVisible({ timeout: TIMEOUT });
-    }
-  }
+  // 直接访问编辑路由：显示原因，保存被禁用
+  const reason = "任务正在执行中，结束或取消执行后才能编辑";
+  await page.goto(`/#/teams/${teamA}/tasks/${ref.id}/edit`);
+  await expect(page.getByRole("alert").filter({ hasText: reason })).toBeVisible();
+  await expect(page.getByRole("button", { name: "保存" })).toBeDisabled();
+  await shot(page, "edit-task-form-blocked-during-run");
+
+  // 绕过界面直接调用后端同样被拒绝，标题不变
+  await expect(
+    invoke("update_task", {
+      input: {
+        taskId: ref.id,
+        title: "偷偷改名",
+        description: "",
+        ownerRoleId: "",
+        fileRefs: [],
+        dependsOn: [],
+      },
+    }),
+  ).rejects.toThrow(reason);
+
+  // 取消执行后可以编辑
+  await openTask(page, title);
+  await page.getByRole("button", { name: "取消执行" }).click();
+  await expect(page.locator(".run-outcome--cancelled")).toBeVisible({ timeout: TIMEOUT });
+  await page.getByRole("button", { name: "编辑" }).click();
+  await expect(page).toHaveURL(new RegExp(`/tasks/${ref.id}/edit$`));
+  await expect(page.getByRole("button", { name: "保存" })).toBeEnabled();
+  await page.getByLabel("任务名称").fill(`${title} 改`);
+  await page.getByRole("button", { name: "保存" }).click();
+  await expect(page.getByRole("heading", { name: `${title} 改` })).toBeVisible();
 });
 
 test("05. 执行中修改岗位绑定 Harness 与归档操作防护：归档被拒，执行安全不受破坏", async ({

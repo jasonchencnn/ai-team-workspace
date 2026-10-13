@@ -574,12 +574,18 @@ pub(crate) fn create(
     build_detail(conn, get(conn, &id)?, problems, files)
 }
 
+/// 有活动执行时拒绝编辑任务的原因（前端同文案展示）。
+pub(crate) const EDIT_BLOCKED_BY_RUN: &str = "任务正在执行中，结束或取消执行后才能编辑";
+
 pub(crate) fn update(
     conn: &Connection,
     input: UpdateTaskInput,
     files: &FileCheck,
 ) -> Result<TaskDetail> {
     let old = get(conn, &input.task_id)?;
+    if super::run::active_for_task(conn, &old.id)?.is_some() {
+        return Err(Error::conflict(EDIT_BLOCKED_BY_RUN));
+    }
     let team = team::get_active(conn, &old.team_id)?;
     let title = validate_title(&input.title)?;
     let description = text("任务描述", &input.description, MAX_LONG_TEXT, false)?;

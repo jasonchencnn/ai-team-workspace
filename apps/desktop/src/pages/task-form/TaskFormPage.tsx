@@ -32,7 +32,11 @@ import {
   TextareaField,
 } from "../../components/index.js";
 import type { TagTone } from "../../components/index.js";
+import { isRunActive } from "../task-detail/run/useRunEvents.js";
 import "./task-form.css";
+
+/** 与后端 update_task 在有活动执行时的拒绝原因一致。 */
+const EDIT_BLOCKED_TEXT = "任务正在执行中，结束或取消执行后才能编辑";
 
 /** 创建任务允许的初始状态（其余状态由任务详情页的流转操作产生）。 */
 const INITIAL_STATUSES: readonly TaskStatus[] = ["todo", "ready"];
@@ -330,6 +334,8 @@ export function TaskFormPage() {
   const busy = rolesQuery.isPending || (isEdit && detailQuery.isPending);
   const canSubmit = !busy && !saveMutation.isPending;
   const detailBlocked = isEdit && detailQuery.isError;
+  // 有活动执行时后端会拒绝编辑；这里提前提示并禁用保存，文案与后端一致。
+  const editBlocked = isEdit && isRunActive(detail?.latestRun ?? null);
 
   return (
     <>
@@ -343,6 +349,11 @@ export function TaskFormPage() {
       />
 
       <form className="task-form" onSubmit={submit} noValidate>
+        {editBlocked ? (
+          <div className="ui-error-banner" role="alert">
+            <span>{EDIT_BLOCKED_TEXT}</span>
+          </div>
+        ) : null}
         {saveMutation.isError ? <ErrorBanner error={saveMutation.error} /> : null}
 
         {isEdit && detailQuery.isPending ? (
@@ -702,7 +713,7 @@ export function TaskFormPage() {
           <Button
             type="submit"
             loading={saveMutation.isPending}
-            disabled={!canSubmit || detailBlocked}
+            disabled={!canSubmit || detailBlocked || editBlocked}
           >
             {isEdit ? "保存" : "创建并分配"}
           </Button>
