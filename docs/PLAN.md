@@ -97,6 +97,7 @@ Codex 时期（2026-09-20 至 10-10）的产出与判断：
 - 异步与恢复：会话可取消、可续接；应用重启后可恢复或标记为已中断。
 - 执行摘要自动写入岗位工作日志。
 - Mock Agent：用于测试和演示，不消耗额度。
+- 扩充 ACP 预设：CodeBuddy（`codebuddy --acp`，本机已握手通过）、Qoder CLI（`qodercli --acp`）、Grok Build（`grok agent stdio`，需 SuperGrok Heavy 订阅）、Qwen Code、Kimi CLI、OpenCode。每个新预设至少完成一次真实握手后才加入；本机未安装的先由你决定是否安装。Antigravity（agy）与智谱 ZCode 暂无官方 ACP 支持，暂不加入。调研结果见 2026-10-13 对话记录与 ACP 官网 Agent 列表。
 
 **可用标志**：把任务派给 Claude Code 或 MiniMax，看着它工作、批准它的权限请求，结束后拿到结果，岗位日志里留下记录。
 
