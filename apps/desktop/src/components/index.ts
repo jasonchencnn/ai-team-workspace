@@ -10,6 +10,8 @@ export { ErrorBanner } from "./ErrorBanner.js";
 export type { ErrorBannerProps } from "./ErrorBanner.js";
 export { InputField, SelectField, TextareaField } from "./Field.js";
 export type { InputFieldProps, SelectFieldProps, TextareaFieldProps } from "./Field.js";
+export { Modal } from "./Modal.js";
+export type { ModalProps } from "./Modal.js";
 export { PageHeader } from "./PageHeader.js";
 export type { PageHeaderProps } from "./PageHeader.js";
 export { Panel } from "./Panel.js";

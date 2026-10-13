@@ -283,3 +283,66 @@ textarea.ui-field__control {
   background: var(--color-danger-surface);
   color: var(--color-danger);
 }
+
+/* Modal */
+.ui-modal__overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--space-section);
+  background: rgb(32 36 45 / 45%);
+}
+
+.ui-modal {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-section);
+  width: min(720px, 100%);
+  max-height: 100%;
+  padding: 28px;
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius-panel);
+  background: var(--color-surface);
+  overflow-y: auto;
+}
+
+.ui-modal__head {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.ui-modal__headline {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-section);
+}
+
+.ui-modal__title {
+  font-size: var(--font-size-page-title);
+  font-weight: 700;
+  line-height: var(--line-height-page-title);
+  overflow-wrap: anywhere;
+}
+
+.ui-modal__description {
+  color: var(--color-muted);
+  font-size: var(--font-size-body);
+  overflow-wrap: anywhere;
+}
+
+.ui-modal__body {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.ui-modal__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}

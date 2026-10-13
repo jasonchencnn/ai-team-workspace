@@ -13,6 +13,11 @@ export const queryKeys = {
   taskBoard: (teamId: string, query: TaskBoardQuery) =>
     ["teams", teamId, "tasks", "board", query] as const,
   task: (teamId: string, taskId: string) => ["teams", teamId, "tasks", "detail", taskId] as const,
+  /**
+   * 任务的全部执行记录。挂在 `task` 之下，执行状态变化时随任务详情一并失效。
+   */
+  runs: (teamId: string, taskId: string) =>
+    ["teams", teamId, "tasks", "detail", taskId, "runs"] as const,
   events: (teamId: string, query: EventQuery) => ["teams", teamId, "events", query] as const,
   roleTemplates: ["role-templates"] as const,
   acpPresets: ["acp-presets"] as const,

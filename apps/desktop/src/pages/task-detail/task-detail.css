@@ -16,6 +16,11 @@
   margin-top: var(--space-section);
 }
 
+.task-detail__hint {
+  margin-top: var(--space-section);
+  color: var(--color-muted);
+}
+
 .task-detail__main,
 .task-detail__side {
   display: flex;
