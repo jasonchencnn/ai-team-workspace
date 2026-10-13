@@ -328,8 +328,21 @@ export function TeamCreatePage() {
                       patchDraft(entry.key, { name: event.currentTarget.value });
                     }}
                     onBlur={() => {
-                      suggestPrefix(entry.key, draft.name, draft.taskPrefix, (prefix) => {
-                        patchDraft(entry.key, { taskPrefix: prefix });
+                      suggestPrefix(entry.key, draft.name, (resolvePrefix) => {
+                        // 函数式 setState：按返回那一刻的行前缀判定，不用失焦时的快照。
+                        setEntries((previous) =>
+                          previous.map((item) =>
+                            item.key === entry.key
+                              ? {
+                                  ...item,
+                                  draft: {
+                                    ...item.draft,
+                                    taskPrefix: resolvePrefix(item.draft.taskPrefix),
+                                  },
+                                }
+                              : item,
+                          ),
+                        );
                       });
                     }}
                   />

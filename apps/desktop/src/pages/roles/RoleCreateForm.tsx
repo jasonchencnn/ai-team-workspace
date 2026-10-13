@@ -86,8 +86,12 @@ export function RoleCreateForm({ teamId, onCancel, onCreated }: RoleCreateFormPr
           update("name", event.target.value);
         }}
         onBlur={() => {
-          suggestPrefix("new", draft.name, draft.taskPrefix, (prefix) => {
-            update("taskPrefix", prefix);
+          suggestPrefix("new", draft.name, (resolvePrefix) => {
+            // 函数式 setState：拿到的是建议返回那一刻的前缀，用户在等待期间手填的值不会被冲掉。
+            setDraft((previous) => ({
+              ...previous,
+              taskPrefix: resolvePrefix(previous.taskPrefix),
+            }));
           });
         }}
       />

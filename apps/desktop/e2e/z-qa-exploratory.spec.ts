@@ -368,10 +368,16 @@ test("06. 岗位规则与边界：非法前缀、前缀重复、第二个 Leader
 
   // 1. 非法前缀：1 位字符
   await roleCreateForm.getByLabel("岗位名称").fill("非法前缀测试");
+  // 名称失焦后建议在途，立刻手填前缀；建议返回时不得覆盖手填值。
+  const lateSuggestion = page.waitForResponse(
+    (response) =>
+      response.url().includes("/invoke") &&
+      (response.request().postData() ?? "").includes("suggest_task_prefix"),
+  );
   await roleCreateForm.getByLabel("岗位名称").blur();
-  // 等自动建议填入后再手动改，避免建议值晚到覆盖手填内容
-  await expect(prefixInput).toHaveValue(/^R\d+$/);
   await prefixInput.fill("X");
+  await lateSuggestion;
+  await expect(prefixInput).toHaveValue("X");
   await roleCreateForm.getByRole("button", { name: "创建岗位" }).click();
 
   const alert = roleCreateForm.getByRole("alert");
