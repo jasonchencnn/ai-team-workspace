@@ -208,7 +208,15 @@ fn journal_entries(conn: &Connection, role: &Role, after: i64) -> Result<Vec<(i6
                 .unwrap_or(text),
             None => text,
         };
-        out.push((seq, JournalEntry { at, task_key, text }));
+        // 工作日志留在工作空间里、可能被提交进 Git，写入前统一脱敏（D6）。
+        out.push((
+            seq,
+            JournalEntry {
+                at,
+                task_key,
+                text: crate::redact::text(&text),
+            },
+        ));
     }
     Ok(out)
 }

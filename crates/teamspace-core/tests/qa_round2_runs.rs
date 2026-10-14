@@ -631,7 +631,6 @@ fn k_har_008_env_profile_secret_is_injected_but_never_stored() {
 
 /// K-HAR-009：启动参数里的疑似密钥不应写入工作空间文件、活动、Run 快照、失败原因与日志。
 #[test]
-#[ignore = "缺陷 K-HAR-009（Q-04）: 启动参数里的密钥被原样写入岗位说明.md、活动 data.args、Run 快照 harness_args，Agent 的 stderr 尾部还进入失败原因、受阻原因和工作日志"]
 fn k_har_009_secret_in_args_does_not_leak_into_stored_text() {
     let e = env(Kind::Plain);
     const SECRET: &str = "sk-test-123";

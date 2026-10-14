@@ -7,6 +7,7 @@ pub mod error;
 pub mod mock_agent;
 pub mod model;
 pub mod probe;
+pub mod redact;
 pub mod role_folder;
 pub mod run;
 mod service;

@@ -248,6 +248,8 @@ fn section(body: &str) -> String {
 }
 
 /// 岗位说明全文。内容只取决于岗位数据，未变化时不重写文件。
+///
+/// 启动参数里的疑似密钥在此脱敏（D6）：岗位说明会留在工作空间里，可能被提交进 Git。
 pub(crate) fn render_brief(plan: &RolePlan) -> String {
     let role = &plan.role;
     let harness = match &plan.harness {
@@ -255,7 +257,7 @@ pub(crate) fn render_brief(plan: &RolePlan) -> String {
             "{}（{} · ACP，启动命令 `{}`）",
             h.name,
             h.preset.label(),
-            crate::acp::command_line(Path::new(&h.command), &h.args)
+            crate::acp::command_line(Path::new(&h.command), &crate::redact::args(&h.args))
         ),
         None => "未绑定（暂不派工）".to_owned(),
     };

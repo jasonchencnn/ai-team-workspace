@@ -372,11 +372,12 @@ pub(crate) fn create(conn: &Connection, input: CreateHarnessInput) -> Result<Har
             role_id: None,
             kind: EventKind::HarnessCreated,
             summary: format!("注册 Harness「{}」", harness.name),
+            // 参数里的疑似密钥不进活动（D6）；`harnesses` 表中的原始参数是启动 Agent 必需的。
             data: json!({
                 "harnessId": harness.id,
                 "preset": harness.preset,
                 "command": harness.command,
-                "args": harness.args,
+                "args": crate::redact::args(&harness.args),
             }),
         },
     )?;
@@ -425,7 +426,7 @@ pub(crate) fn update(conn: &Connection, input: UpdateHarnessInput) -> Result<Har
                 "harnessId": harness.id,
                 "previousName": old.name,
                 "command": harness.command,
-                "args": harness.args,
+                "args": crate::redact::args(&harness.args),
             }),
         },
     )?;

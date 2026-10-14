@@ -817,12 +817,23 @@ impl Driver {
     }
 
     fn spawn_spec(&self, ctx: &Context, exec_dir: &Path) -> std::result::Result<SpawnSpec, End> {
+        // 执行快照里的参数是脱敏过的（D6），启动 Agent 要用 `harnesses` 表里的原始参数。
+        // 实例查不到时（已删除）退回快照值，让失败原因更贴近实际。
+        let instance = self
+            .db(|tx| harness::get_any(tx, &self.run.harness.harness_id))
+            .flatten();
+        let command = instance
+            .as_ref()
+            .map_or(self.run.harness.command.as_str(), |h| h.command.as_str());
+        let args: &[String] = instance
+            .as_ref()
+            .map_or(self.run.harness.args.as_slice(), |h| h.args.as_slice());
         let launch = self
             .core
             .launch_for(
                 self.run.harness.preset,
-                &self.run.harness.command,
-                &self.run.harness.args,
+                command,
+                args,
                 ctx.env_profile.as_deref(),
             )
             .map_err(|err| failed(FailureKind::Launch, err))?;
@@ -924,8 +935,9 @@ impl Driver {
             Some(exit) => format!("Agent 进程退出（{exit}）"),
             None => "Agent 关闭了输出".to_owned(),
         };
+        // Agent 的 stderr 可能回显启动参数里的密钥，落库前脱敏（D6）。
         if let Some(stderr) = stderr {
-            text.push_str(&format!("：{stderr}"));
+            text.push_str(&format!("：{}", crate::redact::text(&stderr)));
         }
         failed(FailureKind::AgentExited, text)
     }
@@ -1656,6 +1668,8 @@ impl Driver {
                 stop_reason,
             } => {
                 ending.stop_reason = stop_reason.clone();
+                // 失败说明会进入执行快照、任务受阻原因、活动与工作日志，落库前统一脱敏（D6）。
+                let failure = crate::redact::text(failure);
                 ending.failure = Some(failure.clone());
                 ending.failure_kind = Some(*kind);
                 let reason: String = format!("{}{failure}", store_run::FAILED_PREFIX)

@@ -238,6 +238,9 @@ pub(crate) fn next_attempt(conn: &Connection, task_id: &str) -> Result<u32> {
 pub(crate) fn insert(conn: &Connection, new: NewRun<'_>) -> Result<Run> {
     let id = new_id();
     let attempt = next_attempt(conn, &new.task.id)?;
+    // 快照里的参数是给人看的，疑似密钥在此脱敏（D6）；启动 Agent 时从 `harnesses` 表读原始参数
+    // （见 [`crate::run`] 的启动流程），所以不影响实际执行。
+    let snapshot_args = crate::redact::args(&new.harness.args);
     conn.execute(
         "INSERT INTO runs (id, team_id, task_id, role_id, harness_id, harness_name, harness_preset,
                            harness_command, harness_args, attempt, status, workspace_path, exec_dir,
@@ -252,7 +255,7 @@ pub(crate) fn insert(conn: &Connection, new: NewRun<'_>) -> Result<Run> {
             new.harness.name,
             enum_str(new.harness.preset),
             new.harness.command,
-            serde_json::to_string(&new.harness.args)?,
+            serde_json::to_string(&snapshot_args)?,
             attempt,
             new.workspace,
             new.exec_dir,
@@ -323,8 +326,11 @@ pub(crate) struct Ending {
 }
 
 /// 把执行置为结束状态（succeeded / failed / cancelled / interrupted），清除待确认的权限请求。
+///
+/// 失败说明可能含 Agent 的 stderr 尾部，落库前统一脱敏（D6）。
 pub(crate) fn end(conn: &Connection, id: &str, status: RunStatus, ending: &Ending) -> Result<()> {
     debug_assert!(!status.is_active());
+    let failure = ending.failure.as_deref().map(crate::redact::text);
     conn.execute(
         "UPDATE runs SET status = ?2, ended_at = ?3, stop_reason = ?4, failure = ?5,
                          failure_kind = ?6, summary = ?7, changed_files = ?8, tool_call_count = ?9,
@@ -335,7 +341,7 @@ pub(crate) fn end(conn: &Connection, id: &str, status: RunStatus, ending: &Endin
             enum_str(status),
             now(),
             ending.stop_reason,
-            ending.failure,
+            failure,
             ending.failure_kind.map(enum_str),
             ending.summary,
             serde_json::to_string(&ending.changed_files)?,
@@ -370,7 +376,10 @@ pub(crate) fn move_task(
         return Ok(());
     }
     let reason = if to == TaskStatus::Blocked {
-        Some(reason.unwrap_or_else(|| "执行失败".to_owned()))
+        // 受阻原因会显示在任务详情、写入活动与工作日志，落库前统一脱敏（D6）。
+        Some(crate::redact::text(
+            &reason.unwrap_or_else(|| "执行失败".to_owned()),
+        ))
     } else {
         None
     };
