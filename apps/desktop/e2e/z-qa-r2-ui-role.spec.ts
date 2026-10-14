@@ -508,24 +508,6 @@ test("UI-ROLE-007 前缀校验：R / ABCDE / 1AB / R-1 四种非法前缀均被�
   await page.getByRole("button", { name: "取消" }).click();
 });
 
-test("UI-ROLE-007 前缀校验：小写 abc 应被拒绝并提示格式要求", async ({ page }) => {
-  test.fixme(
-    true,
-    "缺陷 UI-ROLE-007: RoleCreateForm 提交前 .toUpperCase()，小写 abc 被静默转成 ABC 并创建成功，与本用例「保存被拒绝」冲突（与 UI-ROLE-008 的转大写要求互相矛盾）",
-  );
-  const form = await openRoleCreateForm(page);
-  await form.getByLabel("岗位名称").fill("小写前缀岗位");
-  await form.getByLabel("岗位名称").blur();
-  await expect(form.getByLabel("任务编号前缀")).toHaveValue(/^[A-Z][A-Z0-9]{1,3}$/);
-
-  await form.getByLabel("任务编号前缀").fill("abc");
-  await form.getByRole("button", { name: "创建岗位" }).click();
-  const alert = form.getByRole("alert");
-  await expect(alert).toContainText("任务前缀「abc」格式不正确");
-  await expect(alert).toContainText("需为 2–4 位大写字母或数字，且以字母开头");
-  await expect(page.locator(".role-chip", { hasText: "小写前缀岗位" })).toHaveCount(0);
-});
-
 test("UI-ROLE-008 前缀：填小写 dev1 存为大写 DEV1，改成 R9 后已有任务编号不变、新任务用 R9", async ({
   page,
 }) => {
