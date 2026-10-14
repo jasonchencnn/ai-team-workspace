@@ -51,7 +51,7 @@ use crate::role_folder;
 use crate::service::run::{self as store_run, Ending};
 use crate::service::{MAX_REASON, harness, task};
 use crate::store::{new_id, now};
-use policy::{Scope, Verdict};
+use policy::{EditPreview, Scope, Verdict, WriteTarget};
 
 /// Agent 连续没有任何输出视为超时的默认时长。
 pub const IDLE_TIMEOUT: Duration = Duration::from_secs(30 * 60);
@@ -409,6 +409,8 @@ struct ToolState {
     paths: Vec<String>,
     command: Option<String>,
     diffs: Vec<DiffStat>,
+    /// diff 原文，用于判断对工作日志的编辑是否纯追加。
+    edits: Vec<EditPreview>,
 }
 
 impl ToolState {
@@ -462,6 +464,8 @@ struct Driver {
     writes: BTreeMap<PathBuf, FileChangeKind>,
     /// 权限请求被允许的编辑路径（规范化），之后的 `fs/write_text_file` 据此放行。
     granted: Vec<PathBuf>,
+    /// 其中由 Human 允许的路径。工作日志的非追加写入只认这里（规则自动允许的不算）。
+    human_granted: Vec<PathBuf>,
     tool_call_count: u32,
 }
 
@@ -493,6 +497,7 @@ impl Driver {
             pending: Vec::new(),
             writes: BTreeMap::new(),
             granted: Vec::new(),
+            human_granted: Vec::new(),
         }
     }
 
@@ -746,6 +751,7 @@ impl Driver {
                 &ctx.role_folder
                     .clone()
                     .unwrap_or_else(|| format!("{}/{}", role_folder::ROOT_DIR, ctx.role.name)),
+                journal_path(&ctx).as_deref(),
             ),
         };
         let refs: Vec<brief::BriefRef> = match mode {
@@ -813,6 +819,7 @@ impl Driver {
             isolation: self.run.isolation,
             branch: self.run.branch.clone(),
             role_folder: ctx.role_folder.clone(),
+            journal_path: journal_path(ctx),
         }
     }
 
@@ -975,6 +982,7 @@ impl Driver {
                                 paths: paths.clone(),
                                 command: command.clone(),
                                 diffs: diffs.clone(),
+                                edits: Vec::new(),
                             },
                         );
                     }
@@ -1224,6 +1232,24 @@ impl Driver {
                     .filter_map(diff_stat)
                     .collect::<Vec<_>>()
             });
+        let edits: Vec<EditPreview> = update
+            .get("content")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter(|c| c.get("type").and_then(Value::as_str) == Some("diff"))
+            .filter_map(|c| {
+                Some(EditPreview {
+                    path: c.get("path")?.as_str()?.to_owned(),
+                    old_text: c.get("oldText").and_then(Value::as_str).map(str::to_owned),
+                    new_text: c
+                        .get("newText")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default()
+                        .to_owned(),
+                })
+            })
+            .collect();
         if let Some(diffs) = &diffs {
             let list = paths.get_or_insert_with(Vec::new);
             for d in diffs {
@@ -1242,6 +1268,7 @@ impl Driver {
             paths: Vec::new(),
             command: None,
             diffs: Vec::new(),
+            edits: Vec::new(),
         });
         if let Some(title) = str_field("title") {
             state.title = title;
@@ -1261,6 +1288,9 @@ impl Driver {
             && !diffs.is_empty()
         {
             state.diffs = diffs;
+        }
+        if !edits.is_empty() {
+            state.edits = edits;
         }
         if command.is_some() {
             state.command = command;
@@ -1346,14 +1376,15 @@ impl Driver {
             .upsert_tool(&tool)
             .unwrap_or_else(|| format!("unknown-{}", new_id()));
         let state = self.tools.get(&tool_id).cloned();
-        let (title, kind, paths, command) = match &state {
+        let (title, kind, paths, command, edits) = match &state {
             Some(s) => (
                 s.title.clone(),
                 s.kind.clone(),
                 s.paths.clone(),
                 s.command.clone(),
+                s.edits.clone(),
             ),
-            None => ("工具调用".to_owned(), None, Vec::new(), None),
+            None => ("工具调用".to_owned(), None, Vec::new(), None, Vec::new()),
         };
         let options: Vec<PermissionOption> = params
             .get("options")
@@ -1387,7 +1418,7 @@ impl Driver {
             options: options.clone(),
             requested_at: now(),
         };
-        let reason = match self.scope().decide(kind.as_deref(), &paths) {
+        let reason = match self.scope().decide_with(kind.as_deref(), &paths, &edits) {
             Verdict::Allow(reason) => {
                 let allow = ["allow_once", "allow_always"]
                     .iter()
@@ -1460,6 +1491,12 @@ impl Driver {
         if option.kind.starts_with("allow") {
             let paths = p.prompt.paths.clone();
             self.grant(&paths);
+            let base = self.scope().exec_dir().to_path_buf();
+            self.human_granted.extend(
+                paths
+                    .iter()
+                    .filter_map(|path| policy::resolve(Path::new(path), &base).ok()),
+            );
         }
         let _ = self.conn().respond(
             &p.rpc_id,
@@ -1529,28 +1566,16 @@ impl Driver {
             .and_then(Value::as_str)
             .unwrap_or_default();
         let base = self.scope().exec_dir().to_path_buf();
-        let checked = match self.scope().can_write(&path) {
-            Ok(real) => Ok((real, "在自动批准范围内".to_owned())),
+        let outcome = match self.scope().write_target(&path) {
+            Ok(WriteTarget::Journal(real)) => self.write_journal(real, &path, content),
+            Ok(WriteTarget::Free(real)) => self.write_plain(real, content, "在自动批准范围内"),
             Err(reason) => match policy::resolve(Path::new(&path), &base) {
                 Ok(real) if self.granted.contains(&real) => {
-                    Ok((real, "Human 已允许对应的权限请求".to_owned()))
+                    self.write_plain(real, content, "Human 已允许对应的权限请求")
                 }
                 _ => Err(reason),
             },
         };
-        let outcome = checked.and_then(|(real, reason)| {
-            let existed = real.exists();
-            if let Some(parent) = real.parent() {
-                std::fs::create_dir_all(parent).map_err(|err| format!("无法创建目录：{err}"))?;
-            }
-            std::fs::write(&real, content).map_err(|err| format!("写入失败：{err}"))?;
-            self.writes.entry(real).or_insert(if existed {
-                FileChangeKind::Modified
-            } else {
-                FileChangeKind::Added
-            });
-            Ok(reason)
-        });
         let body = match &outcome {
             Ok(reason) => {
                 let _ = self.conn().respond(&id, json!({}));
@@ -1574,6 +1599,52 @@ impl Driver {
             }
         };
         self.insert(None, &body);
+    }
+
+    /// 写入范围内（或已被允许）的普通文件，记入改动。
+    fn write_plain(
+        &mut self,
+        real: PathBuf,
+        content: &str,
+        reason: &str,
+    ) -> std::result::Result<String, String> {
+        let existed = real.exists();
+        if let Some(parent) = real.parent() {
+            std::fs::create_dir_all(parent).map_err(|err| format!("无法创建目录：{err}"))?;
+        }
+        std::fs::write(&real, content).map_err(|err| format!("写入失败：{err}"))?;
+        self.writes.entry(real).or_insert(if existed {
+            FileChangeKind::Modified
+        } else {
+            FileChangeKind::Added
+        });
+        Ok(reason.to_owned())
+    }
+
+    /// 写本岗位工作日志（D14）：每次都在写入锁内重新读取并判断是否纯追加，纯追加只追加多出的部分；
+    /// 不因权限请求被规则自动允许（`granted`）而放行，非追加写入只在 Human 允许过该路径时整体写入。
+    fn write_journal(
+        &mut self,
+        real: PathBuf,
+        path: &str,
+        content: &str,
+    ) -> std::result::Result<String, String> {
+        let by_human = self.human_granted.contains(&real);
+        match role_folder::write_journal_from_agent(&real, content, by_human) {
+            // 追加进展不算任务产出，不记入改动文件。
+            Ok(role_folder::AgentJournalWrite::Appended(_)) => {
+                Ok("在工作日志末尾追加，自动允许".to_owned())
+            }
+            Ok(role_folder::AgentJournalWrite::Overwritten) => {
+                self.writes.entry(real).or_insert(FileChangeKind::Modified);
+                Ok("Human 已允许对应的权限请求".to_owned())
+            }
+            Ok(role_folder::AgentJournalWrite::NotAppend) => Err(format!(
+                "工作日志只允许在末尾追加（新内容须以文件现有内容开头），\
+                 修改或删除已有内容需要确认：{path}"
+            )),
+            Err(err) => Err(format!("写入失败：{err}")),
+        }
     }
 
     // ------------------------------------------------------------ 结束
@@ -1613,6 +1684,14 @@ impl Driver {
                 continue;
             }
             for path in &tool.paths {
+                // 工作日志的追加不算改动文件（Human 允许的整体改写已在 `writes` 中）。
+                let journal = self
+                    .scope
+                    .as_ref()
+                    .is_some_and(|s| matches!(s.write_target(path), Ok(WriteTarget::Journal(_))));
+                if journal {
+                    continue;
+                }
                 if let Ok(real) = policy::resolve(Path::new(path), &root) {
                     changes.entry(rel(&real)).or_insert(kind);
                 }
@@ -1762,6 +1841,16 @@ impl Driver {
 }
 
 /// 执行时 Agent 要求登录：把 Harness 握手状态更新为 needs_auth。
+/// 工作空间中本岗位工作日志的绝对路径（岗位文件夹尚未建立时为 `None`）。
+fn journal_path(ctx: &Context) -> Option<String> {
+    ctx.role_folder.as_deref().map(|rel| {
+        role_folder::absolute(&ctx.workspace, rel)
+            .join(role_folder::JOURNAL_FILE)
+            .display()
+            .to_string()
+    })
+}
+
 fn mark_needs_auth(
     tx: &rusqlite::Connection,
     run: &Run,

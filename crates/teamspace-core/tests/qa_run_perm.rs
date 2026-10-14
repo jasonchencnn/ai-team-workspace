@@ -2,7 +2,7 @@
 //! 真实子进程（cargo 构建的 `teamspace-mock-agent`，用 `[mock:outside]` 等标记）、真实 Git、临时目录；
 //! 不调用任何真实 Agent。
 //!
-//! 对应用例：K-PERM-002、K-PERM-006、K-PERM-008（参数化）、K-FLD-011。
+//! 对应用例：K-PERM-002、K-PERM-006、K-PERM-008（参数化）、K-FLD-011（D14：工作日志允许 Agent 纯追加）。
 
 mod common;
 
@@ -145,10 +145,11 @@ fn k_perm_006_agent_fs_calls_follow_the_same_scope() {
     assert!(find("/fsprobe-ok.md").iter().all(|w| w.1));
     assert!(!find("/outside.txt").is_empty() && find("/outside.txt").iter().all(|w| !w.1));
     assert!(!find("/工作日志.md").is_empty() && find("/工作日志.md").iter().all(|w| !w.1));
+    // D14：工作日志只允许纯追加，整体覆盖被拒。
     assert!(
         find("/工作日志.md")[0]
             .2
-            .contains("由 Teamspace 维护，修改需要确认"),
+            .contains("工作日志只允许在末尾追加"),
         "{writes:?}"
     );
     assert!(run.changed_files.iter().all(|c| c.path != "工作日志.md"));
@@ -248,6 +249,17 @@ fn readgrant_case(git_repo: bool, kind: &str, target: Target) {
     }
 }
 
+/// 工作日志的追加判断（D14）对每次写入都生效，不因 read/search 被规则自动允许（`granted`）而跳过，
+/// 因此这几种组合不受 Q-01 影响，不再忽略。
+macro_rules! readgrant_journal {
+    ($name:ident, $repo:expr, $kind:expr) => {
+        #[test]
+        fn $name() {
+            readgrant_case($repo, $kind, Target::Journal);
+        }
+    };
+}
+
 macro_rules! readgrant {
     ($name:ident, $git:expr, $kind:expr, $target:expr) => {
         #[test]
@@ -270,18 +282,8 @@ readgrant!(
     "search",
     Target::Outside
 );
-readgrant!(
-    k_perm_008_in_place_read_journal,
-    false,
-    "read",
-    Target::Journal
-);
-readgrant!(
-    k_perm_008_in_place_search_journal,
-    false,
-    "search",
-    Target::Journal
-);
+readgrant_journal!(k_perm_008_in_place_read_journal, false, "read");
+readgrant_journal!(k_perm_008_in_place_search_journal, false, "search");
 readgrant!(k_perm_008_in_place_read_brief, false, "read", Target::Brief);
 readgrant!(
     k_perm_008_in_place_search_brief,
@@ -301,18 +303,8 @@ readgrant!(
     "search",
     Target::Outside
 );
-readgrant!(
-    k_perm_008_worktree_read_journal,
-    true,
-    "read",
-    Target::Journal
-);
-readgrant!(
-    k_perm_008_worktree_search_journal,
-    true,
-    "search",
-    Target::Journal
-);
+readgrant_journal!(k_perm_008_worktree_read_journal, true, "read");
+readgrant_journal!(k_perm_008_worktree_search_journal, true, "search");
 readgrant!(k_perm_008_worktree_read_brief, true, "read", Target::Brief);
 readgrant!(
     k_perm_008_worktree_search_brief,
@@ -336,7 +328,7 @@ readgrant!(
 // ------------------------------------------------------------------ K-FLD-011
 
 #[test]
-fn k_fld_011_progress_stays_in_run_updates_and_agent_cannot_rewrite_the_journal() {
+fn k_fld_011_progress_stays_in_run_updates_and_agent_can_only_append_to_the_journal() {
     let e = env(false);
     let journal_path = e.role_file("工作日志.md");
     let before = std::fs::read_to_string(&journal_path).unwrap();
@@ -377,7 +369,7 @@ fn k_fld_011_progress_stays_in_run_updates_and_agent_cannot_rewrite_the_journal(
         );
     }
 
-    // 4) Agent 改写日志：编辑权限请求转 Human，拒绝后 fs 写入仍被拒，文件未被改动。
+    // 4) Agent 改写日志（整体覆盖）：编辑权限请求转 Human，拒绝后 fs 写入仍被拒，文件未被改动。
     let before_attempt = std::fs::read_to_string(&journal_path).unwrap();
     let editing = e.task("改日志 [mock:editjournal]");
     let run = e.ts.start_run(&editing.id).unwrap();
@@ -387,7 +379,7 @@ fn k_fld_011_progress_stays_in_run_updates_and_agent_cannot_rewrite_the_journal(
     let prompt = waiting.pending_permission.unwrap();
     assert_eq!(prompt.tool_kind.as_deref(), Some("edit"));
     assert!(
-        prompt.reason.contains("由 Teamspace 维护，修改需要确认"),
+        prompt.reason.contains("工作日志只允许在末尾追加"),
         "{}",
         prompt.reason
     );
@@ -410,5 +402,60 @@ fn k_fld_011_progress_stays_in_run_updates_and_agent_cannot_rewrite_the_journal(
     assert!(
         now.starts_with(&before_attempt),
         "日志只应被 Teamspace 追加"
+    );
+
+    // 5) D14：Agent 在末尾追加进展——权限请求与 fs 写入都由规则自动允许，
+    //    Agent 的行与 Teamspace 的开始、结束条目都在，已有内容不变，日志不算改动文件。
+    let before_append = std::fs::read_to_string(&journal_path).unwrap();
+    let appending = e.task("记进展 [mock:appendjournal]");
+    let run = e.wait_end(&e.ts.start_run(&appending.id).unwrap().id);
+    assert_eq!(run.status, RunStatus::Succeeded, "{run:#?}");
+    let updates = e.updates(&run.id);
+    let decision = updates.iter().find_map(|u| match &u.body {
+        RunUpdateBody::Permission {
+            tool_call_id,
+            decision: Some(d),
+            ..
+        } if tool_call_id == "mock-appendjournal" => Some(d.clone()),
+        _ => None,
+    });
+    let decision = decision.unwrap_or_else(|| panic!("{updates:#?}"));
+    assert_eq!(decision.by, "rule");
+    assert!(decision.reason.contains("追加"), "{}", decision.reason);
+    let writes = file_writes(&updates);
+    let journal_write = writes
+        .iter()
+        .find(|(p, ..)| p.ends_with("/工作日志.md"))
+        .unwrap_or_else(|| panic!("{writes:?}"));
+    assert!(journal_write.1, "{journal_write:?}");
+    assert!(journal_write.2.contains("追加"), "{journal_write:?}");
+    assert!(
+        summary(&run).contains("[appendjournal:ok]"),
+        "{}",
+        summary(&run)
+    );
+    let after = e.wait_journal(&format!("{} · 第 1 次执行完成", appending.key));
+    let added = after
+        .strip_prefix(&before_append)
+        .unwrap_or_else(|| panic!("已有内容不应被改动：{after}"));
+    let lines: Vec<&str> = added.lines().collect();
+    let pos = |needle: &str| {
+        lines
+            .iter()
+            .position(|l| l.contains(needle))
+            .unwrap_or_else(|| panic!("缺少「{needle}」：{added}"))
+    };
+    let started = pos("开始第 1 次执行");
+    let progress = pos(&format!("{} · Mock 进展：已写入过程文件", appending.key));
+    let finished = pos("第 1 次执行完成");
+    // 「开始」由 Teamspace 在启动 Agent 之后同步写入，与 Agent 的追加先后不定；「完成」一定在最后。
+    assert!(started != progress && progress < finished, "{added}");
+    assert!(lines.iter().all(|l| l.starts_with("- ")), "{added}");
+    assert!(
+        run.changed_files
+            .iter()
+            .all(|c| !c.path.ends_with("工作日志.md")),
+        "{:?}",
+        run.changed_files
     );
 }

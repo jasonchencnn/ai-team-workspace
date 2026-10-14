@@ -322,6 +322,7 @@ fn brief_input(journal: Vec<String>) -> BriefInput {
         isolation: RunIsolation::InPlace,
         branch: None,
         role_folder: Some("Teamspace/前端".into()),
+        journal_path: None,
     }
 }
 

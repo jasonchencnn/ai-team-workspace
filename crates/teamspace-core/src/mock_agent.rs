@@ -23,7 +23,10 @@
 //! - `[mock:readgrant=<kind>|<路径>]`：申请一次 `read` 或 `search`（`kind`）类权限，`locations` 为该路径
 //!   （相对路径按工作目录解析），随后对同一路径调用 `fs/write_text_file`；省略参数时为 `read|out.md`；
 //! - `[mock:editref]`：申请编辑任务引用文件 `文档/需求说明_v1.md` 的权限，随后写入该文件；
-//! - `[mock:editjournal]`：申请编辑岗位文件夹中的 `工作日志.md` 的权限，随后写入该文件；
+//! - `[mock:editjournal]`：申请编辑岗位文件夹中的 `工作日志.md` 的权限（diff 为整体覆盖），随后整体覆盖该文件；
+//! - `[mock:appendjournal]`：经 `fs/read_text_file` 读出工作日志（路径取自任务说明包「本岗位工作日志 `…`」），
+//!   申请编辑权限（diff 的 `oldText` 为现有内容、`newText` 为其后追加一条进展），随后把追加后的全文经
+//!   `fs/write_text_file` 写回（D14 的纯追加）；
 //! - `[mock:fsprobe=<范围外文件>]`：不申请权限，直接依次：`fs/read_text_file` 读取范围外文件，
 //!   `fs/write_text_file` 写岗位过程文件夹内的 `fsprobe-ok.md`、写范围外文件、写 `工作日志.md`；省略参数时范围外
 //!   文件为工作目录上一级的 `fsprobe-outside.txt`；每一步的结果写进总结；
@@ -317,6 +320,71 @@ impl Mock<'_> {
         Ok(Probe::Done(result))
     }
 
+    /// `[mock:appendjournal]`：读出工作日志，申请编辑权限（diff 为纯追加），再写回追加后的全文。
+    fn append_journal(
+        &mut self,
+        session: &str,
+        path: &Path,
+        task_key: &str,
+        cancelled: &mut bool,
+    ) -> std::io::Result<Probe> {
+        let shown = path.display().to_string();
+        let current = match self.request(
+            "fs/read_text_file",
+            json!({ "sessionId": session, "path": shown }),
+            cancelled,
+        )? {
+            Reply::Eof => return Ok(Probe::Eof),
+            Reply::Result(r) => r
+                .get("content")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_owned(),
+            Reply::Error(message) => return Ok(Probe::Done(Err(message))),
+        };
+        let now = crate::role_folder::local_time(&chrono::Utc::now().to_rfc3339());
+        let content = format!("{current}- {now} · {task_key} · Mock 进展：已写入过程文件\n");
+        self.update(session, json!({
+            "sessionUpdate": "tool_call", "toolCallId": "mock-appendjournal", "title": "追加工作日志",
+            "kind": "edit", "status": "pending", "locations": [{ "path": shown }],
+            "content": [{ "type": "diff", "path": shown, "oldText": current, "newText": content }]
+        }))?;
+        let reply = self.request(
+            "session/request_permission",
+            json!({ "sessionId": session, "toolCall": { "toolCallId": "mock-appendjournal" }, "options": options() }),
+            cancelled,
+        )?;
+        match reply {
+            Reply::Eof => return Ok(Probe::Eof),
+            Reply::Result(r)
+                if r.pointer("/outcome/outcome").and_then(Value::as_str) == Some("cancelled") =>
+            {
+                *cancelled = true;
+            }
+            _ => {}
+        }
+        if *cancelled {
+            self.tool(
+                session,
+                json!({ "toolCallId": "mock-appendjournal", "status": "failed" }),
+            )?;
+            return Ok(Probe::Cancelled);
+        }
+        let Some(result) = self.write_file(session, path, &content, cancelled)? else {
+            return Ok(Probe::Eof);
+        };
+        let status = if result.is_ok() {
+            "completed"
+        } else {
+            "failed"
+        };
+        self.tool(
+            session,
+            json!({ "toolCallId": "mock-appendjournal", "status": status }),
+        )?;
+        Ok(Probe::Done(result))
+    }
+
     fn finish(&mut self, id: Value, stop_reason: &str) -> std::io::Result<()> {
         self.write(&ok(id, json!({ "stopReason": stop_reason })))
     }
@@ -476,6 +544,15 @@ impl Mock<'_> {
                 Probe::Eof => return Ok(()),
                 Probe::Cancelled => return self.finish(id, "cancelled"),
                 Probe::Done(result) => notes.push(note(name, &result)),
+            }
+        }
+        if has("appendjournal") {
+            let target = journal_path(&text).map_or_else(|| journal.clone(), PathBuf::from);
+            let key = task_key(task).unwrap_or("?");
+            match self.append_journal(&session, &target, key, &mut cancelled)? {
+                Probe::Eof => return Ok(()),
+                Probe::Cancelled => return self.finish(id, "cancelled"),
+                Probe::Done(result) => notes.push(note("appendjournal", &result)),
             }
         }
         if has("fsprobe") || marker_arg(task, "fsprobe").is_some() {
@@ -702,6 +779,20 @@ fn resource_paths(params: &Value) -> Vec<PathBuf> {
         })
         .filter_map(path_from_uri)
         .collect()
+}
+
+/// 任务说明包中给出的本岗位工作日志路径（「本岗位工作日志 `…`」）。
+fn journal_path(text: &str) -> Option<String> {
+    let start = text.find("本岗位工作日志 `")? + "本岗位工作日志 `".len();
+    let rest = &text[start..];
+    Some(rest[..rest.find('`')?].to_owned())
+}
+
+/// 「## 任务」一节中的任务编号（「- 编号：FE-001」）。
+fn task_key(task: &str) -> Option<&str> {
+    task.lines()
+        .find_map(|l| l.strip_prefix("- 编号："))
+        .map(str::trim)
 }
 
 /// 从任务说明包中找出岗位过程文件夹（相对工作目录），如 `Teamspace/前端/过程文件`。
@@ -1075,6 +1166,46 @@ mod tests {
             "/tmp/ws/Teamspace/前端/工作日志.md"
         );
         assert!(all_text(&replies).contains("[editjournal:err:"));
+    }
+
+    #[test]
+    fn appendjournal_reads_then_appends_one_line() {
+        let journal = "/tmp/ws/Teamspace/前端/工作日志.md";
+        let input = [
+            format!("{NEW}\n"),
+            prompt(
+                2,
+                &format!(
+                    "{BRIEF}\n2. 执行过程中可以在本岗位工作日志 `{journal}` 的末尾追加进展\n\
+                     ## 任务\n- 编号：FE-001\n- 标题：[mock:appendjournal]\n"
+                ),
+            ),
+            line(json!({ "jsonrpc": "2.0", "id": 1000, "result": allow() })),
+            line(json!({ "jsonrpc": "2.0", "id": 1001, "result": {} })),
+            line(
+                json!({ "jsonrpc": "2.0", "id": 1002, "result": { "content": "# 工作日志\n\n- a\n" } }),
+            ),
+            line(json!({ "jsonrpc": "2.0", "id": 1003, "result": allow() })),
+            line(json!({ "jsonrpc": "2.0", "id": 1004, "result": {} })),
+        ];
+        let (replies, result) = exchange(&input.concat());
+        result.unwrap();
+        assert_eq!(replies.last().unwrap()["result"]["stopReason"], "end_turn");
+        let read = of_method(&replies, "fs/read_text_file");
+        assert_eq!(read.last().unwrap()["params"]["path"], journal);
+        let call = tool_call(&replies, "mock-appendjournal");
+        assert_eq!(call["kind"], "edit");
+        assert_eq!(call["content"][0]["oldText"], "# 工作日志\n\n- a\n");
+        let write = of_method(&replies, "fs/write_text_file")[1];
+        assert_eq!(write["params"]["path"], journal);
+        let content = write["params"]["content"].as_str().unwrap();
+        let added = content.strip_prefix("# 工作日志\n\n- a\n").unwrap();
+        assert!(
+            added.starts_with("- ") && added.ends_with(" · FE-001 · Mock 进展：已写入过程文件\n"),
+            "{added}"
+        );
+        assert_eq!(added.lines().count(), 1);
+        assert!(all_text(&replies).contains("[appendjournal:ok]"));
     }
 
     #[test]

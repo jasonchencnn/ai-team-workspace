@@ -5,7 +5,11 @@
 //!   - 本岗位文件夹（工作空间中的 `Teamspace/<岗位>/`）；
 //!   - 任务引用的文件（引用的是目录时含其中的文件）；
 //!   - Git worktree 执行时，worktree 内的任何位置（`.git` 除外）；
-//!   - 例外：岗位文件夹中的 `岗位说明.md` 与 `工作日志.md` 由 Teamspace 维护，不自动允许；
+//!   - 例外：岗位文件夹中的 `岗位说明.md` 由 Teamspace 维护，不自动允许；
+//!   - 岗位文件夹中的 `工作日志.md`（D14）：只自动允许纯追加——新内容以磁盘上的现有内容为前缀。
+//!     权限请求阶段按 ACP diff 内容判断（[`journal_edit_appends`]），判断不了就转交 Human；
+//!     `fs/write_text_file` 阶段由 driver 在写入锁内重新读取再判断（见
+//!     [`crate::role_folder::write_journal_from_agent`]），这一步不因权限请求曾被允许而跳过；
 //! - 其他（执行命令、删除、移动、联网、切换模式、未声明类型、编辑范围外的路径）→ 转交 Human。
 //!
 //! 路径一律先规范化再比较：相对路径按执行目录解析；含 `..` 的路径直接视为越界；已存在的部分解析
@@ -25,6 +29,24 @@ pub struct Scope {
     role_folders: Vec<PathBuf>,
     refs: Vec<PathBuf>,
     protected: Vec<PathBuf>,
+    journals: Vec<PathBuf>,
+}
+
+/// 写入目标的分类（[`Scope::write_target`]）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WriteTarget {
+    /// 自动批准范围内的普通文件。
+    Free(PathBuf),
+    /// 岗位文件夹中的工作日志：只自动允许纯追加。
+    Journal(PathBuf),
+}
+
+/// 编辑类工具调用附带的 ACP diff 内容（`{type: "diff", path, oldText, newText}`）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EditPreview {
+    pub path: String,
+    pub old_text: Option<String>,
+    pub new_text: String,
 }
 
 /// 规则判断结果，附中文原因。
@@ -48,7 +70,11 @@ impl Scope {
         let role_folders: Vec<PathBuf> = role_folders.iter().filter_map(canon).collect();
         let protected = role_folders
             .iter()
-            .flat_map(|dir| [dir.join(BRIEF_FILE), dir.join(JOURNAL_FILE)])
+            .map(|dir| dir.join(BRIEF_FILE))
+            .collect();
+        let journals = role_folders
+            .iter()
+            .map(|dir| dir.join(JOURNAL_FILE))
             .collect();
         Self {
             refs: refs.iter().filter_map(canon).collect(),
@@ -56,6 +82,7 @@ impl Scope {
             isolation,
             role_folders,
             protected,
+            journals,
         }
     }
 
@@ -76,9 +103,26 @@ impl Scope {
         }
     }
 
-    /// 可否自动写入（见模块说明）。返回规范化后的路径或中文原因。
+    /// 可否不看内容直接自动写入（见模块说明）。工作日志只允许追加，因此这里也返回 `Err`；
+    /// 需要区分工作日志时用 [`Scope::write_target`]。返回规范化后的路径或中文原因。
     pub fn can_write(&self, path: &str) -> Result<PathBuf, String> {
+        match self.write_target(path)? {
+            WriteTarget::Free(real) => Ok(real),
+            WriteTarget::Journal(_) => Err(journal_reason(path)),
+        }
+    }
+
+    /// 写入目标分类：工作日志、范围内的普通文件，或需要确认（`Err` 附中文原因）。
+    pub fn write_target(&self, path: &str) -> Result<WriteTarget, String> {
         let real = resolve(Path::new(path), &self.exec_dir)?;
+        if self.journals.contains(&real) {
+            return Ok(WriteTarget::Journal(real));
+        }
+        let real = self.free_write(real, path)?;
+        Ok(WriteTarget::Free(real))
+    }
+
+    fn free_write(&self, real: PathBuf, path: &str) -> Result<PathBuf, String> {
         if self.protected.contains(&real) {
             return Err(format!(
                 "{} 由 Teamspace 维护，修改需要确认：{path}",
@@ -108,7 +152,18 @@ impl Scope {
     }
 
     /// 对一次工具调用的权限请求做判断。`kind` 为 ACP 工具类型，`paths` 为涉及的路径。
+    /// 不带 diff 内容，因此涉及工作日志的编辑一律转交 Human；见 [`Scope::decide_with`]。
     pub fn decide(&self, kind: Option<&str>, paths: &[String]) -> Verdict {
+        self.decide_with(kind, paths, &[])
+    }
+
+    /// 同 [`Scope::decide`]，`edits` 为工具调用附带的 diff 内容，用来判断对工作日志的编辑是否纯追加。
+    pub fn decide_with(
+        &self,
+        kind: Option<&str>,
+        paths: &[String],
+        edits: &[EditPreview],
+    ) -> Verdict {
         match kind {
             Some("read") => Verdict::Allow("读取文件，自动允许".to_owned()),
             Some("search") => Verdict::Allow("搜索，自动允许".to_owned()),
@@ -116,10 +171,21 @@ impl Scope {
                 if paths.is_empty() {
                     return Verdict::Ask("编辑操作没有给出文件路径，需要确认".to_owned());
                 }
+                let mut journal = false;
                 for path in paths {
-                    if let Err(reason) = self.can_write(path) {
-                        return Verdict::Ask(reason);
+                    match self.write_target(path) {
+                        Ok(WriteTarget::Free(_)) => {}
+                        Ok(WriteTarget::Journal(real)) => {
+                            if !self.journal_edits_append(&real, edits) {
+                                return Verdict::Ask(journal_reason(path));
+                            }
+                            journal = true;
+                        }
+                        Err(reason) => return Verdict::Ask(reason),
                     }
+                }
+                if journal && paths.len() == 1 {
+                    return Verdict::Allow("在工作日志末尾追加进展，自动允许".to_owned());
                 }
                 Verdict::Allow(
                     match self.isolation {
@@ -137,6 +203,41 @@ impl Scope {
             Some(other) => Verdict::Ask(format!("「{other}」类操作需要确认")),
             None => Verdict::Ask("Agent 没有说明操作类型，需要确认".to_owned()),
         }
+    }
+
+    /// 对工作日志 `real` 的所有 diff 是否都是纯追加；没有对应 diff（无法判断）时为 `false`。
+    fn journal_edits_append(&self, real: &Path, edits: &[EditPreview]) -> bool {
+        let mine: Vec<&EditPreview> = edits
+            .iter()
+            .filter(|e| resolve(Path::new(&e.path), &self.exec_dir).as_deref() == Ok(real))
+            .collect();
+        if mine.is_empty() {
+            return false;
+        }
+        let Ok(disk) = std::fs::read_to_string(real) else {
+            return false;
+        };
+        mine.iter()
+            .all(|e| journal_edit_appends(&disk, e.old_text.as_deref(), &e.new_text))
+    }
+}
+
+fn journal_reason(path: &str) -> String {
+    format!("工作日志只允许在末尾追加，修改或删除已有内容需要确认：{path}")
+}
+
+/// 一次 diff（`old` → `new`）作用在工作日志现有内容 `disk` 上是否只是在末尾追加。
+///
+/// - `old` 为空（整文件写入）或等于 `disk`：`new` 须以 `disk` 为前缀；
+/// - `old` 是片段（按片段替换的编辑工具）：`old` 须在 `disk` 中只出现一次且位于末尾，
+///   `new` 须以 `old` 为前缀——替换结果即 `disk` 加上 `new` 多出的部分。
+///
+/// 其他情况（片段不在末尾、出现多次、`new` 改动了片段）都不是纯追加。
+pub fn journal_edit_appends(disk: &str, old: Option<&str>, new: &str) -> bool {
+    match old {
+        None | Some("") => new.starts_with(disk),
+        Some(old) if old == disk => new.starts_with(disk),
+        Some(old) => disk.ends_with(old) && disk.matches(old).count() == 1 && new.starts_with(old),
     }
 }
 
@@ -290,10 +391,11 @@ mod tests {
     fn protected_files_and_parent_components_are_rejected() {
         let e = env();
         let scope = in_place(&e);
-        for name in [BRIEF_FILE, JOURNAL_FILE] {
-            let err = scope.can_write(&s(&e.role.join(name))).unwrap_err();
-            assert!(err.contains("由 Teamspace 维护"), "{err}");
-        }
+        let err = scope.can_write(&s(&e.role.join(BRIEF_FILE))).unwrap_err();
+        assert!(err.contains("由 Teamspace 维护"), "{err}");
+        // 工作日志不能不看内容直接写（只允许追加，见 journal_edits_are_allowed_only_when_appending）。
+        let err = scope.can_write(&s(&e.role.join(JOURNAL_FILE))).unwrap_err();
+        assert!(err.contains("只允许在末尾追加"), "{err}");
         for path in [
             format!("{}/过程文件/../../../etc/x", s(&e.role)),
             "Teamspace/前端/../后端/x.md".to_owned(),
@@ -307,6 +409,136 @@ mod tests {
             ));
         }
         assert!(scope.can_write("").is_err());
+    }
+
+    fn diff(path: &Path, old: Option<&str>, new: &str) -> EditPreview {
+        EditPreview {
+            path: s(path),
+            old_text: old.map(str::to_owned),
+            new_text: new.to_owned(),
+        }
+    }
+
+    #[test]
+    fn journal_edits_are_allowed_only_when_appending() {
+        let e = env();
+        let journal = e.role.join(JOURNAL_FILE);
+        let disk = "# 工作日志\n\n- 2026-10-14 10:00:00 UTC+08:00 · FE-001 · 开始第 1 次执行\n";
+        fs::write(&journal, disk).unwrap();
+        let scope = in_place(&e);
+        assert_eq!(
+            scope.write_target(&s(&journal)),
+            Ok(WriteTarget::Journal(journal.clone()))
+        );
+        assert_eq!(
+            scope.write_target("Teamspace/前端/工作日志.md"),
+            Ok(WriteTarget::Journal(journal.clone()))
+        );
+        let paths = [s(&journal)];
+        let appended = format!("{disk}- 2026-10-14 10:01:00 UTC+08:00 · FE-001 · 进展\n");
+        let last = "- 2026-10-14 10:00:00 UTC+08:00 · FE-001 · 开始第 1 次执行\n";
+
+        // 纯追加：整文件（oldText 为空或等于现有内容）与末尾片段替换两种写法。
+        for edit in [
+            diff(&journal, None, &appended),
+            diff(&journal, Some(""), &appended),
+            diff(&journal, Some(disk), &appended),
+            diff(&journal, Some(last), &format!("{last}- 新进展\n")),
+        ] {
+            let verdict = scope.decide_with(Some("edit"), &paths, std::slice::from_ref(&edit));
+            let Verdict::Allow(reason) = verdict else {
+                panic!("{edit:?} should be allowed: {verdict:?}");
+            };
+            assert!(reason.contains("追加"), "{reason}");
+        }
+        // 相对路径的 diff 同样识别。
+        assert!(matches!(
+            scope.decide_with(
+                Some("edit"),
+                &["Teamspace/前端/工作日志.md".to_owned()],
+                &[EditPreview {
+                    path: "Teamspace/前端/工作日志.md".into(),
+                    old_text: None,
+                    new_text: appended.clone(),
+                }]
+            ),
+            Verdict::Allow(_)
+        ));
+
+        // 覆盖、截断、删改、片段不在末尾、片段被改动、没有 diff：转交 Human。
+        let ask = |edits: &[EditPreview]| {
+            let Verdict::Ask(reason) = scope.decide_with(Some("edit"), &paths, edits) else {
+                panic!("{edits:?} should need confirmation");
+            };
+            assert!(reason.contains("只允许在末尾追加"), "{reason}");
+        };
+        ask(&[diff(&journal, None, "# 新日志\n")]);
+        ask(&[diff(&journal, Some(disk), "# 工作日志\n")]);
+        ask(&[diff(
+            &journal,
+            Some(disk),
+            &appended.replace("开始", "结束"),
+        )]);
+        ask(&[diff(&journal, Some("# 工作日志"), "# 工作日志（改）")]);
+        ask(&[diff(
+            &journal,
+            Some("# 工作日志\n"),
+            "# 工作日志\n- 插在中间\n",
+        )]);
+        ask(&[diff(&journal, Some(last), "- 改写最后一行\n")]);
+        ask(&[]);
+        ask(&[diff(&e.role.join("过程文件/x.md"), None, &appended)]);
+        // 不带 diff 的 decide 一律转交。
+        assert!(matches!(
+            scope.decide(Some("edit"), &paths),
+            Verdict::Ask(_)
+        ));
+        // 同一调用里有一个 diff 不是追加就转交。
+        ask(&[
+            diff(&journal, None, &appended),
+            diff(&journal, None, "# 新日志\n"),
+        ]);
+
+        // 岗位说明仍受保护，即使 diff 看起来是追加。
+        let brief = e.role.join(BRIEF_FILE);
+        let Verdict::Ask(reason) = scope.decide_with(
+            Some("edit"),
+            &[s(&brief)],
+            &[diff(&brief, Some("x"), "x追加")],
+        ) else {
+            panic!("brief must stay protected");
+        };
+        assert!(reason.contains("由 Teamspace 维护"), "{reason}");
+
+        // 其他岗位的工作日志不在本岗位写入范围内。
+        let other = e.ws.join("Teamspace/后端").join(JOURNAL_FILE);
+        fs::create_dir_all(other.parent().unwrap()).unwrap();
+        fs::write(&other, disk).unwrap();
+        let Verdict::Ask(reason) = scope.decide_with(
+            Some("edit"),
+            &[s(&other)],
+            &[diff(&other, Some(disk), &appended)],
+        ) else {
+            panic!("other role's journal is out of scope");
+        };
+        assert!(reason.contains("之外"), "{reason}");
+        assert!(scope.write_target(&s(&other)).is_err());
+
+        // 不存在的工作日志：无法判断，转交。
+        fs::remove_file(&journal).unwrap();
+        ask(&[diff(&journal, None, "- x\n")]);
+    }
+
+    #[test]
+    fn journal_edit_appends_cases() {
+        assert!(journal_edit_appends("a\n", None, "a\nb\n"));
+        assert!(journal_edit_appends("a\n", Some("a\n"), "a\n"));
+        assert!(journal_edit_appends("x\nb\n", Some("b\n"), "b\nc\n"));
+        // 片段出现多次（replace_all 会改动前面的行）。
+        assert!(!journal_edit_appends("b\nb\n", Some("b\n"), "b\nc\n"));
+        assert!(!journal_edit_appends("a\nb\n", Some("a\n"), "a\nc\n"));
+        assert!(!journal_edit_appends("a\n", None, "b\n"));
+        assert!(!journal_edit_appends("a\n", None, ""));
     }
 
     #[test]
