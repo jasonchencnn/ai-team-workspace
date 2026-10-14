@@ -43,7 +43,12 @@ fn presets_fill_default_command_and_args() {
         (AcpPreset::Codex, "codex-acp", vec![]),
         (AcpPreset::MinimaxCode, "mcode", vec!["acp"]),
         (AcpPreset::GeminiCli, "gemini", vec!["--experimental-acp"]),
-        (AcpPreset::CodeBuddy, "codebuddy", vec!["--acp"]),
+        (
+            AcpPreset::CodeBuddy,
+            "codebuddy",
+            // S-1a：启动时就指定向客户端请求权限。
+            vec!["--acp", "--permission-mode", "default"],
+        ),
         (AcpPreset::QoderCli, "qodercli", vec!["--acp"]),
         (AcpPreset::GrokBuild, "grok", vec!["agent", "stdio"]),
         (AcpPreset::QwenCode, "qwen", vec!["--experimental-acp"]),
@@ -60,6 +65,21 @@ fn presets_fill_default_command_and_args() {
         assert_eq!(h.args, args);
         assert_eq!(h.env_profile, None);
         assert_eq!(h.handshake, Handshake::unknown());
+    }
+}
+
+/// S-1a：任何预设的默认启动参数都不能带「跳过确认」类选项；有权限参数的预设只能指定 default。
+#[test]
+fn preset_default_args_never_skip_confirmation() {
+    for preset in AcpPreset::ALL {
+        let spec = crate::service::harness::preset_spec(preset);
+        let joined = spec.args.join(" ").to_lowercase();
+        for banned in ["yolo", "bypass", "dangerous", "auto-approve", "full-auto"] {
+            assert!(!joined.contains(banned), "{preset:?}: {joined}");
+        }
+        if let Some(at) = spec.args.iter().position(|a| a.contains("permission-mode")) {
+            assert_eq!(spec.args.get(at + 1), Some(&"default"), "{preset:?}");
+        }
     }
 }
 
@@ -319,7 +339,10 @@ fn presets_report_local_detection_and_hints() {
     let codebuddy = get(AcpPreset::CodeBuddy);
     assert_eq!(codebuddy.label, "CodeBuddy（腾讯）");
     assert_eq!(codebuddy.default_command.as_deref(), Some("codebuddy"));
-    assert_eq!(codebuddy.default_args, ["--acp"]);
+    assert_eq!(
+        codebuddy.default_args,
+        ["--acp", "--permission-mode", "default"]
+    );
     assert!(codebuddy.command_found);
     assert_eq!(codebuddy.requires_cli, None);
     assert_eq!(codebuddy.hint, None);
