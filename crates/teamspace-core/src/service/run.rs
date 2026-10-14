@@ -562,3 +562,33 @@ pub(crate) fn status_update(
         &RunUpdateBody::Status { status, detail },
     )
 }
+
+#[cfg(test)]
+mod tests {
+    use std::path::Path;
+
+    use super::*;
+    use crate::service::task::{self, FileCheck};
+    use crate::tests::plain_fixture;
+
+    /// RUN-PRE-004 B：负责岗位记录不存在（数据损坏）时，前置检查报告「未指定负责岗位」，而不是崩溃。
+    #[test]
+    fn start_problems_reports_a_missing_owner_role() {
+        let f = plain_fixture();
+        let team = f.team("T");
+        let owner = f.role(&team.id, "role_frontend");
+        let detail = f.task(&team.id, &owner, "没有负责人的任务");
+        f.raw_sql(&format!(
+            "PRAGMA foreign_keys = OFF; UPDATE tasks SET owner_role_id = 'role-gone' WHERE id = '{}'",
+            detail.task.id
+        ));
+        let conn = Connection::open(f.db_path()).unwrap();
+        let task = task::get(&conn, &detail.task.id).unwrap();
+        let files = FileCheck::scan(Path::new(&f.ws), &task.file_refs);
+        let problems = start_problems(&conn, &task, &files).unwrap();
+        assert!(
+            problems.iter().any(|p| p == "未指定负责岗位"),
+            "{problems:?}"
+        );
+    }
+}
