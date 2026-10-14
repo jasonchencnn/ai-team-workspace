@@ -203,8 +203,15 @@ impl Scope {
                         Err(reason) => return Verdict::Ask(reason),
                     }
                 }
-                if journal && paths.len() == 1 {
-                    return Verdict::Allow("在工作日志末尾追加进展，自动允许".to_owned());
+                if journal {
+                    return Verdict::Allow(
+                        if paths.len() == 1 {
+                            "在工作日志末尾追加进展，自动允许"
+                        } else {
+                            "在工作日志末尾追加进展并编辑范围内的文件，自动允许"
+                        }
+                        .to_owned(),
+                    );
                 }
                 Verdict::Allow(
                     match self.isolation {
@@ -507,6 +514,15 @@ mod tests {
         ask(&[diff(&journal, Some(last), "- 改写最后一行\n")]);
         ask(&[]);
         ask(&[diff(&e.role.join("过程文件/x.md"), None, &appended)]);
+        // 同一请求里工作日志追加与范围内文件一起编辑：原因写明含追加。
+        let Verdict::Allow(reason) = scope.decide_with(
+            Some("edit"),
+            &[s(&journal), s(&e.role.join("过程文件/笔记.md"))],
+            &[diff(&journal, None, &appended)],
+        ) else {
+            panic!("mixed append should be allowed");
+        };
+        assert!(reason.contains("追加进展并编辑"), "{reason}");
         // 不带 diff 的 decide 一律转交。
         assert!(matches!(
             scope.decide(Some("edit"), &paths),

@@ -99,6 +99,11 @@ ALLOW = [
     {"optionId": "reject", "name": "拒绝", "kind": "reject_once"},
 ]
 REJECT_ONLY = [{"optionId": "reject", "name": "拒绝", "kind": "reject_once"}]
+ALWAYS = [
+    {"optionId": "allow", "name": "允许一次", "kind": "allow_once"},
+    {"optionId": "always", "name": "总是允许", "kind": "allow_always"},
+    {"optionId": "reject", "name": "拒绝", "kind": "reject_once"},
+]
 
 def error_text(reply):
     return reply["error"].get("message", "") if "error" in reply else "none"
@@ -158,6 +163,25 @@ def prompt(mid, params):
         log("perm_outcome=" + json.dumps(r.get("result")))
         w = call("fs/write_text_file", {"sessionId": session, "path": path, "content": "written-by-agent"})
         log("write_error=" + error_text(w))
+        say(session, "结束")
+        return finish(mid, "end_turn")
+    if MODE == "editgrant":
+        path, extra = ARGS["path"], ARGS["extra"]
+        opts = ALWAYS if ARGS.get("option") == "always" else ALLOW
+        r = call("session/request_permission", {
+            "sessionId": session,
+            "toolCall": {"toolCallId": "e1", "title": "编辑", "kind": "edit", "status": "pending",
+                         "locations": [{"path": path}, {"path": extra}],
+                         "content": [{"type": "diff", "path": path, "oldText": None, "newText": "x"}]},
+            "options": opts,
+        })
+        log("perm_outcome=" + json.dumps(r.get("result")))
+        for label, target in (("w1", path), ("w2", path), ("wx", extra)):
+            w = call("fs/write_text_file", {"sessionId": session, "path": target, "content": "written-" + label + "\n"})
+            log(label + "=" + error_text(w))
+        note(session, {"sessionUpdate": "tool_call_update", "toolCallId": "e1", "status": "completed"})
+        w = call("fs/write_text_file", {"sessionId": session, "path": path, "content": "written-w3\n"})
+        log("w3=" + error_text(w))
         say(session, "结束")
         return finish(mid, "end_turn")
     if MODE == "write":
@@ -1411,6 +1435,91 @@ fn k_perm_004_human_allowed_execute_does_not_grant_write() {
         "允许执行命令不应让路径可写: {log:?}"
     );
     assert!(!target.exists(), "文件不应被创建");
+}
+
+/// 交叉审查 06a #1：运行一次 `editgrant`，Human 选 `option`（allow / always），返回假 Agent 的日志。
+fn editgrant(e: &Env, path: &Path, extra: &Path, choose: &str) -> Vec<String> {
+    let log = e.path(&format!("agent-{choose}.log"));
+    e.fake(
+        &format!("editgrant-{choose}"),
+        &[
+            "mode=editgrant".into(),
+            format!("path={}", path.display()),
+            format!("extra={}", extra.display()),
+            format!(
+                "option={}",
+                if choose == "always" { "always" } else { "once" }
+            ),
+            format!("log={}", log.display()),
+        ],
+    );
+    let task = e.task(&format!("授权粒度 {choose}"));
+    let run = e.ts.start_run(&task.id).unwrap();
+    let waiting = e.wait(&run.id, "waiting_permission", |r| {
+        r.status == RunStatus::WaitingPermission
+    });
+    let request = waiting.pending_permission.unwrap();
+    e.ts.respond_permission(RespondPermissionInput {
+        run_id: run.id.clone(),
+        request_id: request.request_id,
+        option_id: choose.into(),
+    })
+    .unwrap();
+    let run = e.wait_end(&run.id);
+    assert_eq!(run.status, RunStatus::Succeeded, "{run:#?}");
+    log_lines(&log)
+}
+
+fn wrote(log: &[String], label: &str) -> bool {
+    let line = log
+        .iter()
+        .find(|l| l.starts_with(&format!("{label}=")))
+        .unwrap_or_else(|| panic!("缺少 {label}: {log:?}"));
+    line == &format!("{label}=none")
+}
+
+/// 06a #1：「允许一次」只放行一次写入，只针对 diff 的目标；「本次执行内总是允许」持续有效。
+#[test]
+fn human_allow_once_grants_a_single_write_and_always_persists() {
+    let e = env(Kind::Plain);
+    let target = e.ws.join("out.md");
+    let extra = e.ws.join("bundled.md");
+
+    let log = editgrant(&e, &target, &extra, "allow");
+    assert!(wrote(&log, "w1"), "{log:?}");
+    assert!(!wrote(&log, "w2"), "允许一次不应放行第二次写入: {log:?}");
+    assert!(
+        !wrote(&log, "wx"),
+        "捆绑在 locations 里的路径不应获得授权: {log:?}"
+    );
+    assert!(!wrote(&log, "w3"), "{log:?}");
+    assert_eq!(std::fs::read_to_string(&target).unwrap(), "written-w1\n");
+    assert!(!extra.exists());
+
+    let log = editgrant(&e, &target, &extra, "always");
+    assert!(
+        wrote(&log, "w1") && wrote(&log, "w2") && wrote(&log, "w3"),
+        "{log:?}"
+    );
+    assert!(!wrote(&log, "wx"), "{log:?}");
+    assert_eq!(std::fs::read_to_string(&target).unwrap(), "written-w3\n");
+    assert!(!extra.exists());
+}
+
+/// 06a #1：工作日志的非追加改写即使选了「总是允许」也只放行一次。
+#[test]
+fn journal_overwrite_is_allowed_once_even_with_allow_always() {
+    let e = env(Kind::Plain);
+    let journal = e.ws.join("Teamspace/前端/工作日志.md");
+    let extra = e.ws.join("bundled.md");
+    let log = editgrant(&e, &journal, &extra, "always");
+    assert!(wrote(&log, "w1"), "{log:?}");
+    assert!(!wrote(&log, "w2"), "{log:?}");
+    assert!(!wrote(&log, "w3"), "{log:?}");
+    let w2 = log.iter().find(|l| l.starts_with("w2=")).unwrap();
+    assert!(w2.contains("请重新读取工作日志后再追加"), "{w2}");
+    let text = std::fs::read_to_string(&journal).unwrap();
+    assert!(text.starts_with("written-w1\n"), "{text}");
 }
 
 /// K-PERM-007：未知请求 ID、选项不属于请求、多个并发请求依次处理、执行结束后回应。

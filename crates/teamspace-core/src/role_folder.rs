@@ -242,7 +242,7 @@ pub enum AgentJournalWrite {
     Appended(usize),
     /// 不是纯追加，但 Human 已允许：按新内容整体写入。
     Overwritten,
-    /// 不是纯追加（覆盖、删改、截断，或文件不存在），且没有 Human 的允许：未写入。
+    /// 不是纯追加（覆盖、删改、截断），且没有 Human 的允许；或日志文件不存在：未写入。
     NotAppend,
 }
 
@@ -250,7 +250,7 @@ pub enum AgentJournalWrite {
 ///
 /// 在 [`JOURNAL_LOCK`] 内重新读取磁盘内容：`content` 以它为前缀时只追加多出的部分（`O_APPEND`），
 /// 因此不会冲掉 Teamspace 在 Agent 读取之后追加的行——那种情况下 `content` 不再以磁盘内容为前缀，
-/// 判为非追加。非追加的写入仅在 `allow_overwrite`（Human 已允许）时整体写入。
+/// 判为非追加。非追加的写入仅在 `allow_overwrite`（Human 已允许）且文件存在时整体写入。
 pub fn write_journal_from_agent(
     path: &Path,
     content: &str,
@@ -268,7 +268,8 @@ pub fn write_journal_from_agent(
         }
         return Ok(AgentJournalWrite::Appended(suffix.len()));
     }
-    if allow_overwrite {
+    // 日志文件不存在时不由 Agent 重建（即使 Human 允许过改写），由 Teamspace 同步时创建。
+    if allow_overwrite && current.is_some() {
         fs::write(path, content)?;
         return Ok(AgentJournalWrite::Overwritten);
     }
@@ -743,6 +744,12 @@ mod tests {
         let missing = dir.path().join("其他.md");
         assert_eq!(
             write_journal_from_agent(&missing, "- x\n", false).unwrap(),
+            AgentJournalWrite::NotAppend
+        );
+        assert!(!missing.exists());
+        // 即使 Human 允许过改写，也不重建不存在的日志文件。
+        assert_eq!(
+            write_journal_from_agent(&missing, "- x\n", true).unwrap(),
             AgentJournalWrite::NotAppend
         );
         assert!(!missing.exists());

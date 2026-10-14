@@ -25,6 +25,7 @@ mod fencing_tests;
 
 pub mod brief;
 pub mod env_profile;
+mod grants;
 pub mod policy;
 mod session_mode;
 pub mod worktree;
@@ -468,10 +469,10 @@ struct Driver {
     pending: Vec<PendingPermission>,
     /// 经 `fs/write_text_file` 写入的文件（规范化路径）与改动类型。
     writes: BTreeMap<PathBuf, FileChangeKind>,
-    /// Human 明确允许的编辑（`edit`）请求涉及的路径（规范化），之后对同一路径的 `fs/write_text_file`
-    /// 据此放行（精确匹配）。规则自动允许的请求、Human 允许的其他类型请求（读取、搜索、执行命令等）
-    /// 都不会记入这里（Q-01）。
-    granted: Vec<PathBuf>,
+    /// Human 明确允许的编辑（`edit`）请求的目标路径（见 [`grants`]）：允许一次只放行一次写入，
+    /// 本次执行内总是允许才持续有效。规则自动允许的请求、Human 允许的其他类型请求（读取、搜索、
+    /// 执行命令等）都不会记入这里（Q-01）。
+    granted: grants::Grants,
     tool_call_count: u32,
 }
 
@@ -502,7 +503,7 @@ impl Driver {
             plan_id: None,
             pending: Vec::new(),
             writes: BTreeMap::new(),
-            granted: Vec::new(),
+            granted: grants::Grants::default(),
         }
     }
 
@@ -771,6 +772,22 @@ impl Driver {
             Mode::Start => self.brief_refs(&ctx, &exec_dir),
             Mode::Resume => Vec::new(),
         };
+        // 不可用的引用（不存在、越出工作空间）不附上内容，在执行记录里留一条说明（06a #2）。
+        for r in refs.iter().filter(|r| r.unavailable.is_some()) {
+            let detail = format!(
+                "引用文件 {} 未附上：{}",
+                r.path,
+                r.unavailable.as_deref().unwrap_or_default()
+            );
+            let status = self.run.status;
+            self.insert(
+                None,
+                &RunUpdateBody::Status {
+                    status,
+                    detail: Some(detail),
+                },
+            );
+        }
         let blocks = brief::prompt_blocks(
             &text,
             &refs,
@@ -803,14 +820,16 @@ impl Driver {
             .iter()
             .map(|r| {
                 let in_exec = exec_dir.join(&r.path);
+                let absolute = if in_exec.exists() {
+                    in_exec
+                } else {
+                    ctx.workspace.join(&r.path)
+                };
                 brief::BriefRef {
                     path: r.path.clone(),
                     anchor: r.anchor.clone(),
-                    absolute: if in_exec.exists() {
-                        in_exec
-                    } else {
-                        ctx.workspace.join(&r.path)
-                    },
+                    unavailable: brief::ref_problem(&absolute, &[exec_dir, &ctx.workspace]),
+                    absolute,
                 }
             })
             .collect()
@@ -1309,6 +1328,7 @@ impl Driver {
         if let Some(status) = str_field("status") {
             state.status = Some(status);
         }
+        let finished = matches!(state.status.as_deref(), Some("completed" | "failed"));
         if let Some(paths) = paths
             && !paths.is_empty()
         {
@@ -1332,6 +1352,10 @@ impl Driver {
                 .unwrap_or_else(|| "工具调用".to_owned());
         }
         let body = state.body(&id);
+        if finished {
+            // 工具调用结束：它未用掉的「允许一次」失效。
+            self.granted.expire_call(&id);
+        }
         if existed && !state.update_id.is_empty() {
             let update_id = state.update_id.clone();
             self.replace(&update_id, &body);
@@ -1495,13 +1519,24 @@ impl Driver {
         });
     }
 
-    fn grant(&mut self, paths: &[String]) {
+    /// 记录 Human 对编辑请求的允许。目标路径以这次编辑的 diff 为准；没有 diff 时逐个收下请求里的路径。
+    fn grant(&mut self, prompt: &PermissionPrompt, always: bool) {
         let base = self.scope().exec_dir().to_path_buf();
-        for path in paths {
-            if let Ok(real) = policy::resolve(Path::new(path), &base) {
-                self.granted.push(real);
-            }
-        }
+        let edits: Vec<String> = self
+            .tools
+            .get(&prompt.tool_call_id)
+            .map(|t| t.edits.iter().map(|e| e.path.clone()).collect())
+            .unwrap_or_default();
+        let targets = if edits.is_empty() {
+            &prompt.paths
+        } else {
+            &edits
+        };
+        let real: Vec<PathBuf> = targets
+            .iter()
+            .filter_map(|path| policy::resolve(Path::new(path), &base).ok())
+            .collect();
+        self.granted.add(&prompt.tool_call_id, real, always);
     }
 
     fn on_human_decision(&mut self, request_id: &str, option_id: &str) -> Result<()> {
@@ -1520,8 +1555,7 @@ impl Driver {
         let p = self.pending.remove(index);
         // 只有 Human 对编辑请求本身的允许才放开写入；允许执行命令、读取等不让路径变成可写（Q-01/N-02）。
         if option.kind.starts_with("allow") && p.prompt.tool_kind.as_deref() == Some("edit") {
-            let paths = p.prompt.paths.clone();
-            self.grant(&paths);
+            self.grant(&p.prompt, option.kind == "allow_always");
         }
         let _ = self.conn().respond(
             &p.rpc_id,
@@ -1595,10 +1629,11 @@ impl Driver {
             Ok(WriteTarget::Journal(real)) => self.write_journal(real, &path, content),
             Ok(WriteTarget::Free(real)) => self.write_plain(real, content, "在自动批准范围内"),
             Err(reason) => match policy::resolve(Path::new(&path), &base) {
-                Ok(real) if self.granted.contains(&real) => {
-                    self.write_plain(real, content, "Human 已允许对应的权限请求")
-                }
-                _ => Err(reason),
+                Ok(real) => match self.granted.take(&real) {
+                    Some(used) => self.write_plain(real, content, used.reason()),
+                    None => Err(reason),
+                },
+                Err(_) => Err(reason),
             },
         };
         let body = match &outcome {
@@ -1647,26 +1682,27 @@ impl Driver {
     }
 
     /// 写本岗位工作日志（D14）：每次都在写入锁内重新读取并判断是否纯追加，纯追加只追加多出的部分；
-    /// 非追加写入只在 Human 明确允许过对该路径的编辑（`granted`）时整体写入。
+    /// 非追加写入只在 Human 允许过对该路径的编辑时整体写入，且每次允许只放行一次改写。
     fn write_journal(
         &mut self,
         real: PathBuf,
         path: &str,
         content: &str,
     ) -> std::result::Result<String, String> {
-        let by_human = self.granted.contains(&real);
+        let by_human = self.granted.has(&real);
         match role_folder::write_journal_from_agent(&real, content, by_human) {
             // 追加进展不算任务产出，不记入改动文件。
             Ok(role_folder::AgentJournalWrite::Appended(_)) => {
                 Ok("在工作日志末尾追加，自动允许".to_owned())
             }
             Ok(role_folder::AgentJournalWrite::Overwritten) => {
+                self.granted.take_once(&real);
                 self.writes.entry(real).or_insert(FileChangeKind::Modified);
-                Ok("Human 已允许对应的权限请求".to_owned())
+                Ok(grants::GrantUse::Once.reason().to_owned())
             }
             Ok(role_folder::AgentJournalWrite::NotAppend) => Err(format!(
                 "工作日志只允许在末尾追加（新内容须以文件现有内容开头），\
-                 修改或删除已有内容需要确认：{path}"
+                 修改或删除已有内容需要确认；请重新读取工作日志后再追加：{path}"
             )),
             Err(err) => Err(format!("写入失败：{err}")),
         }

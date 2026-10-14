@@ -305,45 +305,76 @@ pub(crate) fn insert(conn: &Connection, new: NewRun<'_>) -> Result<Run> {
     get(conn, &id)
 }
 
+/// 记录执行目录（worktree 建立之后）。只对仍在活动中的执行生效（fencing），返回是否生效。
 pub(crate) fn set_exec(
     conn: &Connection,
     id: &str,
     exec_dir: &str,
     branch: Option<&str>,
     base_commit: Option<&str>,
-) -> Result<()> {
-    conn.execute(
-        "UPDATE runs SET exec_dir = ?2, branch = ?3, base_commit = ?4 WHERE id = ?1",
+) -> Result<bool> {
+    let changed = conn.execute(
+        &format!(
+            "UPDATE runs SET exec_dir = ?2, branch = ?3, base_commit = ?4
+             WHERE id = ?1 AND status IN {ACTIVE_STATUSES}"
+        ),
         params![id, exec_dir, branch, base_commit],
     )?;
-    Ok(())
+    fenced(conn, changed, id, "记录执行目录")
 }
 
-pub(crate) fn set_capabilities(conn: &Connection, id: &str, caps: &AcpCapabilities) -> Result<()> {
-    conn.execute(
-        "UPDATE runs SET capabilities = ?2 WHERE id = ?1",
+/// 记录 Agent 能力（握手之后）。只对仍在活动中的执行生效（fencing），返回是否生效。
+pub(crate) fn set_capabilities(
+    conn: &Connection,
+    id: &str,
+    caps: &AcpCapabilities,
+) -> Result<bool> {
+    let changed = conn.execute(
+        &format!("UPDATE runs SET capabilities = ?2 WHERE id = ?1 AND status IN {ACTIVE_STATUSES}"),
         params![id, serde_json::to_string(caps)?],
     )?;
-    Ok(())
+    fenced(conn, changed, id, "记录 Agent 能力")
 }
 
-pub(crate) fn set_session(conn: &Connection, id: &str, session_id: &str) -> Result<()> {
-    conn.execute(
-        "UPDATE runs SET session_id = ?2 WHERE id = ?1",
+/// 记录会话 ID（`session/new` 之后）。只对仍在活动中的执行生效：旧 driver 迟到的会话 ID 不会覆盖
+/// 续接后新会话的 ID（fencing），返回是否生效。
+pub(crate) fn set_session(conn: &Connection, id: &str, session_id: &str) -> Result<bool> {
+    let changed = conn.execute(
+        &format!("UPDATE runs SET session_id = ?2 WHERE id = ?1 AND status IN {ACTIVE_STATUSES}"),
         params![id, session_id],
     )?;
-    Ok(())
+    fenced(conn, changed, id, "记录会话")
 }
 
 /// 活动状态的 SQL 条件（fencing，Q-03）：执行结束后迟到的写入因此不生效。
 const ACTIVE_STATUSES: &str = "('queued', 'running', 'waiting_permission')";
 
-/// 条件更新影响 0 行时记一条日志（执行已不在预期状态，迟到的写入被忽略）。
-fn fenced(changed: usize, id: &str, what: &str) -> bool {
-    if changed == 0 {
-        eprintln!("teamspace run {id}: {what} 被忽略：执行已不在预期状态");
+/// 条件更新影响 0 行时（执行已不在预期状态，迟到的写入被忽略）记日志，并在执行记录里留一条状态说明，
+/// 以便在界面上看到。返回是否生效。
+fn fenced(conn: &Connection, changed: usize, id: &str, what: &str) -> Result<bool> {
+    if changed > 0 {
+        return Ok(true);
     }
-    changed > 0
+    eprintln!("teamspace run {id}: {what} 被忽略：执行已不在预期状态");
+    let current: Option<RunStatus> = conn
+        .query_row(
+            "SELECT status FROM runs WHERE id = ?1",
+            params![id],
+            |row| enum_col(row, 0),
+        )
+        .ok();
+    if let Some(status) = current {
+        status_update(
+            conn,
+            id,
+            status,
+            Some(format!(
+                "迟到的「{what}」已忽略：执行已是「{}」",
+                status.label()
+            )),
+        )?;
+    }
+    Ok(false)
 }
 
 /// 活动状态之间的切换（queued / running / waiting_permission）与待确认的权限请求。
@@ -364,7 +395,7 @@ pub(crate) fn set_active_status(
         ),
         params![id, enum_str(status), pending, tool_call_count],
     )?;
-    Ok(fenced(changed, id, "活动状态切换"))
+    fenced(conn, changed, id, "活动状态切换")
 }
 
 /// 执行结束时写入的内容。
@@ -435,7 +466,7 @@ fn end_from(
             ending.taken_over,
         ],
     )?;
-    Ok(fenced(changed, id, what))
+    fenced(conn, changed, id, what)
 }
 
 /// 续接：interrupted → queued，清除结束信息。只对 interrupted 生效，返回是否生效。
@@ -445,7 +476,7 @@ pub(crate) fn reopen(conn: &Connection, id: &str) -> Result<bool> {
                          stop_reason = NULL WHERE id = ?1 AND status = 'interrupted'",
         params![id],
     )?;
-    Ok(fenced(changed, id, "续接"))
+    fenced(conn, changed, id, "续接")
 }
 
 /// 可以由 Human 接管的已结束执行：已中断的，或已失败的（Figma 94-1001 状态区 B 的「人工接管」）。
@@ -457,7 +488,27 @@ pub(crate) fn can_take_over(run: &Run) -> bool {
 /// 继续处理；之后可重新执行或直接提交验收。活动与工作日志沿用既有的接管文案。
 ///
 /// 活动执行由引擎在收到停止请求时走同一条路径（见 [`end`] 的 `taken_over`），本函数只处理已经结束的。
-pub(crate) fn takeover(conn: &Connection, run: &Run) -> Result<()> {
+pub(crate) fn takeover(conn: &Connection, run_id: &str) -> Result<()> {
+    // 在同一个写事务里读取，避免用事务外的陈旧快照做判断。
+    let run = &get(conn, run_id)?;
+    if !can_take_over(run) {
+        return Err(Error::conflict(format!(
+            "执行已结束（{}），不能接管",
+            run.status.label()
+        )));
+    }
+    // 任务须仍停在这次执行留下的状态：失败 → 受阻，中断 → 执行中；已被改动（如提交验收）时不拉回。
+    let task_status = task::get(conn, &run.task_id)?.status;
+    let expected = match run.status {
+        RunStatus::Failed => TaskStatus::Blocked,
+        _ => TaskStatus::Doing,
+    };
+    if task_status != expected {
+        return Err(Error::conflict(format!(
+            "任务已是「{}」，不能接管这次执行",
+            task_status.label()
+        )));
+    }
     let failure = "人工接管".to_owned();
     // 只从已中断或已失败的状态结束（fencing）：状态已被别处改变时不覆盖，返回冲突。
     let ended = end_from(

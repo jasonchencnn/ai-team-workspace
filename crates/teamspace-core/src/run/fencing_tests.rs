@@ -280,3 +280,96 @@ fn k_run_015_permission_decision_after_interruption_is_a_conflict() {
     assert!(err.to_string().contains("执行已结束"), "{err}");
     assert_eq!(get_run(&s.core, id).status, RunStatus::Interrupted);
 }
+
+/// 06a #4：`set_exec`、`set_capabilities`、`set_session` 对已结束（含已中断）的执行不生效。
+#[test]
+fn late_exec_capability_and_session_writes_are_fenced() {
+    assert_late_write_is_ignored("set_session()", false, |core, id| {
+        core.write(|tx| store_run::set_session(tx, id, "旧会话"))
+    });
+    assert_late_write_is_ignored("set_exec()", false, |core, id| {
+        core.write(|tx| store_run::set_exec(tx, id, "/elsewhere", Some("b"), Some("c")))
+    });
+    assert_late_write_is_ignored("set_capabilities()", false, |core, id| {
+        core.write(|tx| store_run::set_capabilities(tx, id, &AcpCapabilities::default()))
+    });
+    // 活动执行照常生效。
+    let s = seed(&["running"]);
+    let (id, _) = &s.runs[0];
+    assert!(
+        s.core
+            .write(|tx| store_run::set_session(tx, id, "新会话"))
+            .unwrap()
+    );
+    assert_eq!(get_run(&s.core, id).session_id.as_deref(), Some("新会话"));
+}
+
+/// 06a #9：被忽略的迟到写入在执行记录里留一条状态说明。
+#[test]
+fn ignored_late_writes_leave_a_status_note() {
+    let s = seed(&["interrupted"]);
+    let (id, _) = &s.runs[0];
+    assert!(
+        !s.core
+            .write(|tx| store_run::set_active_status(tx, id, RunStatus::Running, None, 1))
+            .unwrap()
+    );
+    let page =
+        s.f.ts
+            .list_run_updates(crate::model::RunUpdateQuery {
+                run_id: id.clone(),
+                cursor: None,
+                limit: None,
+            })
+            .unwrap();
+    let note = page.updates.iter().find_map(|u| match &u.body {
+        RunUpdateBody::Status { status, detail } => detail
+            .as_deref()
+            .filter(|d| d.contains("迟到的「活动状态切换」已忽略"))
+            .map(|d| (*status, d.to_owned())),
+        _ => None,
+    });
+    let (status, detail) = note.unwrap_or_else(|| panic!("{page:#?}"));
+    assert_eq!(status, RunStatus::Interrupted, "{detail}");
+    assert!(detail.contains("已中断"), "{detail}");
+}
+
+/// 06a #3：接管只在任务仍停在这次执行留下的状态时生效（失败 → 受阻，中断 → 执行中）。
+#[test]
+fn takeover_requires_the_task_to_still_be_where_the_run_left_it() {
+    let s = seed(&["failed", "interrupted"]);
+    let (failed, failed_task) = &s.runs[0];
+    let (interrupted, interrupted_task) = &s.runs[1];
+
+    // 失败的执行，但任务已被改为 REVIEW：不拉回执行中，执行也不改。
+    s.f.raw_sql(&format!(
+        "UPDATE tasks SET status = 'review' WHERE id = '{failed_task}';"
+    ));
+    let before = get_run(&s.core, failed);
+    let err = s.f.ts.takeover_run(failed).unwrap_err();
+    assert_eq!(err.kind(), crate::ErrorKind::Conflict);
+    assert!(err.to_string().contains("任务已是"), "{err}");
+    assert_eq!(get_run(&s.core, failed), before);
+    assert_eq!(task_status(&s.core, failed_task), TaskStatus::Review);
+
+    // 任务仍受阻：接管生效，任务回到执行中。
+    s.f.raw_sql(&format!(
+        "UPDATE tasks SET status = 'blocked', blocked_reason = '执行失败：x' WHERE id = '{failed_task}';"
+    ));
+    assert!(s.f.ts.takeover_run(failed).unwrap().taken_over);
+    assert_eq!(task_status(&s.core, failed_task), TaskStatus::Doing);
+
+    // 中断的执行：任务仍在执行中时可以接管；已受阻时不行。
+    s.f.raw_sql(&format!(
+        "UPDATE tasks SET status = 'blocked', blocked_reason = 'x' WHERE id = '{interrupted_task}';"
+    ));
+    assert_eq!(
+        s.f.ts.takeover_run(interrupted).unwrap_err().kind(),
+        crate::ErrorKind::Conflict
+    );
+    s.f.raw_sql(&format!(
+        "UPDATE tasks SET status = 'doing', blocked_reason = NULL WHERE id = '{interrupted_task}';"
+    ));
+    assert!(s.f.ts.takeover_run(interrupted).unwrap().taken_over);
+    assert_eq!(task_status(&s.core, interrupted_task), TaskStatus::Doing);
+}
