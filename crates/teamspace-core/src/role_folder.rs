@@ -186,17 +186,22 @@ pub struct JournalEntry {
 }
 
 impl JournalEntry {
-    /// 日志文件中的一行：`- 本地时间 · 任务编号 · 描述`（无任务时省略编号）。
-    fn line(&self) -> String {
+    /// 日志里的正文：本地时间 · 任务编号 · 描述（无任务时省略编号）。界面展示用，不含行首的 `- `。
+    pub fn display(&self) -> String {
         let text: String = self
             .text
             .chars()
             .map(|c| if c.is_control() { ' ' } else { c })
             .collect();
         match &self.task_key {
-            Some(key) => format!("- {} · {key} · {}\n", local_time(&self.at), text.trim()),
-            None => format!("- {} · {}\n", local_time(&self.at), text.trim()),
+            Some(key) => format!("{} · {key} · {}", local_time(&self.at), text.trim()),
+            None => format!("{} · {}", local_time(&self.at), text.trim()),
         }
+    }
+
+    /// 日志文件中的一行：`- 本地时间 · 任务编号 · 描述`（无任务时省略编号）。
+    fn line(&self) -> String {
+        format!("- {}\n", self.display())
     }
 }
 

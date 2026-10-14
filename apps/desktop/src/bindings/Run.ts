@@ -5,6 +5,7 @@ import type { FailureKind } from "./FailureKind.js";
 import type { HarnessSnapshot } from "./HarnessSnapshot.js";
 import type { PermissionPrompt } from "./PermissionPrompt.js";
 import type { RunIsolation } from "./RunIsolation.js";
+import type { RunJournal } from "./RunJournal.js";
 import type { RunStatus } from "./RunStatus.js";
 
 /**
@@ -79,4 +80,8 @@ pendingPermission: PermissionPrompt | null,
 /**
  * 当前可否续接（interrupted、已有会话且 Agent 支持 loadSession）。
  */
-canResume: boolean, };
+canResume: boolean, 
+/**
+ * 完成条目写入岗位工作日志的真实结果（成功面板据此显示）。
+ */
+journal: RunJournal, };

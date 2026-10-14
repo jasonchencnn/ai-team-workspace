@@ -1091,25 +1091,28 @@ test("RUN-LOG-005 日志写入失败：执行本身成功，工作台提示无�
   expect(log).toContain(`${task.key} · 开始第 1 次执行`);
 });
 
-// 缺陷 N-01：成功面板无条件写「已写入「岗位」工作日志」，日志写入失败时也一样。
-defect(
-  "RUN-LOG-005 [缺陷 N-01] 日志写入失败时成功面板不得显示「已写入工作日志」",
-  async ({ page }) => {
-    const file = join(plain, "Teamspace", "日志员", "工作日志.md");
-    const task = await plainTask("日志写不进去 面板", { role: "日志员" });
-    chmodSync(file, 0o444);
-    try {
-      await openTask(page, task);
-      await startRunUi(page);
-      const success = page.locator(".run-outcome--success");
-      await expect(success).toBeVisible({ timeout: TIMEOUT });
-      await expect(success).not.toContainText("已写入「日志员」工作日志");
-    } finally {
-      chmodSync(file, 0o644);
-      await invoke("get_role_workbench", { roleId: teamP.roleIds["日志员"] ?? "" });
-    }
-  },
-);
+// G-5（N-01）：日志写入失败时成功面板显示「未能写入工作日志」与原因，不显示「已写入」。
+test("RUN-LOG-005 日志写入失败时成功面板不得显示「已写入工作日志」", async ({ page }) => {
+  const file = join(plain, "Teamspace", "日志员", "工作日志.md");
+  const task = await plainTask("日志写不进去 面板", { role: "日志员" });
+  chmodSync(file, 0o444);
+  try {
+    await openTask(page, task);
+    await startRunUi(page);
+    const success = page.locator(".run-outcome--success");
+    await expect(success).toBeVisible({ timeout: TIMEOUT });
+    await expect(success).not.toContainText("已写入「日志员」工作日志");
+    await expect(success.locator(".run-outcome__journal--problem")).toContainText(
+      "未能写入工作日志",
+    );
+    await expect(success.locator(".run-outcome__journal--problem")).toContainText(
+      "无法写入工作日志",
+    );
+  } finally {
+    chmodSync(file, 0o644);
+    await invoke("get_role_workbench", { roleId: teamP.roleIds["日志员"] ?? "" });
+  }
+});
 
 function workbenchUrl(team: TeamSetup, role: string): string {
   return `/#/teams/${team.teamId}/roles/${team.roleIds[role] ?? ""}/workbench`;

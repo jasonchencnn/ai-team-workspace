@@ -17,7 +17,7 @@ use serde_json::{Value, json};
 use super::event::{self, NewEvent};
 use super::harness;
 use crate::error::{Error, Result};
-use crate::model::{EventKind, Role};
+use crate::model::{EventKind, Role, Run, RunJournal};
 use crate::role_folder::{self, BoundHarness, JournalEntry, RolePlan, SyncOutcome};
 use crate::store::enum_col;
 
@@ -345,6 +345,54 @@ fn journal_text(
 
 /// 执行摘要写入工作日志时最多列出的改动文件数。
 const RUN_FILES_IN_JOURNAL: usize = 10;
+
+/// 某次执行的完成条目在岗位工作日志里的真实状态：已写入时给出日志里真实的那一行，未写入时给出原因。
+///
+/// 判据与 [`apply`] 一致：条目对应的活动序号已被 `roles.journaled_seq` 覆盖才算写入成功。写入失败
+/// （岗位文件夹不可写等）时序号不推进，条目留在待补写队列里，恢复后由下一次同步补上。
+pub(crate) fn run_journal(conn: &Connection, run: &Run) -> Result<RunJournal> {
+    let event: Option<(i64, String, String, String)> = conn
+        .query_row(
+            "SELECT seq, summary, data, created_at FROM events
+             WHERE team_id = ?1 AND kind = 'run_finished' AND json_extract(data, '$.runId') = ?2
+             ORDER BY seq DESC LIMIT 1",
+            params![run.team_id, run.id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )
+        .optional()?;
+    let (journaled_seq, problem): (i64, Option<String>) = conn.query_row(
+        "SELECT journaled_seq, folder_problem FROM roles WHERE id = ?1",
+        params![run.role_id],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )?;
+    let Some((seq, summary, data, at)) = event else {
+        return Ok(RunJournal::default());
+    };
+    let data: Value = serde_json::from_str(&data).unwrap_or(Value::Null);
+    let Some(text) = journal_text(conn, &run.role_id, EventKind::RunFinished, &summary, &data)?
+    else {
+        return Ok(RunJournal::default());
+    };
+    // 与 [`journal_entries`] 一致：摘要以任务编号开头时去掉（行首已经带编号），描述统一脱敏。
+    let text = text
+        .strip_prefix(run.task_key.as_str())
+        .map(str::trim_start)
+        .unwrap_or(&text);
+    let entry = JournalEntry {
+        at,
+        task_key: Some(run.task_key.clone()),
+        text: crate::redact::text(text),
+    };
+    let written = journaled_seq >= seq;
+    Ok(RunJournal {
+        written,
+        line: Some(entry.display()),
+        problem: (!written).then(|| {
+            problem
+                .unwrap_or_else(|| "工作日志尚未写入，岗位文件夹恢复可写后会自动补写。".to_owned())
+        }),
+    })
+}
 
 /// 写回同步结果；问题首次出现或变化时记录一条 `role_folder_error` 活动（同一问题不重复记录）。
 pub(crate) fn apply(conn: &Connection, plans: &[RolePlan], outcomes: &[SyncOutcome]) -> Result<()> {
