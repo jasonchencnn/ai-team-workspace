@@ -743,6 +743,17 @@
   overflow-wrap: anywhere;
 }
 
+.run-outcome__journal--problem {
+  background: var(--color-warning-surface);
+  color: var(--color-warning);
+}
+
+.run-outcome__journal-note {
+  font-size: var(--font-size-caption);
+  line-height: var(--line-height-caption);
+  opacity: 0.8;
+}
+
 .run-outcome__actions {
   display: flex;
   flex-wrap: wrap;

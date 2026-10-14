@@ -157,13 +157,22 @@ function SuccessOutcome({
 
       {changedOpen ? <ChangedFiles run={run} showHint /> : null}
 
-      <div className="run-outcome__journal">
-        <p className="run-outcome__journal-title">已写入「{roleName}」工作日志</p>
-        <p className="run-outcome__journal-line">
-          {formatLocal(run.endedAt ?? run.startedAt)} 完成「{run.taskKey}」第 {String(run.attempt)}{" "}
-          次执行， 总时长 {formatDuration(runElapsedSeconds(run))}。
-        </p>
-      </div>
+      {run.journal.written ? (
+        <div className="run-outcome__journal">
+          <p className="run-outcome__journal-title">已写入「{roleName}」工作日志</p>
+          <p className="run-outcome__journal-line">{run.journal.line}</p>
+        </div>
+      ) : (
+        <div className="run-outcome__journal run-outcome__journal--problem">
+          <p className="run-outcome__journal-title">未能写入工作日志</p>
+          <p className="run-outcome__journal-line">
+            {run.journal.problem ?? "岗位工作日志没有写入这条记录。"}
+          </p>
+          <p className="run-outcome__journal-note">
+            执行本身已经完成；岗位文件夹恢复可写后，这条记录会自动补写。
+          </p>
+        </div>
+      )}
 
       <div className="run-outcome__actions">
         <Button variant="neutral" onClick={onToggleChanged} aria-expanded={changedOpen}>

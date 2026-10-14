@@ -168,6 +168,22 @@ pub struct PermissionPrompt {
     pub requested_at: String,
 }
 
+/// 执行的完成条目写入岗位工作日志的真实结果（界面按它显示，不自己拼装）。
+///
+/// 判据是数据库里的事实：完成条目对应的活动序号已被 `roles.journaled_seq` 覆盖即视为已写入；
+/// 未覆盖说明岗位文件夹不可写等原因导致写入失败（或尚未同步），条目会在恢复后补写。
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct RunJournal {
+    /// 完成条目是否已写入岗位工作日志。
+    pub written: bool,
+    /// 工作日志里真实的那一行（不含行首的 `- `）；没有对应条目时为 `null`。
+    pub line: Option<String>,
+    /// 未写入时的原因（如「无法写入工作日志…」）；已写入时为 `null`。
+    pub problem: Option<String>,
+}
+
 /// 一次执行。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
@@ -217,6 +233,8 @@ pub struct Run {
     pub pending_permission: Option<PermissionPrompt>,
     /// 当前可否续接（interrupted、已有会话且 Agent 支持 loadSession）。
     pub can_resume: bool,
+    /// 完成条目写入岗位工作日志的真实结果（成功面板据此显示）。
+    pub journal: RunJournal,
 }
 
 /// 消息的来源。

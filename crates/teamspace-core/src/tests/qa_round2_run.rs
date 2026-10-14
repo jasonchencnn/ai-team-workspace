@@ -563,6 +563,41 @@ fn k_run_013_open_run_dir_and_takeover_edges() {
     assert_eq!(review.unwrap().task.status, TaskStatus::Review);
 }
 
+/// G-7：已失败的执行也可以人工接管（任务从受阻回到执行中，界面进入「已被接管」画面）。
+#[test]
+fn failed_run_can_be_taken_over() {
+    let f = plain_fixture();
+    let (team, fe, h, _) = setup(&f);
+    let t = f.readyable(&team.id, &fe, "接管失败");
+    insert_run(&f, &t.task, &h, RunRow::new("r-failed", "failed"));
+    f.raw_sql(&format!(
+        "UPDATE runs SET failure = 'Agent 进程退出（退出码 3）', failure_kind = 'agent_exited',
+                         ended_at = '2026-10-13T00:10:00.000Z'
+         WHERE id = 'r-failed';
+         UPDATE tasks SET status = 'blocked', blocked_reason = '执行失败：Agent 进程退出（退出码 3）'
+         WHERE id = '{task}';",
+        task = t.task.id
+    ));
+    let ts = reopen(&f);
+
+    let taken = ts.takeover_run("r-failed").unwrap();
+    assert_eq!(taken.status, RunStatus::Cancelled);
+    assert!(taken.taken_over);
+    // 任务从受阻回到执行中，受阻原因清空。
+    let detail = ts.get_task(&t.task.id).unwrap();
+    assert_eq!(detail.task.status, TaskStatus::Doing);
+    assert_eq!(detail.task.blocked_reason, None);
+    // 工作日志记一条接管。
+    let journal = fs::read_to_string(f.ws.join("Teamspace/前端开发/工作日志.md")).unwrap();
+    assert!(journal.contains("人工接管"), "{journal}");
+    // 已接管的执行不能再接管。
+    let msg = assert_kind(ts.takeover_run("r-failed"), ErrorKind::Conflict);
+    assert!(msg.contains("不能接管"), "{msg}");
+    // 接管后可以重新执行：新建第 2 次执行。
+    let rerun = ts.start_run(&t.task.id).unwrap();
+    assert_eq!(rerun.attempt, 2);
+}
+
 /// K-RUN-018：Run 记录 Harness 快照，之后编辑或换绑都不影响。
 #[test]
 fn k_run_018_run_keeps_harness_snapshot_after_edit_and_rebind() {

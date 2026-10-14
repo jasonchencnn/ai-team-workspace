@@ -12,13 +12,14 @@ use rusqlite::{Connection, params};
 use serde_json::json;
 
 use super::event::{self, NewEvent};
+use super::folder;
 use super::task::{self, FileCheck};
 use super::{harness, role};
 use crate::error::{Error, Result};
 use crate::model::{
     AcpCapabilities, Actor, ChangedFile, EventKind, FailureKind, HandshakeStatus, HarnessSnapshot,
-    PermissionPrompt, Run, RunIsolation, RunStatus, RunUpdate, RunUpdateBody, RunUpdatePage,
-    RunUpdateQuery, Task, TaskStatus,
+    PermissionPrompt, Run, RunIsolation, RunJournal, RunStatus, RunUpdate, RunUpdateBody,
+    RunUpdatePage, RunUpdateQuery, Task, TaskStatus,
 };
 use crate::store::{enum_col, enum_str, new_id, now};
 
@@ -82,6 +83,7 @@ fn from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Run> {
         taken_over: row.get(25)?,
         pending_permission: json_opt(row, 26)?,
         task_key: row.get(27)?,
+        journal: RunJournal::default(),
     })
 }
 
@@ -90,7 +92,12 @@ fn query(conn: &Connection, filter: &str, param: &dyn rusqlite::ToSql) -> Result
         "SELECT {COLS} FROM runs r JOIN tasks t ON t.id = r.task_id WHERE {filter}"
     ))?;
     let rows = stmt.query_map([param], from_row)?;
-    Ok(rows.collect::<rusqlite::Result<_>>()?)
+    let mut runs = rows.collect::<rusqlite::Result<Vec<_>>>()?;
+    // 工作日志的写入结果不在 `runs` 表里，按条补上（界面据此显示，不自己拼装）。
+    for run in &mut runs {
+        run.journal = folder::run_journal(conn, run)?;
+    }
+    Ok(runs)
 }
 
 /// 执行记录（所属团队须未归档）；否则 not_found。
@@ -439,6 +446,60 @@ pub(crate) fn reopen(conn: &Connection, id: &str) -> Result<bool> {
         params![id],
     )?;
     Ok(fenced(changed, id, "续接"))
+}
+
+/// 可以由 Human 接管的已结束执行：已中断的，或已失败的（Figma 94-1001 状态区 B 的「人工接管」）。
+pub(crate) fn can_take_over(run: &Run) -> bool {
+    matches!(run.status, RunStatus::Interrupted | RunStatus::Failed) && !run.taken_over
+}
+
+/// 接管已结束的执行：标记 `taken_over` 并结束这条执行，任务从受阻回到执行中，由 Human 在执行目录里
+/// 继续处理；之后可重新执行或直接提交验收。活动与工作日志沿用既有的接管文案。
+///
+/// 活动执行由引擎在收到停止请求时走同一条路径（见 [`end`] 的 `taken_over`），本函数只处理已经结束的。
+pub(crate) fn takeover(conn: &Connection, run: &Run) -> Result<()> {
+    let failure = "人工接管".to_owned();
+    // 只从已中断或已失败的状态结束（fencing）：状态已被别处改变时不覆盖，返回冲突。
+    let ended = end_from(
+        conn,
+        &run.id,
+        RunStatus::Cancelled,
+        &Ending {
+            failure: Some(failure.clone()),
+            failure_kind: run.failure_kind,
+            summary: run.summary.clone(),
+            changed_files: run.changed_files.clone(),
+            tool_call_count: run.tool_call_count,
+            taken_over: true,
+            ..Ending::default()
+        },
+        "('interrupted', 'failed')",
+        "接管已结束的执行",
+    )?;
+    if !ended {
+        return Err(Error::conflict("执行状态已改变，不能接管"));
+    }
+    status_update(conn, &run.id, RunStatus::Cancelled, Some(failure))?;
+    move_task(
+        conn,
+        &run.task_id,
+        TaskStatus::Doing,
+        None,
+        Actor::Human,
+        "人工接管",
+    )?;
+    record_event(
+        conn,
+        run,
+        Actor::Human,
+        EventKind::RunFinished,
+        format!(
+            "{} 第 {} 次执行已停止，人工接管（{}）",
+            run.task_key, run.attempt, run.harness.name
+        ),
+        json!({ "runId": run.id, "attempt": run.attempt,
+                "status": RunStatus::Cancelled, "takenOver": true }),
+    )
 }
 
 /// 系统（执行引擎）或 Human 触发的任务状态变化，绕过人工流转表；记录活动。状态不变时不做任何事。

@@ -811,8 +811,8 @@ impl Teamspace {
         run_svc::get(&self.lock(), run_id)
     }
 
-    /// 人工接管：停止执行（活动执行先取消，已中断的执行直接结束），执行记为 cancelled 并标注
-    /// `takenOver`，任务保持执行中，由 Human 在执行目录（`execDir`，可用 `open_run_dir` 打开）中处理；
+    /// 人工接管：停止执行（活动执行先取消，已中断或已失败的执行直接结束），执行记为 cancelled 并标注
+    /// `takenOver`，任务回到执行中，由 Human 在执行目录（`execDir`，可用 `open_run_dir` 打开）中处理；
     /// 之后可再次 `start_run`，或把任务直接提交验收（`change_task_status` → review）。
     /// 其他状态为 conflict。
     pub fn takeover_run(&self, run_id: &str) -> Result<Run> {
@@ -820,44 +820,13 @@ impl Teamspace {
         if run.status.is_active() && self.stop_run(run_id, Stop::Takeover) {
             return run_svc::get(&self.lock(), run_id);
         }
-        if run.status != RunStatus::Interrupted {
+        if !run_svc::can_take_over(&run) {
             return Err(Error::conflict(format!(
                 "执行已结束（{}），不能接管",
                 run.status.label()
             )));
         }
-        self.write(|tx| {
-            let failure = "人工接管".to_owned();
-            let ended = run_svc::end_interrupted(
-                tx,
-                run_id,
-                RunStatus::Cancelled,
-                &Ending {
-                    failure: Some(failure.clone()),
-                    summary: run.summary.clone(),
-                    changed_files: run.changed_files.clone(),
-                    tool_call_count: run.tool_call_count,
-                    taken_over: true,
-                    ..Ending::default()
-                },
-            )?;
-            if !ended {
-                return Err(Error::conflict("执行已不是中断状态，不能接管"));
-            }
-            run_svc::status_update(tx, run_id, RunStatus::Cancelled, Some(failure))?;
-            run_svc::record_event(
-                tx,
-                &run,
-                Actor::Human,
-                EventKind::RunFinished,
-                format!(
-                    "{} 第 {} 次执行已停止，人工接管（{}）",
-                    run.task_key, run.attempt, run.harness.name
-                ),
-                serde_json::json!({ "runId": run.id, "attempt": run.attempt,
-                                    "status": RunStatus::Cancelled, "takenOver": true }),
-            )
-        })?;
+        self.write(|tx| run_svc::takeover(tx, &run))?;
         self.sync_role_folders(&run.team_id);
         self.emit_run(run_id);
         run_svc::get(&self.lock(), run_id)

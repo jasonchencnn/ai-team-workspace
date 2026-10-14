@@ -877,9 +877,8 @@ test("RUN-FAIL-007 失败画面保留已改动文件，并支持重试 / 人工�
   expect((await runsOf(task.id)).map((r) => r.attempt)).toEqual([2, 1]);
 });
 
-// 缺陷（新）：失败画面上的「人工接管」按钮可点，但后端只允许接管活动或已中断的执行，
-// 点击确认后报错「执行已结束（失败），不能接管」，界面停在失败画面。
-defect("RUN-FAIL-007 [缺陷 新] 失败画面的「人工接管」确认后应进入已接管画面", async ({ page }) => {
+// G-7：失败画面上的「人工接管」确认后进入已接管画面（后端支持接管已失败的执行）。
+test("RUN-FAIL-007 失败画面的「人工接管」确认后应进入已接管画面", async ({ page }) => {
   const task = await plainTask("失败后接管 [mock:failafter]");
   await openTask(page, task);
   await startRunUi(page);
@@ -1094,25 +1093,28 @@ test("RUN-LOG-005 日志写入失败：执行本身成功，工作台提示无�
   expect(log).toContain(`${task.key} · 开始第 1 次执行`);
 });
 
-// 缺陷 N-01：成功面板无条件写「已写入「岗位」工作日志」，日志写入失败时也一样。
-defect(
-  "RUN-LOG-005 [缺陷 N-01] 日志写入失败时成功面板不得显示「已写入工作日志」",
-  async ({ page }) => {
-    const file = join(plain, "Teamspace", "日志员", "工作日志.md");
-    const task = await plainTask("日志写不进去 面板", { role: "日志员" });
-    chmodSync(file, 0o444);
-    try {
-      await openTask(page, task);
-      await startRunUi(page);
-      const success = page.locator(".run-outcome--success");
-      await expect(success).toBeVisible({ timeout: TIMEOUT });
-      await expect(success).not.toContainText("已写入「日志员」工作日志");
-    } finally {
-      chmodSync(file, 0o644);
-      await invoke("get_role_workbench", { roleId: teamP.roleIds["日志员"] ?? "" });
-    }
-  },
-);
+// G-5（N-01）：日志写入失败时成功面板显示「未能写入工作日志」与原因，不显示「已写入」。
+test("RUN-LOG-005 日志写入失败时成功面板不得显示「已写入工作日志」", async ({ page }) => {
+  const file = join(plain, "Teamspace", "日志员", "工作日志.md");
+  const task = await plainTask("日志写不进去 面板", { role: "日志员" });
+  chmodSync(file, 0o444);
+  try {
+    await openTask(page, task);
+    await startRunUi(page);
+    const success = page.locator(".run-outcome--success");
+    await expect(success).toBeVisible({ timeout: TIMEOUT });
+    await expect(success).not.toContainText("已写入「日志员」工作日志");
+    await expect(success.locator(".run-outcome__journal--problem")).toContainText(
+      "未能写入工作日志",
+    );
+    await expect(success.locator(".run-outcome__journal--problem")).toContainText(
+      "无法写入工作日志",
+    );
+  } finally {
+    chmodSync(file, 0o644);
+    await invoke("get_role_workbench", { roleId: teamP.roleIds["日志员"] ?? "" });
+  }
+});
 
 function workbenchUrl(team: TeamSetup, role: string): string {
   return `/#/teams/${team.teamId}/roles/${team.roleIds[role] ?? ""}/workbench`;
