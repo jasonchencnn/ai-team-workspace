@@ -222,9 +222,17 @@ pub struct Run {
     pub failure_kind: Option<FailureKind>,
     /// 执行摘要：取自 Agent 最后的消息（截断）；没有时为 `null`。
     pub summary: Option<String>,
-    /// 改动的文件：worktree 用 Git 统计（相对基线提交，含未跟踪文件）；原地执行用写入记录与编辑类
-    /// 工具调用的位置汇总。执行结束时写入，按路径排序。
+    /// 改动的文件：worktree 用 Git 统计（相对基线提交，含未跟踪文件）；原地执行取「ACP 报告的写入与编辑类
+    /// 工具调用」与「执行前后目录快照的比对结果」的并集（shell 直接写的文件也在内）。执行结束或中断
+    /// （含应用重启后恢复）时写入，按路径排序。
     pub changed_files: Vec<ChangedFile>,
+    /// 普通文件夹原地执行时，快照比对发现的「范围外改动」：不在本岗位文件夹、不在任务引用文件、
+    /// 也没有被 Human 明确允许写入的文件（相对工作空间，已计入 `changedFiles`）。非空表示 Agent
+    /// 未经确认改动了权限范围外的文件：执行即使成功，任务也会转为受阻而不是待验收。Git worktree 执行
+    /// 与没有此类改动时为空。
+    pub out_of_scope: Vec<String>,
+    /// 改动统计的补充说明（中文），如文件太多、快照降级后统计不完整；没有时为 `null`。
+    pub change_note: Option<String>,
     /// 本次执行中的工具调用次数。
     pub tool_call_count: u32,
     /// 是否为人工接管而停止。
@@ -330,6 +338,8 @@ pub enum RunUpdateBody {
         status: RunStatus,
         detail: Option<String>,
     },
+    /// 需要 Human 留意的醒目提示，如 Agent 未经确认改动了权限范围外的文件（`files` 列出这些文件）。
+    Warning { text: String, files: Vec<String> },
 }
 
 /// 一条执行进度。

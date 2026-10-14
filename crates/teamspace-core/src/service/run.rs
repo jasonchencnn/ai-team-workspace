@@ -32,7 +32,7 @@ const COLS: &str = "r.id, r.team_id, r.task_id, r.role_id, r.harness_id, r.harne
     r.harness_preset, r.harness_command, r.harness_args, r.attempt, r.status, r.session_id, \
     r.exec_dir, r.isolation, r.branch, r.base_commit, r.capabilities, r.started_at, r.ended_at, \
     r.stop_reason, r.failure, r.failure_kind, r.summary, r.changed_files, r.tool_call_count, \
-    r.taken_over, r.pending_permission, t.key, r.workspace_path";
+    r.taken_over, r.pending_permission, t.key, r.workspace_path, r.out_of_scope, r.change_note";
 
 fn json_opt<T: serde::de::DeserializeOwned>(
     row: &rusqlite::Row<'_>,
@@ -79,6 +79,8 @@ fn from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Run> {
             .and_then(|k| serde_json::from_value(serde_json::Value::String(k)).ok()),
         summary: row.get(22)?,
         changed_files: json_opt(row, 23)?.unwrap_or_default(),
+        out_of_scope: json_opt(row, 29)?.unwrap_or_default(),
+        change_note: row.get(30)?,
         tool_call_count: row.get(24)?,
         taken_over: row.get(25)?,
         pending_permission: json_opt(row, 26)?,
@@ -375,6 +377,10 @@ pub(crate) struct Ending {
     pub failure_kind: Option<FailureKind>,
     pub summary: Option<String>,
     pub changed_files: Vec<ChangedFile>,
+    /// 快照比对发现的范围外改动（见 [`Run::out_of_scope`]）。
+    pub out_of_scope: Vec<String>,
+    /// 改动统计的补充说明（见 [`Run::change_note`]）。
+    pub change_note: Option<String>,
     pub tool_call_count: u32,
     pub taken_over: bool,
 }
@@ -419,7 +425,8 @@ fn end_from(
         &format!(
             "UPDATE runs SET status = ?2, ended_at = ?3, stop_reason = ?4, failure = ?5,
                              failure_kind = ?6, summary = ?7, changed_files = ?8, tool_call_count = ?9,
-                             taken_over = ?10, pending_permission = NULL
+                             taken_over = ?10, out_of_scope = ?11, change_note = ?12,
+                             pending_permission = NULL
              WHERE id = ?1 AND status IN {from}"
         ),
         params![
@@ -433,6 +440,8 @@ fn end_from(
             serde_json::to_string(&ending.changed_files)?,
             ending.tool_call_count,
             ending.taken_over,
+            serde_json::to_string(&ending.out_of_scope)?,
+            ending.change_note,
         ],
     )?;
     Ok(fenced(changed, id, what))
@@ -469,6 +478,8 @@ pub(crate) fn takeover(conn: &Connection, run: &Run) -> Result<()> {
             failure_kind: run.failure_kind,
             summary: run.summary.clone(),
             changed_files: run.changed_files.clone(),
+            out_of_scope: run.out_of_scope.clone(),
+            change_note: run.change_note.clone(),
             tool_call_count: run.tool_call_count,
             taken_over: true,
             ..Ending::default()
@@ -581,6 +592,7 @@ fn update_kind(body: &RunUpdateBody) -> &'static str {
         RunUpdateBody::Permission { .. } => "permission",
         RunUpdateBody::FileWrite { .. } => "file_write",
         RunUpdateBody::Status { .. } => "status",
+        RunUpdateBody::Warning { .. } => "warning",
     }
 }
 

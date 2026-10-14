@@ -30,4 +30,4 @@ command: string | null,
 /**
  * 编辑内容的行数统计（ACP diff 内容）。
  */
-diffs: Array<DiffStat>, } | { "type": "permission", requestId: string, toolCallId: string, title: string, toolKind: string | null, paths: Array<string>, command: string | null, reason: string, options: Array<PermissionOption>, decision: PermissionDecision | null, } | { "type": "file_write", path: string, allowed: boolean, reason: string, } | { "type": "status", status: RunStatus, detail: string | null, };
+diffs: Array<DiffStat>, } | { "type": "permission", requestId: string, toolCallId: string, title: string, toolKind: string | null, paths: Array<string>, command: string | null, reason: string, options: Array<PermissionOption>, decision: PermissionDecision | null, } | { "type": "file_write", path: string, allowed: boolean, reason: string, } | { "type": "status", status: RunStatus, detail: string | null, } | { "type": "warning", text: string, files: Array<string>, };

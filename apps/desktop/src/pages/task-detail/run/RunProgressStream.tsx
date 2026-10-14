@@ -82,6 +82,8 @@ function UpdateRow({ update, run, roleName, isBrief }: UpdateRowProps) {
       return <FileWriteRow body={body} />;
     case "status":
       return <StatusRow body={body} />;
+    case "warning":
+      return <WarningRow body={body} />;
   }
 }
 
@@ -306,5 +308,25 @@ function StatusRow({ body }: { body: StatusBody }) {
       <span className="run-status-row__dot" aria-hidden="true" />
       <span>{body.detail ?? runStatusLabel[body.status]}</span>
     </p>
+  );
+}
+
+type WarningBody = Extract<RunUpdateBody, { type: "warning" }>;
+
+/** 醒目提示：如 Agent 未经确认改动了权限范围外的文件。 */
+function WarningRow({ body }: { body: WarningBody }) {
+  return (
+    <section className="run-warning" role="alert">
+      <p className="run-warning__text">⚠ {body.text}</p>
+      {body.files.length === 0 ? null : (
+        <ul className="run-warning__files">
+          {body.files.map((path) => (
+            <li key={path} title={path}>
+              {path}
+            </li>
+          ))}
+        </ul>
+      )}
+    </section>
   );
 }

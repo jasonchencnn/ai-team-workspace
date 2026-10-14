@@ -13,6 +13,11 @@
 //! 6. 结束：根据 `stopReason` 或失败原因写入结果、联动任务状态、写活动（进而写入岗位工作日志），
 //!    终止 Agent 进程组。
 //!
+//! 改动统计兜底（S-1b）：Agent 可能用 shell 直接写文件而不发权限请求。普通文件夹原地执行时，开始前对执行目录
+//! 拍快照（[`snapshot`]），结束或中断时再比对，改动 = ACP 报告的写入 ∪ 快照比对；Git worktree 用 Git 统计。
+//! 原地执行中落在权限范围外的改动（不在本岗位文件夹、不在任务引用文件、Human 也没有明确允许写入）会在
+//! 执行记录里醒目标出，成功的执行因此不进入待验收而是受阻，等 Human 检查。
+//!
 //! 取消：发 `session/cancel`、撤销待确认的权限请求，宽限期内 Agent 未结束则整组终止。
 //! 超时：Agent 连续 [`IDLE_TIMEOUT`]（可配置）没有任何输出（等待 Human 确认期间不计）视为超时。
 //! 应用退出：整组终止，执行标记为已中断；下次打开时，残留的活动执行同样标记为已中断。
@@ -27,6 +32,7 @@ pub mod brief;
 pub mod env_profile;
 pub mod policy;
 mod session_mode;
+pub mod snapshot;
 pub mod worktree;
 
 use std::collections::{BTreeMap, HashMap};
@@ -74,6 +80,8 @@ pub struct RunSettings {
     pub idle_timeout: Duration,
     pub startup_timeout: Duration,
     pub cancel_grace: Duration,
+    /// 执行目录快照最多记录的文件与目录数（超过时降级，见 [`snapshot`]）。
+    pub snapshot_max_entries: usize,
 }
 
 impl Default for RunSettings {
@@ -82,6 +90,7 @@ impl Default for RunSettings {
             idle_timeout: IDLE_TIMEOUT,
             startup_timeout: STARTUP_TIMEOUT,
             cancel_grace: CANCEL_GRACE,
+            snapshot_max_entries: snapshot::MAX_ENTRIES,
         }
     }
 }
@@ -322,13 +331,10 @@ impl Core {
             active.kill();
         }
         for (id, _) in &actives {
-            let _ = self.write(|tx| {
-                interrupt(
-                    tx,
-                    id,
-                    "应用退出时执行仍在进行，已中断；已写入执行目录的改动仍然保留",
-                )
-            });
+            self.interrupt_run(
+                id,
+                "应用退出时执行仍在进行，已中断；已写入执行目录的改动仍然保留",
+            );
         }
         for (_, active) in &actives {
             active.wait_done(Duration::from_secs(3));
@@ -339,9 +345,122 @@ impl Core {
     pub(crate) fn recover_runs(&self) -> Result<()> {
         let stale = store_run::all_active(&self.lock())?;
         for run in &stale {
-            self.write(|tx| interrupt(tx, &run.id, INTERRUPTED_RESTART))?;
+            let changes = self.interrupted_changes(run);
+            self.write(|tx| {
+                interrupt_with_changes(tx, &run.id, INTERRUPTED_RESTART, Some(&changes))
+            })?;
         }
+        self.discard_stale_snapshots();
         Ok(())
+    }
+
+    /// 把活动执行标记为已中断，并用快照（或 Git）算出它已经改了哪些文件一并写入（G-6）。
+    fn interrupt_run(&self, run_id: &str, reason: &str) {
+        // 先读出执行记录再统计：统计过程中还要读数据库，不能持着锁。
+        let run = store_run::get(&self.lock(), run_id).ok();
+        let changes = run
+            .filter(|run| run.status.is_active())
+            .map(|run| self.interrupted_changes(&run));
+        let _ = self.write(|tx| interrupt_with_changes(tx, run_id, reason, changes.as_ref()));
+    }
+
+    /// 执行目录快照的保存位置（应用数据目录，不在执行目录里）。
+    pub(crate) fn snapshot_path(&self, run_id: &str) -> PathBuf {
+        self.data_dir
+            .join("run-snapshots")
+            .join(format!("{run_id}.json"))
+    }
+
+    /// 删除不再需要的快照：只有仍处于已中断（可能续接）的执行才保留。
+    fn discard_stale_snapshots(&self) {
+        let dir = self.data_dir.join("run-snapshots");
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let Some(id) = path.file_stem().and_then(|s| s.to_str()) else {
+                continue;
+            };
+            let keep = store_run::get(&self.lock(), id)
+                .is_ok_and(|run| run.status == RunStatus::Interrupted);
+            if !keep {
+                let _ = std::fs::remove_file(&path);
+            }
+        }
+    }
+
+    /// 被中断的执行已经改了哪些文件：Git worktree 用 Git 统计；原地执行把存下的执行前快照与现在的
+    /// 目录比对（没有快照时只能用 Agent 经 ACP 写入的记录）。第二项为统计的补充说明。
+    fn interrupted_changes(&self, run: &Run) -> (Vec<ChangedFile>, Option<String>) {
+        let fallback = || (run.changed_files.clone(), None);
+        if run.isolation == RunIsolation::Worktree {
+            let Some(base) = &run.base_commit else {
+                return fallback();
+            };
+            let path_env = self.probe.command_path_env();
+            return match worktree::changed_files(Path::new(&run.exec_dir), base, Some(&path_env)) {
+                Ok(files) => (files, None),
+                Err(err) => (
+                    run.changed_files.clone(),
+                    Some(format!("无法统计 worktree 的改动：{err}")),
+                ),
+            };
+        }
+        let dir = Path::new(&run.exec_dir);
+        if let Some(before) = snapshot::load(&self.snapshot_path(&run.id)) {
+            let after = snapshot::take(dir, before.max_entries);
+            let diff = snapshot::diff(dir, &before, &after);
+            return (diff.changes, diff.note);
+        }
+        // 没有执行前的快照（执行在拍快照之前就中断了）：只能汇总 Agent 经 ACP 写入的文件。
+        let root = dir.canonicalize().unwrap_or_else(|_| dir.to_path_buf());
+        let mut changes: BTreeMap<String, FileChangeKind> = BTreeMap::new();
+        for path in self.written_paths(&run.id) {
+            let real = policy::resolve(Path::new(&path), &root).unwrap_or(PathBuf::from(&path));
+            changes
+                .entry(relative_to(&root, &real))
+                .or_insert(FileChangeKind::Modified);
+        }
+        // 快照在建立会话之前就拍好了：已有会话却没有快照，说明快照丢了，统计不完整，要说明。
+        let note = run
+            .session_id
+            .is_some()
+            .then(|| "没有执行前的快照，改动文件只包含 Agent 经 ACP 写入的记录".to_owned());
+        (
+            changes
+                .into_iter()
+                .map(|(path, change)| ChangedFile { path, change })
+                .collect(),
+            note,
+        )
+    }
+
+    /// 执行进度里记录的、被允许写入的文件路径。
+    fn written_paths(&self, run_id: &str) -> Vec<String> {
+        let mut paths = Vec::new();
+        let mut cursor = None;
+        while let Ok(page) = self.run_updates(&RunUpdateQuery {
+            run_id: run_id.to_owned(),
+            cursor: cursor.clone(),
+            limit: Some(store_run::MAX_UPDATE_PAGE),
+        }) {
+            for update in &page.updates {
+                if let RunUpdateBody::FileWrite {
+                    path,
+                    allowed: true,
+                    ..
+                } = &update.body
+                {
+                    paths.push(path.clone());
+                }
+            }
+            if !page.has_more {
+                break;
+            }
+            cursor = Some(page.next_cursor);
+        }
+        paths
     }
 
     /// 执行进度增量读取。
@@ -354,16 +473,32 @@ impl Core {
 }
 
 /// 把活动执行标记为已中断（只改状态与原因，保留其余记录）；不是活动执行时不做任何事。
+#[cfg(test)]
 fn interrupt(conn: &rusqlite::Connection, run_id: &str, reason: &str) -> Result<()> {
+    interrupt_with_changes(conn, run_id, reason, None)
+}
+
+/// 把活动执行标记为已中断（改状态与原因；`changes` 给出时一并写入改动文件与统计说明，G-6），
+/// 保留其余记录；不是活动执行时不做任何事。
+fn interrupt_with_changes(
+    conn: &rusqlite::Connection,
+    run_id: &str,
+    reason: &str,
+    changes: Option<&(Vec<ChangedFile>, Option<String>)>,
+) -> Result<()> {
     let run = store_run::get(conn, run_id)?;
     if !run.status.is_active() {
         return Ok(());
     }
+    let (files, note) = match changes {
+        Some((files, note)) => (files.clone(), note.clone()),
+        None => (run.changed_files.clone(), run.change_note.clone()),
+    };
     let changed = conn.execute(
         "UPDATE runs SET status = 'interrupted', ended_at = ?2, failure = ?3, failure_kind = NULL,
-                         pending_permission = NULL
+                         pending_permission = NULL, changed_files = ?4, change_note = ?5
          WHERE id = ?1 AND status IN ('queued', 'running', 'waiting_permission')",
-        rusqlite::params![run_id, now(), reason],
+        rusqlite::params![run_id, now(), reason, serde_json::to_string(&files)?, note],
     )?;
     if changed == 0 {
         return Ok(());
@@ -472,6 +607,11 @@ struct Driver {
     /// 据此放行（精确匹配）。规则自动允许的请求、Human 允许的其他类型请求（读取、搜索、执行命令等）
     /// 都不会记入这里（Q-01）。
     granted: Vec<PathBuf>,
+    /// Human 允许过的编辑、删除、移动请求涉及的路径（规范化）。只用于判断快照发现的改动是否「未经确认」，
+    /// 不放开 `fs/write_text_file`。
+    approved: Vec<PathBuf>,
+    /// 普通文件夹原地执行：执行前的目录快照（S-1b）；Git worktree 执行为 `None`。
+    baseline: Option<snapshot::Snapshot>,
     tool_call_count: u32,
 }
 
@@ -503,6 +643,8 @@ impl Driver {
             pending: Vec::new(),
             writes: BTreeMap::new(),
             granted: Vec::new(),
+            approved: Vec::new(),
+            baseline: None,
         }
     }
 
@@ -675,6 +817,11 @@ impl Driver {
             self.restore_progress();
         }
 
+        // 2b. 原地执行：对执行目录拍快照（续接时沿用存下的执行前快照），结束时比对出真实改动
+        if self.run.isolation == RunIsolation::InPlace {
+            self.baseline = Some(self.prepare_baseline(mode, &exec_dir));
+        }
+
         // 3. 启动 Agent
         let spec = self.spawn_spec(&ctx, &exec_dir)?;
         let tx = self.tx.clone();
@@ -795,6 +942,21 @@ impl Driver {
             }),
         );
         Ok(())
+    }
+
+    /// 执行前快照：续接时读回存下的那一份，否则现在拍一份并存下来（应用重启后据此算出中断时的改动）。
+    fn prepare_baseline(&self, mode: Mode, exec_dir: &Path) -> snapshot::Snapshot {
+        let path = self.core.snapshot_path(&self.run.id);
+        if mode == Mode::Resume
+            && let Some(saved) = snapshot::load(&path)
+        {
+            return saved;
+        }
+        let taken = snapshot::take(exec_dir, self.settings.snapshot_max_entries);
+        if let Err(err) = snapshot::save(&path, &taken) {
+            eprintln!("teamspace run {}: 无法保存执行前快照：{err}", self.run.id);
+        }
+        taken
     }
 
     fn brief_refs(&self, ctx: &Context, exec_dir: &Path) -> Vec<brief::BriefRef> {
@@ -1523,6 +1685,20 @@ impl Driver {
             let paths = p.prompt.paths.clone();
             self.grant(&paths);
         }
+        // Human 明确允许过对这些路径的编辑、删除或移动：快照发现的同路径改动不算「未经确认」。
+        if option.kind.starts_with("allow")
+            && matches!(
+                p.prompt.tool_kind.as_deref(),
+                Some("edit" | "delete" | "move")
+            )
+        {
+            let base = self.scope().exec_dir().to_path_buf();
+            for path in &p.prompt.paths {
+                if let Ok(real) = policy::resolve(Path::new(path), &base) {
+                    self.approved.push(real);
+                }
+            }
+        }
         let _ = self.conn().respond(
             &p.rpc_id,
             json!({ "outcome": { "outcome": "selected", "optionId": option.option_id } }),
@@ -1674,30 +1850,36 @@ impl Driver {
 
     // ------------------------------------------------------------ 结束
 
-    fn changed_files(&self) -> Vec<ChangedFile> {
+    /// 本次执行的改动统计：Git worktree 用 Git；原地执行取 ACP 报告的改动与快照比对结果的并集，
+    /// 并找出快照发现的范围外改动。
+    fn audit_changes(&self) -> Audit {
         if self.run.isolation == RunIsolation::Worktree {
             let Some(base) = &self.run.base_commit else {
-                return Vec::new();
+                return Audit::default();
             };
             let path_env = self.core.probe.command_path_env();
-            return worktree::changed_files(Path::new(&self.run.exec_dir), base, Some(&path_env))
-                .unwrap_or_default();
+            return match worktree::changed_files(
+                Path::new(&self.run.exec_dir),
+                base,
+                Some(&path_env),
+            ) {
+                Ok(files) => Audit {
+                    files,
+                    ..Audit::default()
+                },
+                Err(err) => Audit {
+                    note: Some(format!("无法统计 worktree 的改动：{err}")),
+                    ..Audit::default()
+                },
+            };
         }
         let root = self
             .workspace
             .canonicalize()
             .unwrap_or_else(|_| self.workspace.clone());
         let mut changes: BTreeMap<String, FileChangeKind> = BTreeMap::new();
-        let rel = |p: &Path| match p.strip_prefix(&root) {
-            Ok(r) => r
-                .components()
-                .map(|c| c.as_os_str().to_string_lossy())
-                .collect::<Vec<_>>()
-                .join("/"),
-            Err(_) => p.display().to_string(),
-        };
         for (path, kind) in &self.writes {
-            changes.insert(rel(path), *kind);
+            changes.insert(relative_to(&root, path), *kind);
         }
         for tool in self.tools.values() {
             let kind = match tool.kind.as_deref() {
@@ -1718,14 +1900,50 @@ impl Driver {
                     continue;
                 }
                 if let Ok(real) = policy::resolve(Path::new(path), &root) {
-                    changes.entry(rel(&real)).or_insert(kind);
+                    changes.entry(relative_to(&root, &real)).or_insert(kind);
                 }
             }
         }
-        changes
-            .into_iter()
-            .map(|(path, change)| ChangedFile { path, change })
-            .collect()
+        // 快照比对：不依赖 Agent 自觉，shell 直接写的文件也在内。
+        let mut out_of_scope = Vec::new();
+        let mut note = None;
+        if let Some(before) = &self.baseline {
+            let after = snapshot::take(&root, before.max_entries);
+            let diff = snapshot::diff(&root, before, &after);
+            note = diff.note;
+            for change in diff.changes {
+                if self.is_out_of_scope(&root, &change.path) {
+                    out_of_scope.push(change.path.clone());
+                }
+                // 快照看到的是真实的新增 / 修改 / 删除，覆盖 ACP 报告里粗略的类型。
+                changes.insert(change.path, change.change);
+            }
+        }
+        out_of_scope.sort();
+        Audit {
+            files: changes
+                .into_iter()
+                .map(|(path, change)| ChangedFile { path, change })
+                .collect(),
+            out_of_scope,
+            note,
+        }
+    }
+
+    /// 快照发现的改动（相对 `root`）是否落在权限范围外：不在本岗位文件夹、不在任务引用文件
+    /// （即 [`Scope::write_target`] 不放行），也没有被 Human 明确允许写入。
+    fn is_out_of_scope(&self, root: &Path, rel: &str) -> bool {
+        let Some(scope) = &self.scope else {
+            return false;
+        };
+        let abs = root.join(rel);
+        if scope.write_target(&abs.display().to_string()).is_ok() {
+            return false;
+        }
+        match policy::resolve(&abs, scope.exec_dir()) {
+            Ok(real) => !(self.granted.contains(&real) || self.approved.contains(&real)),
+            Err(_) => true,
+        }
     }
 
     fn finish(&mut self, end: End) {
@@ -1737,22 +1955,44 @@ impl Driver {
             return;
         }
         let summary = brief::summarize(&self.last_agent_text);
+        let audit = self.audit_changes();
         let mut ending = Ending {
             summary,
-            changed_files: self.changed_files(),
+            changed_files: audit.files.clone(),
+            out_of_scope: audit.out_of_scope.clone(),
+            change_note: audit.note.clone(),
             tool_call_count: self.tool_call_count,
             ..Ending::default()
         };
+        let scope_text = out_of_scope_text(&audit.out_of_scope);
         let (status, task_to, reason, actor, verb) = match &end {
             End::Succeeded(stop) => {
                 ending.stop_reason = Some(stop.clone());
-                (
-                    RunStatus::Succeeded,
-                    Some(TaskStatus::Review),
-                    None,
-                    Actor::System,
-                    "完成",
-                )
+                if audit.out_of_scope.is_empty() {
+                    (
+                        RunStatus::Succeeded,
+                        Some(TaskStatus::Review),
+                        None,
+                        Actor::System,
+                        "完成",
+                    )
+                } else {
+                    // 执行成功，但 Agent 未经确认改了权限范围外的文件：不进入待验收，交给 Human 检查。
+                    let reason: String = format!(
+                        "Agent 未经确认改动了权限范围外的文件：{}，请检查后处理",
+                        file_list(&audit.out_of_scope)
+                    )
+                    .chars()
+                    .take(MAX_REASON)
+                    .collect();
+                    (
+                        RunStatus::Succeeded,
+                        Some(TaskStatus::Blocked),
+                        Some(reason),
+                        Actor::System,
+                        "完成，但有范围外改动",
+                    )
+                }
             }
             End::Failed {
                 kind,
@@ -1815,13 +2055,36 @@ impl Driver {
         let auth_methods = self.auth_methods.clone();
         let capabilities = self.run.capabilities.clone();
         let detail = ending.failure.clone();
+        let out_of_scope = audit.out_of_scope.clone();
         let saved = self.db(|tx| {
             // fencing（Q-03）：执行已被中断（或已由别处结束）时，迟到的结局不改写执行、不推进任务、
             // 不记活动。
             if !store_run::end(tx, &run.id, status, &ending)? {
                 return Ok(None);
             }
-            let update = store_run::status_update(tx, &run.id, status, detail.clone())?;
+            let mut updates = Vec::new();
+            if !out_of_scope.is_empty() {
+                // 执行记录里醒目地标出范围外改动（所有结局都标，不止成功的）。
+                updates.push(store_run::insert_update(
+                    tx,
+                    &run.id,
+                    None,
+                    &RunUpdateBody::Warning {
+                        text: format!(
+                            "Agent 未经确认改动了范围外的文件（执行中没有收到对应的权限请求，改动已落在\
+                             工作空间里，不会自动回滚）：{}",
+                            file_list(&out_of_scope)
+                        ),
+                        files: out_of_scope.clone(),
+                    },
+                )?);
+            }
+            updates.push(store_run::status_update(
+                tx,
+                &run.id,
+                status,
+                detail.clone(),
+            )?);
             if let Some(to) = task_to
                 && task::get(tx, &run.task_id)?.status == TaskStatus::Doing
             {
@@ -1845,7 +2108,7 @@ impl Driver {
                 actor,
                 EventKind::RunFinished,
                 format!(
-                    "{} 第 {} 次执行{verb}（{}）",
+                    "{} 第 {} 次执行{verb}（{}）{scope_text}",
                     run.task_key, run.attempt, run.harness.name
                 ),
                 json!({
@@ -1856,18 +2119,69 @@ impl Driver {
                     "summary": ending.summary,
                     "failure": ending.failure,
                     "changedFiles": files,
+                    "outOfScope": out_of_scope,
                 }),
             )?;
             if auth {
                 mark_needs_auth(tx, &run, &auth_methods, capabilities, detail.as_deref())?;
             }
-            Ok(Some(update))
+            Ok(Some(updates))
         });
-        if let Some(Some(update)) = saved {
-            self.emit_update(update);
+        if let Some(Some(updates)) = saved {
+            for update in updates {
+                self.emit_update(update);
+            }
         }
+        // 执行已结束，不再需要执行前快照（被中断的执行才保留，以便续接）。
+        let _ = std::fs::remove_file(self.core.snapshot_path(&self.run.id));
         self.core.sync_role_folders(&self.run.team_id);
         self.core.emit_run(&self.run.id);
+    }
+}
+
+/// 一次执行的改动统计结果。
+#[derive(Debug, Default)]
+struct Audit {
+    files: Vec<ChangedFile>,
+    /// 快照发现的范围外改动（相对工作空间，已排序）。
+    out_of_scope: Vec<String>,
+    /// 统计的补充说明（快照降级等）。
+    note: Option<String>,
+}
+
+/// 路径相对 `root` 的 `/` 分隔形式；不在 `root` 之下的保持原样。
+fn relative_to(root: &Path, path: &Path) -> String {
+    match path.strip_prefix(root) {
+        Ok(rel) => rel
+            .components()
+            .map(|c| c.as_os_str().to_string_lossy())
+            .collect::<Vec<_>>()
+            .join("/"),
+        Err(_) => path.display().to_string(),
+    }
+}
+
+/// 摘要用的文件清单：最多列出 5 个，其余用「等 N 个文件」。
+fn file_list(files: &[String]) -> String {
+    const SHOWN: usize = 5;
+    let mut text = files
+        .iter()
+        .take(SHOWN)
+        .cloned()
+        .collect::<Vec<_>>()
+        .join("、");
+    if files.len() > SHOWN {
+        text.push_str(&format!("等 {} 个文件", files.len()));
+    }
+    text
+}
+
+/// 追加在执行完成活动后面的范围外改动说明；没有范围外改动时为空。
+fn out_of_scope_text(files: &[String]) -> String {
+    if files.is_empty() {
+        String::new()
+    } else {
+        format!("；Agent 未经确认改动了范围外的文件：{}", file_list(files))
     }
 }
 

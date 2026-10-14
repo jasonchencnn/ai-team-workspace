@@ -731,12 +731,16 @@ impl Teamspace {
                         failure_kind: Some(FailureKind::Interrupted),
                         summary: prev.summary.clone(),
                         changed_files: prev.changed_files.clone(),
+                        out_of_scope: prev.out_of_scope.clone(),
+                        change_note: prev.change_note.clone(),
                         tool_call_count: prev.tool_call_count,
                         ..Ending::default()
                     },
                 )?;
                 if ended {
                     run_svc::status_update(tx, &prev.id, RunStatus::Failed, Some(failure))?;
+                    // 不会再续接，执行前快照不再需要。
+                    let _ = std::fs::remove_file(self.snapshot_path(&prev.id));
                 }
             }
             let owner = role::get_active(tx, &task.owner_role_id)?;
@@ -827,6 +831,7 @@ impl Teamspace {
             )));
         }
         self.write(|tx| run_svc::takeover(tx, &run))?;
+        let _ = std::fs::remove_file(self.snapshot_path(&run.id));
         self.sync_role_folders(&run.team_id);
         self.emit_run(run_id);
         run_svc::get(&self.lock(), run_id)
@@ -920,6 +925,8 @@ impl Teamspace {
                     failure_kind: Some(FailureKind::Interrupted),
                     summary: run.summary.clone(),
                     changed_files: run.changed_files.clone(),
+                    out_of_scope: run.out_of_scope.clone(),
+                    change_note: run.change_note.clone(),
                     tool_call_count: run.tool_call_count,
                     ..Ending::default()
                 },
@@ -951,6 +958,7 @@ impl Teamspace {
                                     "status": RunStatus::Failed, "failure": failure }),
             )
         })?;
+        let _ = std::fs::remove_file(self.snapshot_path(&run.id));
         self.sync_role_folders(&run.team_id);
         self.emit_run(run_id);
         run_svc::get(&self.lock(), run_id)

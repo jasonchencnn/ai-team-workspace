@@ -62,6 +62,8 @@ export interface RunInfo {
   takenOver: boolean;
   canResume: boolean;
   changedFiles: ChangedFileInfo[];
+  outOfScope: string[];
+  changeNote: string | null;
   pendingPermission: { requestId: string; reason: string; paths: string[] } | null;
 }
 
@@ -73,6 +75,7 @@ export interface UpdateInfo {
     role?: string;
     allowed?: boolean;
     path?: string;
+    files?: string[];
     reason?: string;
     status?: string;
     command?: string | null;

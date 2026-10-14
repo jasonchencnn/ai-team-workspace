@@ -945,9 +945,8 @@ test("RUN-RCV-002 中断面板：中断时间、最后事件、已有改动取�
   await invoke("mark_run_failed", { runId: run.id });
 });
 
-// 缺陷（新）：执行的改动文件只在正常收尾时统计，应用重启后中断的执行 changedFiles 为空，
-// 中断面板「已有改动」显示「0 个文件」，即使 Agent 已经写入了过程文件。
-defect("RUN-RCV-002 [缺陷 新] 中断面板「已有改动」应包含中断前已写入的文件", async ({ page }) => {
+// G-6：应用重启后，被中断的执行用执行前快照算出已写入的文件，中断面板不再显示「0 个文件」。
+test("RUN-RCV-002 中断面板「已有改动」应包含中断前已写入的文件", async ({ page }) => {
   const task = await plainTask("中断前已改文件 [mock:linger]");
   const run = await interrupt(task, "步骤已处理完");
   expect(run.changedFiles).toHaveLength(1);
@@ -957,6 +956,78 @@ defect("RUN-RCV-002 [缺陷 新] 中断面板「已有改动」应包含中断�
     panel.locator(".run-outcome__info div", { hasText: "已有改动" }).locator("dd"),
   ).toHaveText("1 个文件 · 原地：普通文件夹");
   await invoke("mark_run_failed", { runId: run.id });
+});
+
+// S-1b：Agent 用 shell 直接写文件（不发权限请求）时，执行前后的目录快照兜底统计改动，
+// 落在权限范围外的文件让任务受阻，而不是进入待验收。
+test("RUN-SCP-001 [S-1b] 普通文件夹范围外 shell 写入：执行记录标出、任务受阻、改动列表含该文件", async ({
+  page,
+}) => {
+  const target = join(plain, "scope-out.txt");
+  rmSync(target, { force: true });
+  const task = await plainTask("范围外 shell 写入 [mock:shellwrite=scope-out.txt]");
+  await openTask(page, task);
+  await startRunUi(page);
+  const success = page.locator(".run-outcome--success");
+  await expect(success).toBeVisible({ timeout: TIMEOUT });
+  await expect(success).toContainText("执行完成，但有范围外改动");
+  await expect(success).toContainText("已完成 · 受阻");
+  await expect(success.locator(".run-outcome__alert--scope")).toContainText(
+    "Agent 未经确认改动了范围外的文件",
+  );
+  await expect(success.locator(".run-outcome__alert--scope")).toContainText("scope-out.txt");
+  await expect(statusLine(page)).toContainText("受阻");
+  await expect(
+    page.getByText("受阻原因：Agent 未经确认改动了权限范围外的文件：scope-out.txt，请检查后处理"),
+  ).toBeVisible();
+  await expect(success.getByRole("button", { name: "去验收" })).toHaveCount(0);
+
+  // 改动文件列表包含 shell 写入的文件，并标为范围外。
+  await success.getByRole("button", { name: "查看改动" }).click();
+  const files = success.locator(".run-outcome__files");
+  await expect(files.locator(".run-file", { hasText: "scope-out.txt" })).toContainText("范围外");
+  await expect(files.locator(".run-file", { hasText: "scope-out.txt" })).toContainText("新增");
+  await expect(
+    files.locator(".run-file", { hasText: `Teamspace/${ROLE}/过程文件/mock-` }),
+  ).toBeVisible();
+
+  // 执行记录（进度）里追加了醒目的警告条目，列出这些文件；界面在结束区用警示框展示同样的内容。
+  const warning = (await updatesOf((await runsOf(task.id))[0]?.id ?? "")).find(
+    (u) => u.body.type === "warning",
+  );
+  expect(warning?.body.text).toContain("Agent 未经确认改动了范围外的文件");
+  expect(warning?.body.files).toEqual(["scope-out.txt"]);
+
+  // 后端事实：改动、范围外清单、任务状态；活动与工作日志有记录。
+  const run = (await runsOf(task.id))[0] as RunInfo;
+  expect(run.status).toBe("succeeded");
+  expect(run.outOfScope).toEqual(["scope-out.txt"]);
+  expect(run.changedFiles.map((f) => f.path)).toContain("scope-out.txt");
+  expect(readFileSync(target, "utf8")).toContain("written by shell");
+  await expect
+    .poll(() => journal(plain, ROLE), { timeout: TIMEOUT })
+    .toContain("Agent 未经确认改动了范围外的文件：scope-out.txt");
+  rmSync(target, { force: true });
+});
+
+test("RUN-SCP-002 [S-1b] 岗位文件夹内的 shell 写入计入改动，任务正常进入待验收", async ({
+  page,
+}) => {
+  const note = `Teamspace/${ROLE}/过程文件/shell-note.md`;
+  const task = await plainTask(`岗位内 shell 写入 [mock:shellwrite=${note}]`);
+  await openTask(page, task);
+  await startRunUi(page);
+  const success = page.locator(".run-outcome--success");
+  await expect(success).toBeVisible({ timeout: TIMEOUT });
+  await expect(success).toContainText("已完成 · 待验收");
+  await expect(success.locator(".run-outcome__alert--scope")).toHaveCount(0);
+  await expect(statusLine(page)).toContainText("待验收");
+  await success.getByRole("button", { name: "查看改动" }).click();
+  await expect(success.locator(".run-outcome__files")).toContainText("shell-note.md");
+  const run = (await runsOf(task.id))[0] as RunInfo;
+  expect((await updatesOf(run.id)).some((u) => u.body.type === "warning")).toBe(false);
+  expect(run.outOfScope).toEqual([]);
+  expect(run.changedFiles.map((f) => f.path)).toContain(note);
 });
 
 test("RUN-RCV-003 支持 loadSession：续接能力、「续接会话」为主按钮、图例说明", async ({ page }) => {

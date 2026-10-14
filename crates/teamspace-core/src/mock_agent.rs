@@ -40,6 +40,9 @@
 //! - `[mock:fsprobe=<范围外文件>]`：不申请权限，直接依次：`fs/read_text_file` 读取范围外文件，
 //!   `fs/write_text_file` 写岗位过程文件夹内的 `fsprobe-ok.md`、写范围外文件、写 `工作日志.md`；省略参数时范围外
 //!   文件为工作目录上一级的 `fsprobe-outside.txt`；每一步的结果写进总结；
+//! - `[mock:shellwrite=<相对路径>]`：模拟 Agent 用 shell（如 `printf … > 路径`）直接写文件：不申请权限、不经 ACP 的
+//!   `fs/write_text_file`，只报一次「执行命令」工具调用，然后由 Mock 自己把文件写到工作目录下的该路径
+//!   （目录不存在时创建）；结果记入总结（`[shellwrite:ok]`）。用来测试改动统计的快照兜底；
 //! - `[mock:modes]`：在总结里报告会话当前的权限模式（`[modes:<取值>]`，没有公布模式时为 `[modes:none]`）；
 //! - `[mock:linger]`：与其他标记合用；其余步骤（含权限请求的结果）都完成后不立刻总结，发一条消息后等待
 //!   `session/cancel`（或 stdin 关闭），用来在界面上观察「权限处理之后仍在执行中」的状态；
@@ -648,6 +651,25 @@ impl Mock<'_> {
                 Probe::Cancelled => return self.finish(id, "cancelled"),
                 Probe::Done(result) => notes.push(note(name, &result)),
             }
+        }
+        if let Some(rel) = marker_arg(task, "shellwrite") {
+            let target = cwd.join(rel);
+            self.update(&session, json!({
+                "sessionUpdate": "tool_call", "toolCallId": "mock-shellwrite",
+                "title": format!("运行 printf … > {rel}"), "kind": "execute", "status": "in_progress",
+                "rawInput": { "command": format!("printf 'written by shell' > {rel}") }
+            }))?;
+            let result = target
+                .parent()
+                .map_or(Ok(()), std::fs::create_dir_all)
+                .and_then(|()| std::fs::write(&target, "written by shell\n"))
+                .map_err(|err| err.to_string());
+            self.tool(
+                &session,
+                json!({ "toolCallId": "mock-shellwrite",
+                "status": if result.is_ok() { "completed" } else { "failed" } }),
+            )?;
+            notes.push(note("shellwrite", &result));
         }
         if has("appendjournal") {
             let target = journal_path(&text).map_or_else(|| journal.clone(), PathBuf::from);

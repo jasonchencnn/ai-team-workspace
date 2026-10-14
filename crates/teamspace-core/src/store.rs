@@ -12,7 +12,7 @@ use time::OffsetDateTime;
 use crate::error::{Error, Result};
 
 /// 当前 schema 版本。
-pub(crate) const SCHEMA_VERSION: i64 = 6;
+pub(crate) const SCHEMA_VERSION: i64 = 7;
 
 const SCHEMA_V1: &str = r#"
 CREATE TABLE teams (
@@ -289,8 +289,14 @@ ALTER TABLE harnesses_v6 RENAME TO harnesses;
 CREATE UNIQUE INDEX harnesses_active_name ON harnesses (team_id, name) WHERE archived_at IS NULL;
 "#;
 
+/// v7：执行记录增加快照比对得出的「范围外改动」与改动统计说明（S-1b）。
+const SCHEMA_V7: &str = r#"
+ALTER TABLE runs ADD COLUMN out_of_scope TEXT NOT NULL DEFAULT '[]';
+ALTER TABLE runs ADD COLUMN change_note TEXT;
+"#;
+
 const MIGRATIONS: &[&str] = &[
-    SCHEMA_V1, SCHEMA_V2, SCHEMA_V3, SCHEMA_V4, SCHEMA_V5, SCHEMA_V6,
+    SCHEMA_V1, SCHEMA_V2, SCHEMA_V3, SCHEMA_V4, SCHEMA_V5, SCHEMA_V6, SCHEMA_V7,
 ];
 
 /// 打开数据库：WAL 日志、synchronous=NORMAL、开启外键，并迁移到当前版本。

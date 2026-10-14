@@ -18,6 +18,26 @@ import {
   runElapsedSeconds,
 } from "./runUi.js";
 
+/** Agent 未经确认改动了权限范围外的文件（快照比对的结果，后端给出清单）。 */
+function OutOfScopeAlert({ run }: { run: Run }) {
+  return (
+    <section className="run-outcome__alert run-outcome__alert--scope" role="alert">
+      <h4 className="run-outcome__alert-title">⚠ Agent 未经确认改动了范围外的文件</h4>
+      <p className="run-outcome__alert-text">
+        这些文件不在本岗位文件夹、不在任务引用的文件里，执行中也没有收到对应的权限请求。
+        {run.isolation === "in_place" ? "原地执行不会自动回滚，请检查后处理。" : ""}
+      </p>
+      <ul className="run-outcome__alert-files">
+        {run.outOfScope.map((path) => (
+          <li key={path} title={path}>
+            {path}
+          </li>
+        ))}
+      </ul>
+    </section>
+  );
+}
+
 /** 改动文件列表：成功区与失败区共用。 */
 function ChangedFiles({ run, showHint }: { run: Run; showHint: boolean }) {
   return (
@@ -36,12 +56,16 @@ function ChangedFiles({ run, showHint }: { run: Run; showHint: boolean }) {
                 <span className="run-file__path" title={file.path}>
                   {file.path}
                 </span>
-                <Tag tone={fileChangeTone[file.change]}>{fileChangeLabel[file.change]}</Tag>
+                <span className="run-file__tags">
+                  {run.outOfScope.includes(file.path) ? <Tag tone="warning">范围外</Tag> : null}
+                  <Tag tone={fileChangeTone[file.change]}>{fileChangeLabel[file.change]}</Tag>
+                </span>
               </div>
             </li>
           ))}
         </ul>
       )}
+      {run.changeNote === null ? null : <p className="run-outcome__muted">{run.changeNote}</p>}
       {showHint ? (
         <p className="run-outcome__muted">
           {run.isolation === "worktree"
@@ -110,16 +134,24 @@ export function RunOutcome(props: RunOutcomeProps) {
   if (run.status === "succeeded") {
     return <SuccessOutcome {...props} />;
   }
-  if (run.status === "failed") {
-    return <FailureOutcome {...props} />;
-  }
-  if (run.status === "interrupted") {
-    return <InterruptedOutcome {...props} />;
-  }
-  if (run.takenOver) {
-    return <TakeoverOutcome {...props} />;
-  }
-  return <CancelledOutcome {...props} />;
+  // 其他结局下的范围外改动提示放在面板上方；成功面板自己处理（任务因此受阻，不是待验收）。
+  const alert = run.outOfScope.length === 0 ? null : <OutOfScopeAlert run={run} />;
+  const panel =
+    run.status === "failed" ? (
+      <FailureOutcome {...props} />
+    ) : run.status === "interrupted" ? (
+      <InterruptedOutcome {...props} />
+    ) : run.takenOver ? (
+      <TakeoverOutcome {...props} />
+    ) : (
+      <CancelledOutcome {...props} />
+    );
+  return (
+    <>
+      {alert}
+      {panel}
+    </>
+  );
 }
 
 function Subtitle({ run, taskKey, taskTitle }: { run: Run; taskKey: string; taskTitle: string }) {
@@ -139,13 +171,25 @@ function SuccessOutcome({
   onToggleChanged,
   onGoReview,
 }: RunOutcomeProps) {
+  // 后端判定 Agent 改了权限范围外的文件：执行完成，但任务受阻，不进入待验收。
+  const scopeBlocked = run.outOfScope.length > 0;
   return (
-    <section className="run-outcome run-outcome--success">
+    <section
+      className={`run-outcome run-outcome--success${scopeBlocked ? " run-outcome--scope-blocked" : ""}`}
+    >
       <header className="run-outcome__head">
-        <h3 className="run-outcome__title">执行完成</h3>
-        <Tag tone="success">已完成 · 待验收</Tag>
+        <h3 className="run-outcome__title">
+          {scopeBlocked ? "执行完成，但有范围外改动" : "执行完成"}
+        </h3>
+        {scopeBlocked ? (
+          <Tag tone="warning">已完成 · 受阻</Tag>
+        ) : (
+          <Tag tone="success">已完成 · 待验收</Tag>
+        )}
       </header>
       <Subtitle run={run} taskKey={taskKey} taskTitle={taskTitle} />
+
+      {scopeBlocked ? <OutOfScopeAlert run={run} /> : null}
 
       <Card title="执行摘要">
         <p className="run-outcome__summary">
@@ -178,10 +222,12 @@ function SuccessOutcome({
         <Button variant="neutral" onClick={onToggleChanged} aria-expanded={changedOpen}>
           {changedOpen ? "收起改动" : "查看改动"}
         </Button>
-        <Button onClick={onGoReview}>去验收</Button>
+        {scopeBlocked ? null : <Button onClick={onGoReview}>去验收</Button>}
       </div>
       <p className="run-outcome__note">
-        执行完成不等于验收通过：任务进入「待验收」，由你查看改动后决定通过或退回。
+        {scopeBlocked
+          ? "任务已转为受阻：请先检查上面的文件，处理后再继续（原因见任务的受阻原因）。"
+          : "执行完成不等于验收通过：任务进入「待验收」，由你查看改动后决定通过或退回。"}
       </p>
     </section>
   );
