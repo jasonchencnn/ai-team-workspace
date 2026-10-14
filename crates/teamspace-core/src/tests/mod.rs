@@ -3,6 +3,10 @@
 mod events;
 mod folders;
 mod harnesses;
+#[cfg(unix)]
+mod qa_round2;
+#[cfg(unix)]
+mod qa_round2_run;
 mod roles;
 mod runs;
 mod tasks;

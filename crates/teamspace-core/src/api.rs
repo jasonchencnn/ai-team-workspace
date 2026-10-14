@@ -155,6 +155,14 @@ impl Deref for Teamspace {
     }
 }
 
+#[cfg(test)]
+impl Teamspace {
+    /// 仅测试用：取得内核共享状态的句柄，用于在 crate 内部构造 Driver 等对象。
+    pub(crate) fn core_handle(&self) -> Arc<Core> {
+        Arc::clone(&self.core)
+    }
+}
+
 impl Drop for Teamspace {
     fn drop(&mut self) {
         self.core.shutdown_runs();

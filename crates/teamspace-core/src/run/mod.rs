@@ -19,6 +19,9 @@
 //! 事件：每次执行记录或执行进度变化后（事务提交后）通过 [`Runs::set_listener`] 设置的回调推送
 //! [`RunEvent`]。
 
+#[cfg(test)]
+mod fencing_tests;
+
 pub mod brief;
 pub mod env_profile;
 pub mod policy;
