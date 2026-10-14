@@ -127,13 +127,19 @@ function TaskCard({
         tone={task.status === "blocked" ? "warning" : "default"}
         title={
           <span className="task-card__title">
+            {badge === null && task.status !== "todo" && task.status !== "ready" ? null : (
+              <span className="task-card__badges">
+                {badge === null ? null : <Tag tone={badge.tone}>{badge.label}</Tag>}
+                {task.status === "todo" || task.status === "ready" ? (
+                  <Tag tone={statusTone[task.status]}>
+                    {task.status === "todo" ? "TODO" : "READY"}
+                  </Tag>
+                ) : null}
+              </span>
+            )}
             <span className="task-card__name">
               {task.key} {task.title}
             </span>
-            {badge === null ? null : <Tag tone={badge.tone}>{badge.label}</Tag>}
-            {task.status === "todo" || task.status === "ready" ? (
-              <Tag tone={statusTone[task.status]}>{task.status === "todo" ? "TODO" : "READY"}</Tag>
-            ) : null}
           </span>
         }
       >
