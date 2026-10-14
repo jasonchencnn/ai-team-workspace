@@ -462,10 +462,10 @@ struct Driver {
     pending: Vec<PendingPermission>,
     /// 经 `fs/write_text_file` 写入的文件（规范化路径）与改动类型。
     writes: BTreeMap<PathBuf, FileChangeKind>,
-    /// 权限请求被允许的编辑路径（规范化），之后的 `fs/write_text_file` 据此放行。
+    /// Human 明确允许的编辑（`edit`）请求涉及的路径（规范化），之后对同一路径的 `fs/write_text_file`
+    /// 据此放行（精确匹配）。规则自动允许的请求、Human 允许的其他类型请求（读取、搜索、执行命令等）
+    /// 都不会记入这里（Q-01）。
     granted: Vec<PathBuf>,
-    /// 其中由 Human 允许的路径。工作日志的非追加写入只认这里（规则自动允许的不算）。
-    human_granted: Vec<PathBuf>,
     tool_call_count: u32,
 }
 
@@ -497,7 +497,6 @@ impl Driver {
             pending: Vec::new(),
             writes: BTreeMap::new(),
             granted: Vec::new(),
-            human_granted: Vec::new(),
         }
     }
 
@@ -1436,7 +1435,7 @@ impl Driver {
                     .iter()
                     .find_map(|k| options.iter().find(|o| o.kind == *k));
                 if let Some(option) = allow {
-                    self.grant(&paths);
+                    // 规则自动允许不授予写权限：编辑本就在范围内，读取与搜索不能变成可写（Q-01）。
                     let _ = self.conn().respond(
                         &rpc_id,
                         json!({ "outcome": { "outcome": "selected", "optionId": option.option_id } }),
@@ -1500,15 +1499,10 @@ impl Driver {
             .cloned()
             .ok_or_else(|| Error::invalid("所选选项不属于这个权限请求"))?;
         let p = self.pending.remove(index);
-        if option.kind.starts_with("allow") {
+        // 只有 Human 对编辑请求本身的允许才放开写入；允许执行命令、读取等不让路径变成可写（Q-01/N-02）。
+        if option.kind.starts_with("allow") && p.prompt.tool_kind.as_deref() == Some("edit") {
             let paths = p.prompt.paths.clone();
             self.grant(&paths);
-            let base = self.scope().exec_dir().to_path_buf();
-            self.human_granted.extend(
-                paths
-                    .iter()
-                    .filter_map(|path| policy::resolve(Path::new(path), &base).ok()),
-            );
         }
         let _ = self.conn().respond(
             &p.rpc_id,
@@ -1634,14 +1628,14 @@ impl Driver {
     }
 
     /// 写本岗位工作日志（D14）：每次都在写入锁内重新读取并判断是否纯追加，纯追加只追加多出的部分；
-    /// 不因权限请求被规则自动允许（`granted`）而放行，非追加写入只在 Human 允许过该路径时整体写入。
+    /// 非追加写入只在 Human 明确允许过对该路径的编辑（`granted`）时整体写入。
     fn write_journal(
         &mut self,
         real: PathBuf,
         path: &str,
         content: &str,
     ) -> std::result::Result<String, String> {
-        let by_human = self.human_granted.contains(&real);
+        let by_human = self.granted.contains(&real);
         match role_folder::write_journal_from_agent(&real, content, by_human) {
             // 追加进展不算任务产出，不记入改动文件。
             Ok(role_folder::AgentJournalWrite::Appended(_)) => {

@@ -249,8 +249,7 @@ fn readgrant_case(git_repo: bool, kind: &str, target: Target) {
     }
 }
 
-/// 工作日志的追加判断（D14）对每次写入都生效，不因 read/search 被规则自动允许（`granted`）而跳过，
-/// 因此这几种组合不受 Q-01 影响，不再忽略。
+/// 工作日志的追加判断（D14）对每次写入都生效；与其他目标一样，read/search 被规则自动允许不产生写权限。
 macro_rules! readgrant_journal {
     ($name:ident, $repo:expr, $kind:expr) => {
         #[test]
@@ -263,7 +262,6 @@ macro_rules! readgrant_journal {
 macro_rules! readgrant {
     ($name:ident, $git:expr, $kind:expr, $target:expr) => {
         #[test]
-        #[ignore = "缺陷 K-PERM-008 (Q-01): read/search 自动允许会调用 grant()，之后对同一路径的 fs/write_text_file 被放行"]
         fn $name() {
             readgrant_case($git, $kind, $target);
         }
