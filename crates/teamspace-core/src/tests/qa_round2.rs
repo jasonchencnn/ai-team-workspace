@@ -2237,7 +2237,6 @@ fn k_sec_001_control_characters_and_overlong_refs_are_rejected() {
 
 /// K-SEC-002：引用指向工作空间外的符号链接。期望：越界链接不就绪；或至少不嵌入说明包、不获得写权限。
 #[test]
-#[ignore = "缺陷 K-SEC-002（Q-06/N-04）: 存在性判断跟随符号链接，链接目标被嵌入说明包，且 Scope 把链接目标纳入自动写入范围"]
 fn k_sec_002_symlink_outside_workspace_is_not_embedded_or_writable() {
     use crate::model::RunIsolation;
     use crate::run::{brief, policy::Scope};
@@ -2260,10 +2259,15 @@ fn k_sec_002_symlink_outside_workspace_is_not_embedded_or_writable() {
             vec![],
         )
         .unwrap();
-    if f.move_to(&task.task.id, TaskStatus::Ready).is_err() {
-        return; // 越界链接不满足就绪条件：符合期望。
-    }
-    // 已就绪：至少说明包不能嵌入链接目标的内容。
+    // 越界链接不满足就绪条件，原因为「引用文件不在工作空间内」。
+    let err = f
+        .move_to(&task.task.id, TaskStatus::Ready)
+        .expect_err("越界链接不应就绪");
+    assert!(
+        err.to_string().contains("引用文件不在工作空间内：notes.md"),
+        "{err}"
+    );
+    // 说明包也不能嵌入链接目标的内容（纵深防御）。
     let link = f.ws.join("notes.md");
     let blocks = brief::prompt_blocks(
         "正文",
@@ -2273,6 +2277,7 @@ fn k_sec_002_symlink_outside_workspace_is_not_embedded_or_writable() {
             absolute: link.clone(),
         }],
         true,
+        &[f.ws.as_path()],
     );
     let embedded = serde_json::to_string(&blocks).unwrap();
     assert!(

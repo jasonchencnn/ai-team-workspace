@@ -175,28 +175,46 @@ pub(crate) fn board(conn: &Connection, query: &TaskBoardQuery) -> Result<TaskBoa
 pub(crate) struct FileCheck {
     workspace_ok: bool,
     existing: HashSet<String>,
+    /// 存在、但真实路径（解析符号链接后）在工作空间之外的引用（Q-06）。
+    outside: HashSet<String>,
 }
 
 impl FileCheck {
-    /// 检查工作区目录与各引用文件是否存在。
+    /// 检查工作区目录与各引用文件是否存在，且真实路径在工作空间内。
     pub(crate) fn scan(workspace: &Path, refs: &[FileRef]) -> Self {
         let workspace_ok = workspace.is_dir();
-        let existing = if workspace_ok {
-            refs.iter()
-                .filter(|r| workspace.join(&r.path).exists())
-                .map(|r| r.path.clone())
-                .collect()
-        } else {
-            HashSet::new()
-        };
+        let mut existing = HashSet::new();
+        let mut outside = HashSet::new();
+        if let Some(root) = workspace_ok
+            .then(|| workspace.canonicalize().ok())
+            .flatten()
+        {
+            for r in refs {
+                match workspace.join(&r.path).canonicalize() {
+                    Ok(real) if real.starts_with(&root) => {
+                        existing.insert(r.path.clone());
+                    }
+                    Ok(_) => {
+                        outside.insert(r.path.clone());
+                    }
+                    Err(_) => {}
+                }
+            }
+        }
         Self {
             workspace_ok,
             existing,
+            outside,
         }
     }
 
+    /// 引用存在且真实路径在工作空间内。
     fn exists(&self, path: &str) -> bool {
         self.workspace_ok && self.existing.contains(path)
+    }
+
+    fn is_outside(&self, path: &str) -> bool {
+        self.workspace_ok && self.outside.contains(path)
     }
 }
 
@@ -348,7 +366,9 @@ pub(crate) fn readiness(
         Err(_) => problems.push("未指定负责岗位".to_owned()),
     }
     for r in refs {
-        if !files.exists(&r.path) {
+        if files.is_outside(&r.path) {
+            problems.push(format!("引用文件不在工作空间内：{}", r.path));
+        } else if !files.exists(&r.path) {
             problems.push(format!("引用的文件在工作区中不存在：{}", r.path));
         }
     }

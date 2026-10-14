@@ -653,8 +653,9 @@ impl Driver {
                 refs.push(exec_dir.join(&r.path));
             }
         }
-        self.scope = Some(Scope::new(
+        self.scope = Some(Scope::with_workspace(
             &exec_dir,
+            &ctx.workspace,
             self.run.isolation,
             &role_folders,
             &refs,
@@ -757,7 +758,12 @@ impl Driver {
             Mode::Start => self.brief_refs(&ctx, &exec_dir),
             Mode::Resume => Vec::new(),
         };
-        let blocks = brief::prompt_blocks(&text, &refs, caps.embedded_context);
+        let blocks = brief::prompt_blocks(
+            &text,
+            &refs,
+            caps.embedded_context,
+            &[exec_dir.as_path(), ctx.workspace.as_path()],
+        );
         self.append_message(MessageRole::User, &text);
         self.message = None;
         let run_id = self.run.id.clone();

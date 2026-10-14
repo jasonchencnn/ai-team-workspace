@@ -244,11 +244,28 @@ fn embeddable(path: &Path) -> Option<String> {
     String::from_utf8(std::fs::read(path).ok()?).ok()
 }
 
+/// 引用文件的真实路径（解析符号链接后）是否在 `roots`（工作空间、执行目录）之一之内（Q-06）。
+/// 文件不存在或无法解析时为 `false`。
+pub fn ref_inside(path: &Path, roots: &[&Path]) -> bool {
+    let Ok(real) = path.canonicalize() else {
+        return false;
+    };
+    roots
+        .iter()
+        .filter_map(|root| root.canonicalize().ok())
+        .any(|root| real.starts_with(root))
+}
+
 /// `session/prompt` 的内容块：正文一个 text 块，之后每个引用文件一个 resource（嵌入）或
-/// resource_link 块。
-pub fn prompt_blocks(text: &str, refs: &[BriefRef], embedded_context: bool) -> Vec<Value> {
+/// resource_link 块。真实路径不在 `roots` 之内的引用（指向外部的符号链接）既不嵌入也不链接。
+pub fn prompt_blocks(
+    text: &str,
+    refs: &[BriefRef],
+    embedded_context: bool,
+    roots: &[&Path],
+) -> Vec<Value> {
     let mut blocks = vec![json!({ "type": "text", "text": text })];
-    for r in refs {
+    for r in refs.iter().filter(|r| ref_inside(&r.absolute, roots)) {
         let uri = file_uri(&r.absolute);
         let content = embedded_context.then(|| embeddable(&r.absolute)).flatten();
         blocks.push(match content {
@@ -498,7 +515,8 @@ mod tests {
                 absolute: big,
             },
         ];
-        let blocks = prompt_blocks("正文", &refs, true);
+        let root = dir.path();
+        let blocks = prompt_blocks("正文", &refs, true, &[root]);
         assert_eq!(blocks[0], json!({ "type": "text", "text": "正文" }));
         assert_eq!(blocks[1]["type"], "resource");
         assert_eq!(blocks[1]["resource"]["text"], "# 标题");
@@ -506,12 +524,32 @@ mod tests {
         assert_eq!(blocks[2]["type"], "resource_link");
         assert_eq!(blocks[2]["name"], "big.txt");
 
-        let blocks = prompt_blocks("正文", &refs, false);
+        let blocks = prompt_blocks("正文", &refs, false, &[root]);
         assert_eq!(blocks[1]["type"], "resource_link");
         assert_eq!(
             path_from_uri(blocks[1]["uri"].as_str().unwrap()).unwrap(),
             small
         );
+
+        // 指向根目录外的符号链接、不存在的文件：不出现在内容块里。
+        let other = tempfile::tempdir().unwrap();
+        let secret = other.path().join("secret.txt");
+        std::fs::write(&secret, "TOP").unwrap();
+        let link = dir.path().join("link.md");
+        std::os::unix::fs::symlink(&secret, &link).unwrap();
+        let outside = [
+            BriefRef {
+                path: "link.md".into(),
+                anchor: None,
+                absolute: link,
+            },
+            BriefRef {
+                path: "missing.md".into(),
+                anchor: None,
+                absolute: dir.path().join("missing.md"),
+            },
+        ];
+        assert_eq!(prompt_blocks("正文", &outside, true, &[root]).len(), 1);
     }
 
     #[test]
