@@ -731,8 +731,11 @@ test("RUN-PRM-010 侧栏「权限规则」：原地执行的自动批准 / 转�
   await expect(auto).toContainText(`写入本岗位文件夹 Teamspace/${ROLE}/`);
   await expect(auto).toContainText(`写入任务引用文件：${SPEC_REF}`);
   await expect(auto).not.toContainText("worktree");
+  // D14：工作日志允许追加，岗位说明需确认
+  await expect(auto).toContainText(`在本岗位工作日志 Teamspace/${ROLE}/工作日志.md 末尾追加进展`);
   const ask = panel.locator(".run-rule", { hasText: "转交你确认" });
   await expect(ask).toContainText("写入其他位置");
+  await expect(ask).toContainText("修改岗位说明.md；改动或删除工作日志中的已有内容");
   await expect(ask).toContainText("执行命令");
   await expect(ask).toContainText("删除、移动文件，访问网络，切换 Agent 工作模式");
   await expect(panel.locator(".run-side__note")).toContainText("原地：普通文件夹");
@@ -762,7 +765,7 @@ defect(
     await expect(panel.locator(".run-side__note")).not.toContainText(
       "同一文件夹同时只运行一个执行",
     );
-    // 期望：岗位说明与工作日志是例外，修改需确认；读取类请求一律自动允许（现状两处都没有）
+    // 期望：岗位说明需确认、工作日志只允许追加（D14，已在面板写明）；读取类请求一律自动允许（现状没有）
     await expect(panel).toContainText("岗位说明");
     await expect(panel).toContainText("工作日志");
     await expect(panel.locator(".run-rule", { hasText: "自动批准" })).not.toContainText(

@@ -2,8 +2,8 @@
 //!
 //! 每个岗位文件夹包含：
 //! - `岗位说明.md`：由 Teamspace 生成，岗位信息或绑定变化时整体重写，用户不应手改；
-//! - `工作日志.md`：只追加，记录与岗位相关的事件（M2 起还会追加执行摘要和 Harness 进展，
-//!   见公开的 [`append_journal`]）；
+//! - `工作日志.md`：只追加，记录与岗位相关的事件和执行摘要（[`append_journal`]）；Harness 执行时也可以
+//!   在末尾追加进展（D14，经 [`write_journal_from_agent`]，只接受纯追加）；
 //! - `过程文件/`：Harness 执行时的过程产物和用户手写内容，Teamspace 只放一个 `README.md`。
 //!
 //! 本模块只做文件系统操作、不访问数据库，由 `api` 层在数据库锁之外调用（M1 审查 #2 原则）。
@@ -200,20 +200,74 @@ impl JournalEntry {
     }
 }
 
+/// 工作日志写入锁：Teamspace 自己的追加（[`append_journal`]）与 Agent 经 `fs/write_text_file` 的写入
+/// （[`write_journal_from_agent`]）在这把锁内进行，保证「重新读取 → 判断 → 追加」不被另一方插入。
+/// 两边追加都用 `O_APPEND`，即使绕过锁也只会改变行的先后，不会互相覆盖。
+static JOURNAL_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+fn journal_lock() -> std::sync::MutexGuard<'static, ()> {
+    JOURNAL_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+fn append_text(path: &Path, text: &str) -> std::io::Result<()> {
+    let mut file = fs::OpenOptions::new().append(true).open(path)?;
+    file.write_all(text.as_bytes())?;
+    file.flush()
+}
+
 /// 向岗位文件夹 `folder` 的工作日志追加条目（只追加，不改已有内容）。
 ///
-/// 日志文件须已存在（由 Teamspace 同步岗位文件夹时创建）。这是 M2 起追加执行摘要和 Harness
-/// 进展的入口；与事件日志同步并发时各条目按行原子追加，不会互相截断。
+/// 日志文件须已存在（由 Teamspace 同步岗位文件夹时创建）。在 [`JOURNAL_LOCK`] 内以 `O_APPEND` 写入，
+/// 与 Agent 追加的进展交错时双方的行都保留。
 pub fn append_journal(folder: &Path, entries: &[JournalEntry]) -> std::io::Result<()> {
     if entries.is_empty() {
         return Ok(());
     }
     let text: String = entries.iter().map(JournalEntry::line).collect();
-    let mut file = fs::OpenOptions::new()
-        .append(true)
-        .open(folder.join(JOURNAL_FILE))?;
-    file.write_all(text.as_bytes())?;
-    file.flush()
+    let _guard = journal_lock();
+    append_text(&folder.join(JOURNAL_FILE), &text)
+}
+
+/// Agent 写工作日志（ACP `fs/write_text_file` 是整文件写入）的结果。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AgentJournalWrite {
+    /// 新内容以磁盘上的现有内容为前缀：只把多出的部分追加到文件末尾（字节数）。
+    Appended(usize),
+    /// 不是纯追加，但 Human 已允许：按新内容整体写入。
+    Overwritten,
+    /// 不是纯追加（覆盖、删改、截断，或文件不存在），且没有 Human 的允许：未写入。
+    NotAppend,
+}
+
+/// 处理 Agent 对工作日志 `path` 的整文件写入 `content`（D14）。
+///
+/// 在 [`JOURNAL_LOCK`] 内重新读取磁盘内容：`content` 以它为前缀时只追加多出的部分（`O_APPEND`），
+/// 因此不会冲掉 Teamspace 在 Agent 读取之后追加的行——那种情况下 `content` 不再以磁盘内容为前缀，
+/// 判为非追加。非追加的写入仅在 `allow_overwrite`（Human 已允许）时整体写入。
+pub fn write_journal_from_agent(
+    path: &Path,
+    content: &str,
+    allow_overwrite: bool,
+) -> std::io::Result<AgentJournalWrite> {
+    let _guard = journal_lock();
+    let current = match fs::read_to_string(path) {
+        Ok(text) => Some(text),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => None,
+        Err(err) => return Err(err),
+    };
+    if let Some(suffix) = current.as_deref().and_then(|c| content.strip_prefix(c)) {
+        if !suffix.is_empty() {
+            append_text(path, suffix)?;
+        }
+        return Ok(AgentJournalWrite::Appended(suffix.len()));
+    }
+    if allow_overwrite {
+        fs::write(path, content)?;
+        return Ok(AgentJournalWrite::Overwritten);
+    }
+    Ok(AgentJournalWrite::NotAppend)
 }
 
 /// 读取工作日志最近的 `limit` 条（以 `- ` 开头的行），最新的在前，去掉行首的 `- `。
@@ -632,6 +686,130 @@ mod tests {
             "{recent:?}"
         );
         assert!(append_journal(&dir.path().join("missing"), &[entry(None, "x")]).is_err());
+    }
+
+    fn entry_at(text: &str) -> JournalEntry {
+        JournalEntry {
+            at: "2026-10-13T06:05:01.262Z".into(),
+            task_key: Some("FE-001".into()),
+            text: text.into(),
+        }
+    }
+
+    #[test]
+    fn agent_journal_writes_only_append() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(JOURNAL_FILE);
+        fs::write(&path, "# 工作日志\n\n- a\n").unwrap();
+
+        // 纯追加：只追加多出的部分。
+        let out = write_journal_from_agent(&path, "# 工作日志\n\n- a\n- b\n", false).unwrap();
+        assert_eq!(out, AgentJournalWrite::Appended(4));
+        assert_eq!(
+            fs::read_to_string(&path).unwrap(),
+            "# 工作日志\n\n- a\n- b\n"
+        );
+        // 内容不变也算追加（空追加）。
+        let same = fs::read_to_string(&path).unwrap();
+        assert_eq!(
+            write_journal_from_agent(&path, &same, false).unwrap(),
+            AgentJournalWrite::Appended(0)
+        );
+
+        // 覆盖、截断、删改：不写入。
+        for bad in [
+            "全新内容\n",
+            "# 工作日志\n\n- a\n",
+            "# 工作日志\n\n- A\n- b\n- c\n",
+            "",
+        ] {
+            assert_eq!(
+                write_journal_from_agent(&path, bad, false).unwrap(),
+                AgentJournalWrite::NotAppend,
+                "{bad:?}"
+            );
+        }
+        assert_eq!(
+            fs::read_to_string(&path).unwrap(),
+            "# 工作日志\n\n- a\n- b\n"
+        );
+
+        // 文件不存在：不算追加，也不创建。
+        let missing = dir.path().join("其他.md");
+        assert_eq!(
+            write_journal_from_agent(&missing, "- x\n", false).unwrap(),
+            AgentJournalWrite::NotAppend
+        );
+        assert!(!missing.exists());
+
+        // Human 已允许时整体写入。
+        assert_eq!(
+            write_journal_from_agent(&path, "重写\n", true).unwrap(),
+            AgentJournalWrite::Overwritten
+        );
+        assert_eq!(fs::read_to_string(&path).unwrap(), "重写\n");
+    }
+
+    #[test]
+    fn teamspace_and_agent_appends_interleave_without_loss() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(JOURNAL_FILE);
+        fs::write(&path, "# 工作日志\n\n").unwrap();
+
+        // Agent 读取后 Teamspace 追加：Agent 基于旧内容的写入被判为非追加，Teamspace 的行不丢。
+        let seen = fs::read_to_string(&path).unwrap();
+        append_journal(dir.path(), &[entry_at("开始第 1 次执行")]).unwrap();
+        assert_eq!(
+            write_journal_from_agent(&path, &format!("{seen}- 进展一\n"), false).unwrap(),
+            AgentJournalWrite::NotAppend
+        );
+        // 重新读取后追加成功，之后 Teamspace 再追加。
+        let seen = fs::read_to_string(&path).unwrap();
+        write_journal_from_agent(&path, &format!("{seen}- 进展一\n"), false).unwrap();
+        append_journal(dir.path(), &[entry_at("第 1 次执行完成")]).unwrap();
+        let text = fs::read_to_string(&path).unwrap();
+        let lines: Vec<&str> = text.lines().filter(|l| l.starts_with("- ")).collect();
+        assert_eq!(lines.len(), 3, "{text}");
+        assert!(lines[0].ends_with("FE-001 · 开始第 1 次执行"), "{text}");
+        assert_eq!(lines[1], "- 进展一");
+        assert!(lines[2].ends_with("FE-001 · 第 1 次执行完成"), "{text}");
+
+        // 并发：两个线程交错写，所有行都在。
+        let teamspace = {
+            let folder = dir.path().to_path_buf();
+            std::thread::spawn(move || {
+                for i in 0..50 {
+                    append_journal(&folder, &[entry_at(&format!("ts-{i}"))]).unwrap();
+                }
+            })
+        };
+        let agent = {
+            let path = path.clone();
+            std::thread::spawn(move || {
+                for i in 0..50 {
+                    loop {
+                        let seen = fs::read_to_string(&path).unwrap();
+                        let next = format!("{seen}- agent-{i}\n");
+                        if let AgentJournalWrite::Appended(_) =
+                            write_journal_from_agent(&path, &next, false).unwrap()
+                        {
+                            break;
+                        }
+                    }
+                }
+            })
+        };
+        teamspace.join().unwrap();
+        agent.join().unwrap();
+        let text = fs::read_to_string(&path).unwrap();
+        for i in 0..50 {
+            assert_eq!(text.matches(&format!(" · ts-{i}\n")).count(), 1, "ts-{i}");
+            assert_eq!(
+                text.matches(&format!("- agent-{i}\n")).count(),
+                1,
+                "agent-{i}"
+            );
+        }
     }
 
     fn set_mtime(path: &Path, secs: u64) {

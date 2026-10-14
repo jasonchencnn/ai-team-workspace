@@ -55,6 +55,23 @@ pub struct BriefInput {
     pub branch: Option<String>,
     /// 岗位文件夹相对工作空间（也即相对执行目录）的路径，如 `Teamspace/前端开发`；尚未建立时为 `None`。
     pub role_folder: Option<String>,
+    /// 工作空间中本岗位工作日志的绝对路径（Teamspace 写入的那一份；worktree 执行时不在执行目录内）。
+    /// 为 `None` 时按 `role_folder` 给出相对路径。
+    pub journal_path: Option<String>,
+}
+
+/// 工作日志条目的格式说明（与 [`crate::role_folder::JournalEntry`] 写入的行一致）。
+fn journal_format(task_key: &str) -> String {
+    format!("`- YYYY-MM-DD HH:MM:SS UTC±HH:MM · {task_key} · 进展`（本地时间）")
+}
+
+/// 「可以在工作日志末尾追加进展」的要求（D14）。
+fn journal_rule(journal: &str, task_key: &str) -> String {
+    format!(
+        "执行过程中可以在本岗位工作日志 `{journal}` 的末尾追加进展，每条一行，格式与已有条目一致：{}。\
+         只能追加：写入前先重新读取文件，新内容必须以文件现有内容开头；修改或删除已有内容需要 Human 确认。",
+        journal_format(task_key)
+    )
 }
 
 fn or_none(text: &str) -> &str {
@@ -164,15 +181,21 @@ pub fn render(input: &BriefInput) -> String {
             "1. 过程文件（草稿、调研记录、中间结果）放在 `{folder}/{PROCESS_DIR}/`（相对工作目录）。"
         ),
     );
+    let journal = input
+        .journal_path
+        .clone()
+        .unwrap_or_else(|| format!("{folder}/{JOURNAL_FILE}"));
     push(
         &mut out,
-        &format!(
-            "2. 不要修改 `{folder}/{BRIEF_FILE}` 和 `{folder}/{JOURNAL_FILE}`，它们由 Teamspace 维护。"
-        ),
+        &format!("2. {}", journal_rule(&journal, &input.task_key)),
     );
     push(
         &mut out,
-        "3. 完成后用一段话总结：做了什么、改了哪些文件。这段总结会写入岗位工作日志。",
+        &format!("3. 不要修改 `{folder}/{BRIEF_FILE}`，它由 Teamspace 维护。"),
+    );
+    push(
+        &mut out,
+        "4. 完成后用一段话总结：做了什么、改了哪些文件。这段总结会写入岗位工作日志。",
     );
     out
 }
@@ -250,12 +273,15 @@ fn mime(path: &str) -> &'static str {
     }
 }
 
-/// 续接（`session/load` 之后）时发送的提示：重申过程文件位置与总结要求。
-pub fn resume_text(task_key: &str, role_folder: &str) -> String {
+/// 续接（`session/load` 之后）时发送的提示：重申过程文件位置、工作日志追加规则与总结要求。
+/// `journal` 为工作日志路径（`None` 时按 `role_folder` 给出相对路径）。
+pub fn resume_text(task_key: &str, role_folder: &str, journal: Option<&str>) -> String {
+    let journal = journal.map_or_else(|| format!("{role_folder}/{JOURNAL_FILE}"), str::to_owned);
     format!(
         "Teamspace 重新连接了这个会话（之前的执行因应用退出而中断）。请检查任务 {task_key} 的进度并继续完成。\
-         过程文件仍放在 `{role_folder}/{PROCESS_DIR}/`（相对工作目录），不要修改 `{role_folder}/{BRIEF_FILE}` \
-         和 `{role_folder}/{JOURNAL_FILE}`；完成后用一段话总结：做了什么、改了哪些文件。"
+         过程文件仍放在 `{role_folder}/{PROCESS_DIR}/`（相对工作目录）。{}不要修改 `{role_folder}/{BRIEF_FILE}`；\
+         完成后用一段话总结：做了什么、改了哪些文件。",
+        journal_rule(&journal, task_key)
     )
 }
 
@@ -371,6 +397,7 @@ mod tests {
             isolation: RunIsolation::Worktree,
             branch: Some("teamspace/FE-001-r1".into()),
             role_folder: Some("Teamspace/前端开发".into()),
+            journal_path: Some("/ws/Teamspace/前端开发/工作日志.md".into()),
         }
     }
 
@@ -392,6 +419,9 @@ mod tests {
             "分支 `teamspace/FE-001-r1`",
             "`Teamspace/前端开发/过程文件/`",
             "不要修改 `Teamspace/前端开发/岗位说明.md`",
+            "可以在本岗位工作日志 `/ws/Teamspace/前端开发/工作日志.md` 的末尾追加进展",
+            "`- YYYY-MM-DD HH:MM:SS UTC±HH:MM · FE-001 · 进展`",
+            "只能追加",
             "用一段话总结",
         ] {
             assert!(text.contains(needle), "missing {needle:?} in\n{text}");
@@ -411,6 +441,7 @@ mod tests {
             refs: vec![],
             dependencies: vec![],
             role_folder: None,
+            journal_path: None,
             ..input()
         });
         assert!(text.contains("直接在工作空间中工作"));
@@ -418,12 +449,22 @@ mod tests {
         assert!(text.contains("## 引用文件\n（无）"));
         assert!(text.contains("## 依赖任务\n（无）"));
         assert!(text.contains("`Teamspace/前端开发/过程文件/`"));
+        assert!(text.contains("工作日志 `Teamspace/前端开发/工作日志.md` 的末尾追加进展"));
+        assert!(!text.contains("不要修改 `Teamspace/前端开发/工作日志.md`"));
     }
 
     #[test]
     fn resume_text_restates_requirements() {
-        let text = resume_text("FE-001", "Teamspace/前端");
+        let text = resume_text(
+            "FE-001",
+            "Teamspace/前端",
+            Some("/ws/Teamspace/前端/工作日志.md"),
+        );
         assert!(text.contains("FE-001"));
+        assert!(text.contains("`/ws/Teamspace/前端/工作日志.md` 的末尾追加进展"));
+        assert!(text.contains("不要修改 `Teamspace/前端/岗位说明.md`"));
+        let text = resume_text("FE-001", "Teamspace/前端", None);
+        assert!(text.contains("`Teamspace/前端/工作日志.md` 的末尾追加进展"));
         assert!(text.contains("`Teamspace/前端/过程文件/`"));
         assert!(text.contains("用一段话总结"));
     }
