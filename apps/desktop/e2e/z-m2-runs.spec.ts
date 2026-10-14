@@ -335,6 +335,39 @@ test("普通文件夹成功流程：原地执行，待验收，摘要与改动�
   await shot(page, "workbench-recent-run-and-journal");
 });
 
+test("D14：执行中 Agent 在工作日志末尾追加进展，自动允许，Teamspace 条目不丢", async ({ page }) => {
+  const before = journal(plain, ROLE);
+  const ref = await createTask(page, teamP, "记录进展 [mock:appendjournal]", ROLE, "READY");
+  await startRun(page);
+  const success = page.locator(".run-outcome--success");
+  await expect(success).toBeVisible({ timeout: TIMEOUT });
+  await expect(success.locator(".run-outcome__summary")).toContainText("[appendjournal:ok]");
+  // 追加工作日志不算改动文件：只有过程文件
+  const side = page.locator(".run-side__panel", { hasText: "本次改动文件" });
+  await expect(side).toContainText("1 个");
+  await expect(side).not.toContainText("工作日志.md");
+
+  // 已有内容不变；开始、Agent 进展、完成三条都在，完成在进展之后
+  await expect
+    .poll(() => journal(plain, ROLE), { timeout: TIMEOUT })
+    .toContain(`${ref.key} · 第 1 次执行完成`);
+  const log = journal(plain, ROLE);
+  expect(log.startsWith(before)).toBe(true);
+  const added = log
+    .slice(before.length)
+    .split("\n")
+    .filter((l) => l.length > 0);
+  const at = (needle: string) => added.findIndex((l) => l.includes(needle));
+  const started = at(`${ref.key} · 开始第 1 次执行`);
+  const progress = at(`${ref.key} · Mock 进展：已写入过程文件`);
+  const finished = at(`${ref.key} · 第 1 次执行完成`);
+  // 「开始」条目由 Teamspace 在启动 Agent 后同步写入，与 Agent 的追加先后不定，只要求都在
+  expect(started).toBeGreaterThanOrEqual(0);
+  expect(progress).toBeGreaterThanOrEqual(0);
+  expect(finished).toBeGreaterThan(progress);
+  for (const line of added) expect(line.startsWith("- ")).toBe(true);
+});
+
 test("没有文件引用的 READY 任务可以开始执行并成功", async ({ page }) => {
   await createTask(page, teamP, "无文件引用的任务", ROLE, "READY", false);
   await expect(startButton(page)).toBeEnabled();
