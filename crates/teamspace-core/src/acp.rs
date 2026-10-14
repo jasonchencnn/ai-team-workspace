@@ -22,7 +22,9 @@ use std::time::{Duration, Instant};
 use serde_json::{Value, json};
 
 use crate::model::{AcpCapabilities, AgentInfo, Handshake, HandshakeStatus};
-use crate::system_probe::{isolate_in_process_group, kill_process_group};
+use crate::system_probe::{
+    isolate_in_process_group, kill_process_group, scrub_inherited_claude_env,
+};
 
 pub mod connection;
 pub mod permission_mode;
@@ -288,6 +290,8 @@ pub fn handshake_process(
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    // 握手也要去掉继承的 Claude Code 会话变量，否则 claude-code-acp 会拒绝启动。
+    scrub_inherited_claude_env(&mut command, &[]);
     isolate_in_process_group(&mut command);
     let mut child = match command.spawn() {
         Ok(child) => child,

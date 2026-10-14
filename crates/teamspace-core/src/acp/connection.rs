@@ -23,7 +23,9 @@ use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 
-use crate::system_probe::{isolate_in_process_group, kill_process_group};
+use crate::system_probe::{
+    isolate_in_process_group, kill_process_group, scrub_inherited_claude_env,
+};
 
 /// 保留的 stderr 尾部字节数（只用于失败说明）。
 const STDERR_TAIL: usize = 16 * 1024;
@@ -307,6 +309,8 @@ impl AgentProcess {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
+        // 继承的 Claude Code 会话变量会让 claude-code-acp 拒绝启动；配置档案里显式设置的除外。
+        scrub_inherited_claude_env(&mut command, &spec.env);
         for (key, value) in &spec.env {
             command.env(key, value);
         }

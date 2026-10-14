@@ -444,6 +444,39 @@ fn run_command(command: &mut Command, timeout: Duration) -> std::io::Result<Comm
     })
 }
 
+/// 是否是「Claude Code 会话」环境变量：`CLAUDECODE` 与 `CLAUDE_CODE_*`。
+///
+/// Teamspace 若是从 Claude Code 的终端启动的，会继承这些变量；`claude-code-acp` 看到它们会报
+/// 「cannot be launched inside another Claude Code session」而无法启动，所以启动 Agent 时要去掉。
+pub(crate) fn is_claude_session_var(name: &str) -> bool {
+    name == "CLAUDECODE" || name.starts_with("CLAUDE_CODE_")
+}
+
+/// 从将要启动的 Agent 子进程的环境中去掉继承来的 Claude Code 会话变量（见 [`is_claude_session_var`]）。
+///
+/// `inherited` 是当前进程环境的变量名；`explicit` 是用户在配置档案里显式给出的变量，它们照常传给子进程
+/// （因此要在设置完 `explicit` 之后调用，或在其之前调用都可以：这里不会动 `explicit` 里的名字）。
+pub(crate) fn scrub_claude_session_env(
+    command: &mut Command,
+    inherited: impl IntoIterator<Item = std::ffi::OsString>,
+    explicit: &[(std::ffi::OsString, std::ffi::OsString)],
+) {
+    for name in inherited {
+        let is_session = name.to_str().is_some_and(is_claude_session_var);
+        if is_session && !explicit.iter().any(|(key, _)| *key == name) {
+            command.env_remove(&name);
+        }
+    }
+}
+
+/// 同 [`scrub_claude_session_env`]，`inherited` 取当前进程的真实环境。
+pub(crate) fn scrub_inherited_claude_env(
+    command: &mut Command,
+    explicit: &[(std::ffi::OsString, std::ffi::OsString)],
+) {
+    scrub_claude_session_env(command, std::env::vars_os().map(|(key, _)| key), explicit);
+}
+
 /// 让子进程成为新进程组的组长，这样超时可以整组一起杀。
 ///
 /// 子进程的后代默认都继承这个进程组，所以一次 `kill` 能收干净整棵进程树；`spawn` 失败时调用方
@@ -1323,5 +1356,96 @@ echo '{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":1,"agentInfo":{"name":
     fn first_non_empty_line_trims_and_skips_blanks() {
         assert_eq!(first_non_empty_line("\n  x  \n y\n").as_deref(), Some("x"));
         assert_eq!(first_non_empty_line("  \n\n"), None);
+    }
+    #[test]
+    fn claude_session_vars_are_recognised() {
+        for name in [
+            "CLAUDECODE",
+            "CLAUDE_CODE_ENTRYPOINT",
+            "CLAUDE_CODE_SSE_PORT",
+        ] {
+            assert!(is_claude_session_var(name), "{name}");
+        }
+        for name in [
+            "CLAUDE",
+            "CLAUDECODE2",
+            "CLAUDE_CODE",
+            "MY_CLAUDE_CODE_X",
+            "PATH",
+        ] {
+            assert!(!is_claude_session_var(name), "{name}");
+        }
+    }
+
+    /// 启动 Agent 时去掉继承来的 `CLAUDECODE` / `CLAUDE_CODE_*`，配置档案里显式给出的保留。
+    #[test]
+    fn scrub_removes_inherited_claude_session_vars_but_keeps_explicit_ones() {
+        let os = std::ffi::OsString::from;
+        let mut command = Command::new("/usr/bin/env");
+        command
+            .env_clear()
+            .env("CLAUDECODE", "1")
+            .env("CLAUDE_CODE_ENTRYPOINT", "cli")
+            .env("CLAUDE_CODE_USE_BEDROCK", "profile-value")
+            .env("OTHER_VAR", "keep");
+        let explicit = vec![(os("CLAUDE_CODE_USE_BEDROCK"), os("profile-value"))];
+        scrub_claude_session_env(
+            &mut command,
+            [
+                os("CLAUDECODE"),
+                os("CLAUDE_CODE_ENTRYPOINT"),
+                os("CLAUDE_CODE_USE_BEDROCK"),
+                os("OTHER_VAR"),
+            ],
+            &explicit,
+        );
+        let out = command.output().unwrap();
+        let text = String::from_utf8_lossy(&out.stdout).into_owned();
+        let lines: Vec<&str> = text.lines().collect();
+        assert!(
+            !lines.iter().any(|l| l.starts_with("CLAUDECODE=")),
+            "{text}"
+        );
+        assert!(
+            !lines
+                .iter()
+                .any(|l| l.starts_with("CLAUDE_CODE_ENTRYPOINT=")),
+            "{text}"
+        );
+        assert!(
+            lines.contains(&"CLAUDE_CODE_USE_BEDROCK=profile-value"),
+            "{text}"
+        );
+        assert!(lines.contains(&"OTHER_VAR=keep"), "{text}");
+    }
+
+    /// 真实启动路径：即使当前进程（例如在 Claude Code 终端里运行测试）带着这些变量，
+    /// Agent 子进程里也看不到；显式传入的同名变量照常生效。
+    #[test]
+    fn agent_process_does_not_inherit_claude_session_vars() {
+        let dir = tempfile::tempdir().unwrap();
+        let spec = crate::acp::connection::SpawnSpec {
+            program: "/bin/sh".into(),
+            args: vec![
+                "-c".into(),
+                r#"printf 'CLAUDECODE=[%s] ENTRY=[%s] KEEP=[%s]\n' "$CLAUDECODE" "$CLAUDE_CODE_ENTRYPOINT" "$CLAUDE_CODE_KEEP" >&2; read line"#
+                    .into(),
+            ],
+            cwd: dir.path().into(),
+            env: vec![("CLAUDE_CODE_KEEP".into(), "explicit".into())],
+        };
+        let process = crate::acp::connection::AgentProcess::spawn(&spec, |_| {}).unwrap();
+        let started = Instant::now();
+        let stderr = loop {
+            if let Some(text) = process.stderr_tail()
+                && text.contains("KEEP=")
+            {
+                break text;
+            }
+            assert!(started.elapsed() < Duration::from_secs(5), "子进程没有输出");
+            thread::sleep(Duration::from_millis(20));
+        };
+        process.kill();
+        assert_eq!(stderr.trim(), "CLAUDECODE=[] ENTRY=[] KEEP=[explicit]");
     }
 }
