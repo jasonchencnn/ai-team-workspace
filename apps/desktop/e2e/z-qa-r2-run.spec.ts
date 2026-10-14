@@ -874,9 +874,8 @@ test("RUN-FAIL-007 失败画面保留已改动文件，并支持重试 / 人工�
   expect((await runsOf(task.id)).map((r) => r.attempt)).toEqual([2, 1]);
 });
 
-// 缺陷（新）：失败画面上的「人工接管」按钮可点，但后端只允许接管活动或已中断的执行，
-// 点击确认后报错「执行已结束（失败），不能接管」，界面停在失败画面。
-defect("RUN-FAIL-007 [缺陷 新] 失败画面的「人工接管」确认后应进入已接管画面", async ({ page }) => {
+// G-7：失败画面上的「人工接管」确认后进入已接管画面（后端支持接管已失败的执行）。
+test("RUN-FAIL-007 失败画面的「人工接管」确认后应进入已接管画面", async ({ page }) => {
   const task = await plainTask("失败后接管 [mock:failafter]");
   await openTask(page, task);
   await startRunUi(page);

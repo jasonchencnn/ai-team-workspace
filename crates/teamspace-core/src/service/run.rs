@@ -401,6 +401,54 @@ pub(crate) fn reopen(conn: &Connection, id: &str) -> Result<()> {
     Ok(())
 }
 
+/// 可以由 Human 接管的已结束执行：已中断的，或已失败的（Figma 94-1001 状态区 B 的「人工接管」）。
+pub(crate) fn can_take_over(run: &Run) -> bool {
+    matches!(run.status, RunStatus::Interrupted | RunStatus::Failed) && !run.taken_over
+}
+
+/// 接管已结束的执行：标记 `taken_over` 并结束这条执行，任务从受阻回到执行中，由 Human 在执行目录里
+/// 继续处理；之后可重新执行或直接提交验收。活动与工作日志沿用既有的接管文案。
+///
+/// 活动执行由引擎在收到停止请求时走同一条路径（见 [`end`] 的 `taken_over`），本函数只处理已经结束的。
+pub(crate) fn takeover(conn: &Connection, run: &Run) -> Result<()> {
+    let failure = "人工接管".to_owned();
+    end(
+        conn,
+        &run.id,
+        RunStatus::Cancelled,
+        &Ending {
+            failure: Some(failure.clone()),
+            failure_kind: run.failure_kind,
+            summary: run.summary.clone(),
+            changed_files: run.changed_files.clone(),
+            tool_call_count: run.tool_call_count,
+            taken_over: true,
+            ..Ending::default()
+        },
+    )?;
+    status_update(conn, &run.id, RunStatus::Cancelled, Some(failure))?;
+    move_task(
+        conn,
+        &run.task_id,
+        TaskStatus::Doing,
+        None,
+        Actor::Human,
+        "人工接管",
+    )?;
+    record_event(
+        conn,
+        run,
+        Actor::Human,
+        EventKind::RunFinished,
+        format!(
+            "{} 第 {} 次执行已停止，人工接管（{}）",
+            run.task_key, run.attempt, run.harness.name
+        ),
+        json!({ "runId": run.id, "attempt": run.attempt,
+                "status": RunStatus::Cancelled, "takenOver": true }),
+    )
+}
+
 /// 系统（执行引擎）或 Human 触发的任务状态变化，绕过人工流转表；记录活动。状态不变时不做任何事。
 pub(crate) fn move_task(
     conn: &Connection,
