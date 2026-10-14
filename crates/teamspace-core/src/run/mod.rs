@@ -357,11 +357,15 @@ fn interrupt(conn: &rusqlite::Connection, run_id: &str, reason: &str) -> Result<
     if !run.status.is_active() {
         return Ok(());
     }
-    conn.execute(
+    let changed = conn.execute(
         "UPDATE runs SET status = 'interrupted', ended_at = ?2, failure = ?3, failure_kind = NULL,
-                         pending_permission = NULL WHERE id = ?1",
+                         pending_permission = NULL
+         WHERE id = ?1 AND status IN ('queued', 'running', 'waiting_permission')",
         rusqlite::params![run_id, now(), reason],
     )?;
+    if changed == 0 {
+        return Ok(());
+    }
     store_run::status_update(
         conn,
         run_id,
@@ -554,7 +558,12 @@ impl Driver {
     fn set_status(&mut self, status: RunStatus) {
         let pending = self.pending.first().map(|p| p.prompt.clone());
         let (id, count) = (self.run.id.clone(), self.tool_call_count);
-        self.db(|tx| store_run::set_active_status(tx, &id, status, pending.as_ref(), count));
+        // fencing（Q-03）：执行已被中断或结束时不生效，不把它改回活动。
+        let applied =
+            self.db(|tx| store_run::set_active_status(tx, &id, status, pending.as_ref(), count));
+        if applied == Some(false) {
+            return;
+        }
         self.run.status = status;
         self.core.emit_run(&self.run.id);
     }
@@ -1803,7 +1812,11 @@ impl Driver {
         let capabilities = self.run.capabilities.clone();
         let detail = ending.failure.clone();
         let saved = self.db(|tx| {
-            store_run::end(tx, &run.id, status, &ending)?;
+            // fencing（Q-03）：执行已被中断（或已由别处结束）时，迟到的结局不改写执行、不推进任务、
+            // 不记活动。
+            if !store_run::end(tx, &run.id, status, &ending)? {
+                return Ok(None);
+            }
             let update = store_run::status_update(tx, &run.id, status, detail.clone())?;
             if let Some(to) = task_to
                 && task::get(tx, &run.task_id)?.status == TaskStatus::Doing
@@ -1844,9 +1857,9 @@ impl Driver {
             if auth {
                 mark_needs_auth(tx, &run, &auth_methods, capabilities, detail.as_deref())?;
             }
-            Ok(update)
+            Ok(Some(update))
         });
-        if let Some(update) = saved {
+        if let Some(Some(update)) = saved {
             self.emit_update(update);
         }
         self.core.sync_role_folders(&self.run.team_id);
@@ -1854,7 +1867,6 @@ impl Driver {
     }
 }
 
-/// 执行时 Agent 要求登录：把 Harness 握手状态更新为 needs_auth。
 /// 工作空间中本岗位工作日志的绝对路径（岗位文件夹尚未建立时为 `None`）。
 fn journal_path(ctx: &Context) -> Option<String> {
     ctx.role_folder.as_deref().map(|rel| {
@@ -1865,6 +1877,7 @@ fn journal_path(ctx: &Context) -> Option<String> {
     })
 }
 
+/// 执行时 Agent 要求登录：把 Harness 握手状态更新为 needs_auth。
 fn mark_needs_auth(
     tx: &rusqlite::Connection,
     run: &Run,

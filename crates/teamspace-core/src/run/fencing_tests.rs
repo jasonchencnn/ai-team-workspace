@@ -1,7 +1,7 @@
 //! QA 第 2 轮：K-RUN-014 / K-RUN-015 的 fencing 测试（PLAN §3「写入前检查自己仍是当前 Run」，疑点 Q-03）。
 //!
 //! 这些场景在公开接口上无法稳定触发（需要 driver 的写入晚于中断），因此放在 `run` 模块内部，
-//! 直接构造 [`Driver`] 或调用存储层函数。断言按用例预期写；确认是产品缺陷的保留并 `#[ignore]`。
+//! 直接构造 [`Driver`] 或调用存储层函数。断言按用例预期写。
 
 use std::sync::atomic::AtomicU8;
 use std::sync::mpsc;
@@ -107,7 +107,7 @@ fn driver_for(core: &Arc<Core>, run_id: &str) -> Driver {
 fn assert_late_write_is_ignored(
     label: &str,
     skip_interrupted: bool,
-    write: impl Fn(&Core, &str) -> Result<()>,
+    write: impl Fn(&Core, &str) -> Result<bool>,
 ) {
     let s = seed(&["cancelled", "succeeded", "failed", "interrupted"]);
     for (id, task_id) in &s.runs {
@@ -117,7 +117,7 @@ fn assert_late_write_is_ignored(
         }
         let task_before = task_status(&s.core, task_id);
         assert!(!before.status.is_active(), "{id}");
-        write(&s.core, id).unwrap();
+        assert!(!write(&s.core, id).unwrap(), "{id}: {label} 应报告未生效");
         assert_eq!(
             get_run(&s.core, id),
             before,
@@ -133,7 +133,6 @@ fn assert_late_write_is_ignored(
 
 /// K-RUN-014（1）：迟到的 `end(failed)` 不得覆盖终态 Run。
 #[test]
-#[ignore = "缺陷 K-RUN-014（Q-03）: service::run::end 的 UPDATE 只按 id，没有「状态仍为活动」条件，可覆盖已终止的 Run"]
 fn k_run_014_late_end_does_not_overwrite_a_terminal_run() {
     assert_late_write_is_ignored("end()", false, |core, id| {
         core.write(|tx| {
@@ -153,7 +152,6 @@ fn k_run_014_late_end_does_not_overwrite_a_terminal_run() {
 
 /// K-RUN-014（2）：迟到的 `set_active_status(running)` 不得把终态 Run 改回活动。
 #[test]
-#[ignore = "缺陷 K-RUN-014（Q-03）: service::run::set_active_status 只按 id 更新，可把已终止的 Run 改回 running"]
 fn k_run_014_late_set_active_status_does_not_revive_a_terminal_run() {
     assert_late_write_is_ignored("set_active_status()", false, |core, id| {
         core.write(|tx| store_run::set_active_status(tx, id, RunStatus::Running, None, 99))
@@ -162,7 +160,6 @@ fn k_run_014_late_set_active_status_does_not_revive_a_terminal_run() {
 
 /// K-RUN-014（3）：`reopen` 仅对 interrupted 生效，其他终态不得被重新打开。
 #[test]
-#[ignore = "缺陷 K-RUN-014（Q-03）: service::run::reopen 只按 id 更新，已取消、已完成、失败的 Run 也会被改回 queued"]
 fn k_run_014_reopen_only_applies_to_interrupted_runs() {
     assert_late_write_is_ignored("reopen()", true, |core, id| {
         core.write(|tx| store_run::reopen(tx, id))
@@ -201,13 +198,12 @@ fn k_run_014_control_active_runs_accept_the_same_writes() {
     // 中断的 Run 可以续接（reopen 对 interrupted 生效）。
     let s = seed(&["interrupted"]);
     let (id, _) = &s.runs[0];
-    s.core.write(|tx| store_run::reopen(tx, id)).unwrap();
+    assert!(s.core.write(|tx| store_run::reopen(tx, id)).unwrap());
     assert_eq!(get_run(&s.core, id).status, RunStatus::Queued);
 }
 
 /// K-RUN-015（1）：中断之后到达的 `finish(Succeeded)` 不得改写 Run 或任务。
 #[test]
-#[ignore = "缺陷 K-RUN-015（Q-03）: 中断后 driver 的 finish 仍会把 Run 覆盖为 succeeded、任务移到 REVIEW，并留下 succeeded 与 run_interrupted 并存的矛盾历史"]
 fn k_run_015_finish_after_interruption_does_not_rewrite_run_or_task() {
     let s = seed(&["running"]);
     let (id, task_id) = &s.runs[0];
@@ -244,7 +240,6 @@ fn k_run_015_finish_after_interruption_does_not_rewrite_run_or_task() {
 
 /// K-RUN-015（2）：中断之后到达的 Human 权限决定（driver 侧的状态写入）不得把 Run 改回 running。
 #[test]
-#[ignore = "缺陷 K-RUN-015（Q-03）: 中断后 driver 处理迟到的权限决定时 set_status 会把已中断的 Run 改回 running"]
 fn k_run_015_late_permission_decision_does_not_revive_an_interrupted_run() {
     let s = seed(&["waiting_permission"]);
     let (id, task_id) = &s.runs[0];
