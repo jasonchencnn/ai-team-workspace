@@ -879,7 +879,6 @@ fn start_in_alias_team(e: &Env, alias: &Path, name: &str) -> Result<Run, teamspa
 
 /// K-RUN-006 C)：同一物理文件夹经符号链接路径创建的另一个团队，也应受「同一文件夹只运行一个执行」约束。
 #[test]
-#[ignore = "缺陷 K-RUN-006（Q-24）: active_in_place 按 workspace_path 字符串比对，符号链接别名路径被放行"]
 fn k_run_006_symlink_alias_of_the_same_folder_is_treated_as_the_same_folder() {
     let e = env(Kind::Plain);
     let link = e.path("ws-link");
@@ -895,7 +894,6 @@ fn k_run_006_symlink_alias_of_the_same_folder_is_treated_as_the_same_folder() {
 
 /// K-RUN-006 D)：macOS 上只差大小写的路径是同一个文件夹。
 #[test]
-#[ignore = "缺陷 K-RUN-006（Q-24）: active_in_place 按 workspace_path 字符串比对，只差大小写的路径被放行"]
 fn k_run_006_case_only_difference_is_treated_as_the_same_folder() {
     let e = env(Kind::Plain);
     let upper = e.path("WS");
@@ -910,7 +908,6 @@ fn k_run_006_case_only_difference_is_treated_as_the_same_folder() {
 
 /// K-RUN-006 E)：嵌套文件夹（团队 B 的工作空间是团队 A 工作空间的子目录）。
 #[test]
-#[ignore = "缺陷 K-RUN-006（Q-24）: active_in_place 只比较路径字符串，嵌套的工作空间被放行"]
 fn k_run_006_nested_workspace_is_treated_as_overlapping() {
     let e = env(Kind::Plain);
     let sub = e.ws.join("sub");

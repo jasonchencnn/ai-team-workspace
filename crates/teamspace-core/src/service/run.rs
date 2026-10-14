@@ -6,6 +6,8 @@
 //! - 成功 → REVIEW；失败 → BLOCKED（「执行失败：原因」）；Human 取消 → READY；
 //! - 人工接管、中断：保持 DOING；中断后标记失败 → BLOCKED。
 
+use std::path::{Path, PathBuf};
+
 use rusqlite::{Connection, params};
 use serde_json::json;
 
@@ -143,14 +145,44 @@ pub(crate) fn active_for_task(conn: &Connection, task_id: &str) -> Result<Option
     Ok(query(conn, &format!("r.task_id = ?1 AND {ACTIVE_SQL}"), &task_id)?.pop())
 }
 
-/// 同一工作空间（普通文件夹）中的活动原地执行。
+/// 活动执行所在的工作空间路径（原地执行），与执行记录一起读出。
+fn active_in_place_workspaces(conn: &Connection) -> Result<Vec<(String, Run)>> {
+    let mut stmt = conn.prepare(&format!(
+        "SELECT {COLS} FROM runs r JOIN tasks t ON t.id = r.task_id
+         WHERE r.isolation = 'in_place' AND {ACTIVE_SQL}"
+    ))?;
+    let rows = stmt
+        .query_map([], |row| Ok((row.get::<_, String>(28)?, from_row(row)?)))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(rows)
+}
+
+/// 两条工作空间路径是否指向同一片区域（D15「同一文件夹同时只运行一个执行」）。
+///
+/// 先把两边都解析成真实路径（解符号链接），macOS 默认文件系统不区分大小写，因此比较时统一转小写；
+/// 两个路径互为祖先或后代（嵌套文件夹）也算同一片区域。
+fn same_workspace(left: &str, right: &str) -> bool {
+    let real = |path: &str| {
+        let real = std::fs::canonicalize(path).unwrap_or_else(|_| PathBuf::from(path));
+        if cfg!(target_os = "macos") {
+            real.to_string_lossy().to_lowercase()
+        } else {
+            real.to_string_lossy().into_owned()
+        }
+    };
+    let (left, right) = (real(left), real(right));
+    let (left, right) = (Path::new(&left), Path::new(&right));
+    left == right || left.starts_with(right) || right.starts_with(left)
+}
+
+/// 与 `workspace` 指向同一片文件夹（或其子目录）的活动原地执行。
+///
+/// 按真实路径判断，符号链接别名、只差大小写的路径和嵌套的工作空间都会命中。
 pub(crate) fn active_in_place(conn: &Connection, workspace: &str) -> Result<Option<Run>> {
-    Ok(query(
-        conn,
-        &format!("r.workspace_path = ?1 AND r.isolation = 'in_place' AND {ACTIVE_SQL}"),
-        &workspace,
-    )?
-    .pop())
+    Ok(active_in_place_workspaces(conn)?
+        .into_iter()
+        .find(|(path, _)| same_workspace(path, workspace))
+        .map(|(_, run)| run))
 }
 
 /// 所有活动执行（重启恢复用）。
@@ -579,6 +611,49 @@ mod tests {
     use super::*;
     use crate::service::task::{self, FileCheck};
     use crate::tests::plain_fixture;
+
+    /// K-RUN-006：真实路径相同的文件夹算同一片；无关的文件夹不算。
+    #[test]
+    fn same_workspace_compares_real_paths_and_nesting() {
+        let dir = tempfile::tempdir().unwrap();
+        let base = dir.path().join("ws");
+        std::fs::create_dir_all(base.join("sub")).unwrap();
+        let base = base.to_string_lossy().into_owned();
+        let sub = Path::new(&base).join("sub").to_string_lossy().into_owned();
+
+        // 完全相同、带尾斜杠、子目录、嵌套，都算同一片。
+        assert!(same_workspace(&base, &base));
+        assert!(same_workspace(&base, &format!("{base}/")));
+        assert!(same_workspace(&base, &sub));
+        assert!(same_workspace(&sub, &base));
+        // 同级兄弟目录不算（避免把 `ws2` 误判成 `ws` 的子目录）。
+        let sibling = dir.path().join("ws2").to_string_lossy().into_owned();
+        std::fs::create_dir_all(&sibling).unwrap();
+        assert!(!same_workspace(&base, &sibling));
+        // 另一个临时目录（完全无关的路径）不算。
+        let other = tempfile::tempdir().unwrap();
+        assert!(!same_workspace(&base, &other.path().to_string_lossy()));
+    }
+
+    /// K-RUN-006：符号链接别名与只差大小写的路径都指向同一片文件夹。
+    #[cfg(unix)]
+    #[test]
+    fn same_workspace_resolves_symlink_and_case() {
+        let dir = tempfile::tempdir().unwrap();
+        let base = dir.path().join("ws");
+        std::fs::create_dir_all(&base).unwrap();
+        let base = base.to_string_lossy().into_owned();
+
+        let link = dir.path().join("link");
+        std::os::unix::fs::symlink(&base, &link).unwrap();
+        assert!(same_workspace(&base, &link.to_string_lossy()));
+
+        let upper = base.to_uppercase();
+        if std::path::Path::new(&upper).is_dir() {
+            // 文件系统不区分大小写（如 macOS 默认）时才算同一片。
+            assert!(same_workspace(&base, &upper));
+        }
+    }
 
     /// RUN-PRE-004 B：负责岗位记录不存在（数据损坏）时，前置检查报告「未指定负责岗位」，而不是崩溃。
     #[test]
