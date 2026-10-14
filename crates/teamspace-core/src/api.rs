@@ -722,7 +722,7 @@ impl Teamspace {
                 && prev.status == RunStatus::Interrupted
             {
                 let failure = "执行中断后已重新执行".to_owned();
-                run_svc::end(
+                let ended = run_svc::end_interrupted(
                     tx,
                     &prev.id,
                     RunStatus::Failed,
@@ -735,7 +735,9 @@ impl Teamspace {
                         ..Ending::default()
                     },
                 )?;
-                run_svc::status_update(tx, &prev.id, RunStatus::Failed, Some(failure))?;
+                if ended {
+                    run_svc::status_update(tx, &prev.id, RunStatus::Failed, Some(failure))?;
+                }
             }
             let owner = role::get_active(tx, &task.owner_role_id)?;
             let instance = harness::get_active(tx, owner.harness_id.as_deref().unwrap_or_default())?;
@@ -826,7 +828,7 @@ impl Teamspace {
         }
         self.write(|tx| {
             let failure = "人工接管".to_owned();
-            run_svc::end(
+            let ended = run_svc::end_interrupted(
                 tx,
                 run_id,
                 RunStatus::Cancelled,
@@ -839,6 +841,9 @@ impl Teamspace {
                     ..Ending::default()
                 },
             )?;
+            if !ended {
+                return Err(Error::conflict("执行已不是中断状态，不能接管"));
+            }
             run_svc::status_update(tx, run_id, RunStatus::Cancelled, Some(failure))?;
             run_svc::record_event(
                 tx,
@@ -904,7 +909,9 @@ impl Teamspace {
                     busy.task_key
                 )));
             }
-            run_svc::reopen(tx, run_id)?;
+            if !run_svc::reopen(tx, run_id)? {
+                return Err(Error::conflict("只有已中断的执行可以续接"));
+            }
             run_svc::status_update(tx, run_id, RunStatus::Queued, Some("续接会话".to_owned()))?;
             run_svc::record_event(
                 tx,
@@ -935,7 +942,7 @@ impl Teamspace {
         }
         self.write(|tx| {
             let failure = "执行中断后由 Human 标记为失败".to_owned();
-            run_svc::end(
+            let ended = run_svc::end_interrupted(
                 tx,
                 run_id,
                 RunStatus::Failed,
@@ -948,6 +955,9 @@ impl Teamspace {
                     ..Ending::default()
                 },
             )?;
+            if !ended {
+                return Err(Error::conflict("只有已中断的执行可以标记为失败"));
+            }
             run_svc::status_update(tx, run_id, RunStatus::Failed, Some(failure.clone()))?;
             if task::get(tx, &run.task_id)?.status == TaskStatus::Doing {
                 run_svc::move_task(

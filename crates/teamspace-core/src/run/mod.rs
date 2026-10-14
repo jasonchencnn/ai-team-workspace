@@ -359,11 +359,15 @@ fn interrupt(conn: &rusqlite::Connection, run_id: &str, reason: &str) -> Result<
     if !run.status.is_active() {
         return Ok(());
     }
-    conn.execute(
+    let changed = conn.execute(
         "UPDATE runs SET status = 'interrupted', ended_at = ?2, failure = ?3, failure_kind = NULL,
-                         pending_permission = NULL WHERE id = ?1",
+                         pending_permission = NULL
+         WHERE id = ?1 AND status IN ('queued', 'running', 'waiting_permission')",
         rusqlite::params![run_id, now(), reason],
     )?;
+    if changed == 0 {
+        return Ok(());
+    }
     store_run::status_update(
         conn,
         run_id,
@@ -464,10 +468,10 @@ struct Driver {
     pending: Vec<PendingPermission>,
     /// 经 `fs/write_text_file` 写入的文件（规范化路径）与改动类型。
     writes: BTreeMap<PathBuf, FileChangeKind>,
-    /// 权限请求被允许的编辑路径（规范化），之后的 `fs/write_text_file` 据此放行。
+    /// Human 明确允许的编辑（`edit`）请求涉及的路径（规范化），之后对同一路径的 `fs/write_text_file`
+    /// 据此放行（精确匹配）。规则自动允许的请求、Human 允许的其他类型请求（读取、搜索、执行命令等）
+    /// 都不会记入这里（Q-01）。
     granted: Vec<PathBuf>,
-    /// 其中由 Human 允许的路径。工作日志的非追加写入只认这里（规则自动允许的不算）。
-    human_granted: Vec<PathBuf>,
     tool_call_count: u32,
 }
 
@@ -499,7 +503,6 @@ impl Driver {
             pending: Vec::new(),
             writes: BTreeMap::new(),
             granted: Vec::new(),
-            human_granted: Vec::new(),
         }
     }
 
@@ -557,7 +560,12 @@ impl Driver {
     fn set_status(&mut self, status: RunStatus) {
         let pending = self.pending.first().map(|p| p.prompt.clone());
         let (id, count) = (self.run.id.clone(), self.tool_call_count);
-        self.db(|tx| store_run::set_active_status(tx, &id, status, pending.as_ref(), count));
+        // fencing（Q-03）：执行已被中断或结束时不生效，不把它改回活动。
+        let applied =
+            self.db(|tx| store_run::set_active_status(tx, &id, status, pending.as_ref(), count));
+        if applied == Some(false) {
+            return;
+        }
         self.run.status = status;
         self.core.emit_run(&self.run.id);
     }
@@ -656,8 +664,9 @@ impl Driver {
                 refs.push(exec_dir.join(&r.path));
             }
         }
-        self.scope = Some(Scope::new(
+        self.scope = Some(Scope::with_workspace(
             &exec_dir,
+            &ctx.workspace,
             self.run.isolation,
             &role_folders,
             &refs,
@@ -762,7 +771,12 @@ impl Driver {
             Mode::Start => self.brief_refs(&ctx, &exec_dir),
             Mode::Resume => Vec::new(),
         };
-        let blocks = brief::prompt_blocks(&text, &refs, caps.embedded_context);
+        let blocks = brief::prompt_blocks(
+            &text,
+            &refs,
+            caps.embedded_context,
+            &[exec_dir.as_path(), ctx.workspace.as_path()],
+        );
         self.append_message(MessageRole::User, &text);
         self.message = None;
         let run_id = self.run.id.clone();
@@ -1440,7 +1454,7 @@ impl Driver {
                     .iter()
                     .find_map(|k| options.iter().find(|o| o.kind == *k));
                 if let Some(option) = allow {
-                    self.grant(&paths);
+                    // 规则自动允许不授予写权限：编辑本就在范围内，读取与搜索不能变成可写（Q-01）。
                     let _ = self.conn().respond(
                         &rpc_id,
                         json!({ "outcome": { "outcome": "selected", "optionId": option.option_id } }),
@@ -1504,15 +1518,10 @@ impl Driver {
             .cloned()
             .ok_or_else(|| Error::invalid("所选选项不属于这个权限请求"))?;
         let p = self.pending.remove(index);
-        if option.kind.starts_with("allow") {
+        // 只有 Human 对编辑请求本身的允许才放开写入；允许执行命令、读取等不让路径变成可写（Q-01/N-02）。
+        if option.kind.starts_with("allow") && p.prompt.tool_kind.as_deref() == Some("edit") {
             let paths = p.prompt.paths.clone();
             self.grant(&paths);
-            let base = self.scope().exec_dir().to_path_buf();
-            self.human_granted.extend(
-                paths
-                    .iter()
-                    .filter_map(|path| policy::resolve(Path::new(path), &base).ok()),
-            );
         }
         let _ = self.conn().respond(
             &p.rpc_id,
@@ -1638,14 +1647,14 @@ impl Driver {
     }
 
     /// 写本岗位工作日志（D14）：每次都在写入锁内重新读取并判断是否纯追加，纯追加只追加多出的部分；
-    /// 不因权限请求被规则自动允许（`granted`）而放行，非追加写入只在 Human 允许过该路径时整体写入。
+    /// 非追加写入只在 Human 明确允许过对该路径的编辑（`granted`）时整体写入。
     fn write_journal(
         &mut self,
         real: PathBuf,
         path: &str,
         content: &str,
     ) -> std::result::Result<String, String> {
-        let by_human = self.human_granted.contains(&real);
+        let by_human = self.granted.contains(&real);
         match role_folder::write_journal_from_agent(&real, content, by_human) {
             // 追加进展不算任务产出，不记入改动文件。
             Ok(role_folder::AgentJournalWrite::Appended(_)) => {
@@ -1807,7 +1816,11 @@ impl Driver {
         let capabilities = self.run.capabilities.clone();
         let detail = ending.failure.clone();
         let saved = self.db(|tx| {
-            store_run::end(tx, &run.id, status, &ending)?;
+            // fencing（Q-03）：执行已被中断（或已由别处结束）时，迟到的结局不改写执行、不推进任务、
+            // 不记活动。
+            if !store_run::end(tx, &run.id, status, &ending)? {
+                return Ok(None);
+            }
             let update = store_run::status_update(tx, &run.id, status, detail.clone())?;
             if let Some(to) = task_to
                 && task::get(tx, &run.task_id)?.status == TaskStatus::Doing
@@ -1848,9 +1861,9 @@ impl Driver {
             if auth {
                 mark_needs_auth(tx, &run, &auth_methods, capabilities, detail.as_deref())?;
             }
-            Ok(update)
+            Ok(Some(update))
         });
-        if let Some(update) = saved {
+        if let Some(Some(update)) = saved {
             self.emit_update(update);
         }
         self.core.sync_role_folders(&self.run.team_id);
@@ -1858,7 +1871,6 @@ impl Driver {
     }
 }
 
-/// 执行时 Agent 要求登录：把 Harness 握手状态更新为 needs_auth。
 /// 工作空间中本岗位工作日志的绝对路径（岗位文件夹尚未建立时为 `None`）。
 fn journal_path(ctx: &Context) -> Option<String> {
     ctx.role_folder.as_deref().map(|rel| {
@@ -1869,6 +1881,7 @@ fn journal_path(ctx: &Context) -> Option<String> {
     })
 }
 
+/// 执行时 Agent 要求登录：把 Harness 握手状态更新为 needs_auth。
 fn mark_needs_auth(
     tx: &rusqlite::Connection,
     run: &Run,

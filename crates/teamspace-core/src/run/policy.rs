@@ -59,14 +59,33 @@ pub enum Verdict {
 impl Scope {
     /// `exec_dir`：执行目录；`role_folders`：岗位文件夹的绝对路径（工作空间中的，以及 worktree 中的
     /// 对应位置）；`refs`：任务引用文件的绝对路径（工作空间与执行目录中的都可以给出）。
+    /// 工作空间视为与执行目录相同（原地执行）；worktree 执行用 [`Scope::with_workspace`]。
     pub fn new(
         exec_dir: &Path,
         isolation: RunIsolation,
         role_folders: &[PathBuf],
         refs: &[PathBuf],
     ) -> Self {
+        Self::with_workspace(exec_dir, exec_dir, isolation, role_folders, refs)
+    }
+
+    /// 同 [`Scope::new`]，另给出工作空间根目录。引用文件按真实路径（解析符号链接后）计入范围，
+    /// 真实路径不在执行目录或工作空间之内的引用（指向外部的符号链接）不计入（Q-06）。
+    pub fn with_workspace(
+        exec_dir: &Path,
+        workspace: &Path,
+        isolation: RunIsolation,
+        role_folders: &[PathBuf],
+        refs: &[PathBuf],
+    ) -> Self {
         let exec_dir = resolve(exec_dir, Path::new("/")).unwrap_or_else(|_| exec_dir.to_owned());
+        let workspace = resolve(workspace, Path::new("/")).unwrap_or_else(|_| workspace.to_owned());
         let canon = |p: &PathBuf| resolve(p, &exec_dir).ok();
+        let refs = refs
+            .iter()
+            .filter_map(canon)
+            .filter(|real| real.starts_with(&exec_dir) || real.starts_with(&workspace))
+            .collect();
         let role_folders: Vec<PathBuf> = role_folders.iter().filter_map(canon).collect();
         let protected = role_folders
             .iter()
@@ -77,7 +96,7 @@ impl Scope {
             .map(|dir| dir.join(JOURNAL_FILE))
             .collect();
         Self {
-            refs: refs.iter().filter_map(canon).collect(),
+            refs,
             exec_dir,
             isolation,
             role_folders,
@@ -563,6 +582,26 @@ mod tests {
         assert!(err.contains("符号链接"), "{err}");
         // 从范围外经链接指回岗位文件夹：按真实位置判断，允许。
         assert!(scope.can_write(&s(&e.outside.join("进入/x.md"))).is_ok());
+    }
+
+    #[test]
+    fn refs_linking_outside_the_workspace_are_not_writable() {
+        let e = env();
+        let secret = e.outside.join("secret.txt");
+        fs::write(&secret, "x").unwrap();
+        symlink(&secret, e.ws.join("notes.md")).unwrap();
+        symlink(e.ws.join("docs/spec.md"), e.ws.join("inner.md")).unwrap();
+        let scope = Scope::new(
+            &e.ws,
+            RunIsolation::InPlace,
+            std::slice::from_ref(&e.role),
+            &[e.ws.join("notes.md"), e.ws.join("inner.md")],
+        );
+        assert!(scope.can_write(&s(&secret)).is_err());
+        assert!(scope.can_write(&s(&e.ws.join("notes.md"))).is_err());
+        // 指向工作空间内的链接按真实路径计入。
+        assert!(scope.can_write(&s(&e.ws.join("docs/spec.md"))).is_ok());
+        assert!(scope.can_read(&s(&secret)).is_err());
     }
 
     #[test]

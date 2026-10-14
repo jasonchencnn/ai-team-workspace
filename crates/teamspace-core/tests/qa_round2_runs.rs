@@ -147,6 +147,19 @@ def prompt(mid, params):
         log("write_error=" + error_text(w))
         say(session, "结束")
         return finish(mid, "end_turn")
+    if MODE == "execallow":
+        path = ARGS["path"]
+        r = call("session/request_permission", {
+            "sessionId": session,
+            "toolCall": {"toolCallId": "x1", "title": "运行脚本", "kind": "execute", "status": "pending",
+                         "locations": [{"path": path}], "rawInput": {"command": "touch " + path}},
+            "options": ALLOW,
+        })
+        log("perm_outcome=" + json.dumps(r.get("result")))
+        w = call("fs/write_text_file", {"sessionId": session, "path": path, "content": "written-by-agent"})
+        log("write_error=" + error_text(w))
+        say(session, "结束")
+        return finish(mid, "end_turn")
     if MODE == "write":
         w = call("fs/write_text_file", {"sessionId": session, "path": ARGS["path"], "content": "written-by-agent"})
         log("write_error=" + error_text(w))
@@ -1339,7 +1352,6 @@ fn k_perm_004_other_kinds_ask_and_read_search_allow() {
 
 /// K-PERM-004（driver 层）：自动允许的 read 请求不授予后续 `fs/write_text_file` 的写权限。
 #[test]
-#[ignore = "缺陷 K-PERM-004/K-PERM-008（Q-01/N-02）: read 类请求被规则自动允许时也 grant 其路径，之后对该路径的写入被「Human 已允许对应的权限请求」放行"]
 fn k_perm_004_auto_allowed_read_does_not_grant_write() {
     let e = env(Kind::Plain);
     let target = e.ws.join("danger.txt");
@@ -1360,6 +1372,43 @@ fn k_perm_004_auto_allowed_read_does_not_grant_write() {
         log.iter()
             .any(|l| l.starts_with("write_error=Teamspace 未允许这次写入")),
         "范围外路径不应因 read 请求而可写: {log:?}"
+    );
+    assert!(!target.exists(), "文件不应被创建");
+}
+
+/// K-PERM-004（N-02）：Human 允许执行命令请求后，该请求涉及的路径不因此变成可写。
+#[test]
+fn k_perm_004_human_allowed_execute_does_not_grant_write() {
+    let e = env(Kind::Plain);
+    let target = e.ws.join("danger.txt");
+    e.fake(
+        "execallow",
+        &[
+            "mode=execallow".into(),
+            format!("path={}", target.display()),
+            format!("log={}", e.path("agent.log").display()),
+        ],
+    );
+    let task = e.task("允许命令后写");
+    let run = e.ts.start_run(&task.id).unwrap();
+    let waiting = e.wait(&run.id, "waiting_permission", |r| {
+        r.status == RunStatus::WaitingPermission
+    });
+    let request = waiting.pending_permission.unwrap();
+    assert_eq!(request.tool_kind.as_deref(), Some("execute"));
+    e.ts.respond_permission(RespondPermissionInput {
+        run_id: run.id.clone(),
+        request_id: request.request_id,
+        option_id: "allow".into(),
+    })
+    .unwrap();
+    let run = e.wait_end(&run.id);
+    assert_eq!(run.status, RunStatus::Succeeded, "{run:#?}");
+    let log = log_lines(&e.path("agent.log"));
+    assert!(
+        log.iter()
+            .any(|l| l.starts_with("write_error=Teamspace 未允许这次写入")),
+        "允许执行命令不应让路径可写: {log:?}"
     );
     assert!(!target.exists(), "文件不应被创建");
 }

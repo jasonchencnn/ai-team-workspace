@@ -328,21 +328,36 @@ pub(crate) fn set_session(conn: &Connection, id: &str, session_id: &str) -> Resu
     Ok(())
 }
 
+/// 活动状态的 SQL 条件（fencing，Q-03）：执行结束后迟到的写入因此不生效。
+const ACTIVE_STATUSES: &str = "('queued', 'running', 'waiting_permission')";
+
+/// 条件更新影响 0 行时记一条日志（执行已不在预期状态，迟到的写入被忽略）。
+fn fenced(changed: usize, id: &str, what: &str) -> bool {
+    if changed == 0 {
+        eprintln!("teamspace run {id}: {what} 被忽略：执行已不在预期状态");
+    }
+    changed > 0
+}
+
 /// 活动状态之间的切换（queued / running / waiting_permission）与待确认的权限请求。
+/// 只对仍在活动中的执行生效；返回是否生效（已结束的执行不会被改回活动）。
 pub(crate) fn set_active_status(
     conn: &Connection,
     id: &str,
     status: RunStatus,
     pending: Option<&PermissionPrompt>,
     tool_call_count: u32,
-) -> Result<()> {
+) -> Result<bool> {
     debug_assert!(status.is_active());
     let pending = pending.map(serde_json::to_string).transpose()?;
-    conn.execute(
-        "UPDATE runs SET status = ?2, pending_permission = ?3, tool_call_count = ?4 WHERE id = ?1",
+    let changed = conn.execute(
+        &format!(
+            "UPDATE runs SET status = ?2, pending_permission = ?3, tool_call_count = ?4
+             WHERE id = ?1 AND status IN {ACTIVE_STATUSES}"
+        ),
         params![id, enum_str(status), pending, tool_call_count],
     )?;
-    Ok(())
+    Ok(fenced(changed, id, "活动状态切换"))
 }
 
 /// 执行结束时写入的内容。
@@ -357,17 +372,49 @@ pub(crate) struct Ending {
     pub taken_over: bool,
 }
 
-/// 把执行置为结束状态（succeeded / failed / cancelled / interrupted），清除待确认的权限请求。
+/// 把仍在活动中的执行置为结束状态（succeeded / failed / cancelled），清除待确认的权限请求。
+/// 返回是否生效：执行已结束（含已中断）时不改动，迟到的结局不能覆盖（fencing，Q-03）。
 ///
 /// 失败说明可能含 Agent 的 stderr 尾部，落库前统一脱敏（D6）。
-pub(crate) fn end(conn: &Connection, id: &str, status: RunStatus, ending: &Ending) -> Result<()> {
+pub(crate) fn end(conn: &Connection, id: &str, status: RunStatus, ending: &Ending) -> Result<bool> {
+    end_from(conn, id, status, ending, ACTIVE_STATUSES, "结束执行")
+}
+
+/// 把已中断的执行置为结束状态（重新执行前标记失败、人工接管、Human 标记失败）。
+/// 返回是否生效：执行已不是 interrupted 时不改动。
+pub(crate) fn end_interrupted(
+    conn: &Connection,
+    id: &str,
+    status: RunStatus,
+    ending: &Ending,
+) -> Result<bool> {
+    end_from(
+        conn,
+        id,
+        status,
+        ending,
+        "('interrupted')",
+        "结束已中断的执行",
+    )
+}
+
+fn end_from(
+    conn: &Connection,
+    id: &str,
+    status: RunStatus,
+    ending: &Ending,
+    from: &str,
+    what: &str,
+) -> Result<bool> {
     debug_assert!(!status.is_active());
     let failure = ending.failure.as_deref().map(crate::redact::text);
-    conn.execute(
-        "UPDATE runs SET status = ?2, ended_at = ?3, stop_reason = ?4, failure = ?5,
-                         failure_kind = ?6, summary = ?7, changed_files = ?8, tool_call_count = ?9,
-                         taken_over = ?10, pending_permission = NULL
-         WHERE id = ?1",
+    let changed = conn.execute(
+        &format!(
+            "UPDATE runs SET status = ?2, ended_at = ?3, stop_reason = ?4, failure = ?5,
+                             failure_kind = ?6, summary = ?7, changed_files = ?8, tool_call_count = ?9,
+                             taken_over = ?10, pending_permission = NULL
+             WHERE id = ?1 AND status IN {from}"
+        ),
         params![
             id,
             enum_str(status),
@@ -381,17 +428,17 @@ pub(crate) fn end(conn: &Connection, id: &str, status: RunStatus, ending: &Endin
             ending.taken_over,
         ],
     )?;
-    Ok(())
+    Ok(fenced(changed, id, what))
 }
 
-/// 续接：interrupted → queued，清除结束信息。
-pub(crate) fn reopen(conn: &Connection, id: &str) -> Result<()> {
-    conn.execute(
+/// 续接：interrupted → queued，清除结束信息。只对 interrupted 生效，返回是否生效。
+pub(crate) fn reopen(conn: &Connection, id: &str) -> Result<bool> {
+    let changed = conn.execute(
         "UPDATE runs SET status = 'queued', ended_at = NULL, failure = NULL, failure_kind = NULL,
-                         stop_reason = NULL WHERE id = ?1",
+                         stop_reason = NULL WHERE id = ?1 AND status = 'interrupted'",
         params![id],
     )?;
-    Ok(())
+    Ok(fenced(changed, id, "续接"))
 }
 
 /// 系统（执行引擎）或 Human 触发的任务状态变化，绕过人工流转表；记录活动。状态不变时不做任何事。
