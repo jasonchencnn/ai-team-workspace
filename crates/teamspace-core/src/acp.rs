@@ -25,6 +25,7 @@ use crate::model::{AcpCapabilities, AgentInfo, Handshake, HandshakeStatus};
 use crate::system_probe::{isolate_in_process_group, kill_process_group};
 
 pub mod connection;
+pub mod permission_mode;
 
 /// Teamspace 支持的 ACP 协议版本。
 pub const PROTOCOL_VERSION: u64 = 1;

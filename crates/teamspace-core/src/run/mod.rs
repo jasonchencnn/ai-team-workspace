@@ -4,7 +4,8 @@
 //! 1. 准备执行目录：Git 工作空间新建 worktree（[`worktree`]），普通文件夹原地执行；
 //! 2. 启动 Agent 子进程（独立进程组，环境 = 继承环境 + 补全的 PATH + 环境配置档案），`initialize`
 //!    声明 Client 提供文件读写、不提供终端；
-//! 3. `session/new`（cwd = 执行目录、无 MCP 服务器）或续接时 `session/load`（丢弃回放的历史）；
+//! 3. `session/new`（cwd = 执行目录、无 MCP 服务器）或续接时 `session/load`（丢弃回放的历史）；之后把会话切到
+//!    「向 Client 请求权限」的模式（[`session_mode`]，S-1a）；
 //! 4. 发送任务说明包（[`brief`]）作为第一个 `session/prompt`；
 //! 5. 处理 Agent 的消息：`session/update` 写入执行进度（消息块合并、计划、工具调用状态）；
 //!    `session/request_permission` 按权限规则（[`policy`]）自动允许或转交 Human；`fs/read_text_file`、
@@ -25,6 +26,7 @@ mod fencing_tests;
 pub mod brief;
 pub mod env_profile;
 pub mod policy;
+mod session_mode;
 pub mod worktree;
 
 use std::collections::{BTreeMap, HashMap};
@@ -728,15 +730,17 @@ impl Driver {
                     .to_owned();
                 let id = self.run.id.clone();
                 self.db(|tx| store_run::set_session(tx, &id, &session));
-                self.run.session_id = Some(session);
+                self.run.session_id = Some(session.clone());
+                self.enforce_permission_mode(&session, &result)?;
             }
             Mode::Resume => {
                 let session = self.run.session_id.clone().unwrap_or_default();
-                self.call(
+                let result = self.call(
                     "session/load",
                     json!({ "sessionId": session, "cwd": self.run.exec_dir, "mcpServers": mcp }),
                 )?;
                 self.discard_replay();
+                self.enforce_permission_mode(&session, &result)?;
             }
         }
         if let Some(end) = self.aborted() {

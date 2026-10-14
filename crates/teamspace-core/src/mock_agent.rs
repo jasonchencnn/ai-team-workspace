@@ -8,10 +8,20 @@
 //! - `initialize`：协议版本 1、`agentInfo.name = teamspace-mock-agent`、支持 `loadSession`，
 //!   无登录方式；
 //! - `authenticate`：直接成功；
-//! - `session/new`：记下 cwd，返回新的会话 ID；
-//! - `session/load`：回放两条历史消息（`user_message_chunk`、`agent_message_chunk`）后返回；
+//! - `session/new`：记下 cwd，返回新的会话 ID；工作目录里有 `.mock-modes` 文件时，按其内容公布权限模式（见下）；
+//! - `session/load`：回放两条历史消息（`user_message_chunk`、`agent_message_chunk`）后返回（同样公布权限模式）；
+//! - `session/set_mode`、`session/set_config_option`：切换已公布的权限模式（未公布的取值返回错误），记下当前值；
 //! - `session/prompt`：按提示文字中的标记模拟一次工作（见下）；
 //! - `session/cancel` 通知：正在处理的提示以 `cancelled` 结束。
+//!
+//! 权限模式（模拟真实 Agent 的会话模式，用来测试 Teamspace 是否把会话切到「请求权限」的模式）：
+//! 工作目录根的 `.mock-modes` 文件内容决定会话建立时公布什么，起始模式都是放行类的；没有这个文件时不公布任何模式。
+//! - `config`：仿 MiniMax Code，`configOptions` 里有 `permissionMode`（`default` / `auto` / `bypassPermissions`，
+//!   起始 `bypassPermissions`），`modes` 里只有工作流模式 `default` / `plan`；
+//! - `modes`：仿 Claude Code / Gemini，`modes` 起始 `bypassPermissions`，可选
+//!   `bypassPermissions` / `plan` / `acceptEdits` / `dontAsk` / `default`；
+//! - `locked`：`modes` 起始 `yolo`，可选里没有「请求」类（`yolo` / `plan` / `acceptEdits` / `dontAsk`）；
+//! - `refuse`：同 `modes`，但切换请求一律返回错误。
 //!
 //! `session/prompt` 的模式（标记写在任务标题或说明里，会随任务说明包出现在提示中）：
 //! - 默认：分块发消息 → 计划 → 读取引用文件（`fs/read_text_file`）→ 申请编辑权限并通过
@@ -30,6 +40,7 @@
 //! - `[mock:fsprobe=<范围外文件>]`：不申请权限，直接依次：`fs/read_text_file` 读取范围外文件，
 //!   `fs/write_text_file` 写岗位过程文件夹内的 `fsprobe-ok.md`、写范围外文件、写 `工作日志.md`；省略参数时范围外
 //!   文件为工作目录上一级的 `fsprobe-outside.txt`；每一步的结果写进总结；
+//! - `[mock:modes]`：在总结里报告会话当前的权限模式（`[modes:<取值>]`，没有公布模式时为 `[modes:none]`）；
 //! - `[mock:linger]`：与其他标记合用；其余步骤（含权限请求的结果）都完成后不立刻总结，发一条消息后等待
 //!   `session/cancel`（或 stdin 关闭），用来在界面上观察「权限处理之后仍在执行中」的状态；
 //! - `[mock:failafter]`：默认流程（含写入过程文件）都完成后，不总结，发一条消息并以 JSON-RPC 错误结束提示，
@@ -70,6 +81,7 @@ pub fn run(input: impl BufRead, output: impl Write) -> std::io::Result<()> {
         input: Box::new(input),
         output: Box::new(output),
         sessions: HashMap::new(),
+        permission: HashMap::new(),
         count: 0,
         next_id: FIRST_REQUEST_ID,
     };
@@ -83,6 +95,8 @@ struct Mock<'a> {
     input: Box<dyn BufRead + 'a>,
     output: Box<dyn Write + 'a>,
     sessions: HashMap<String, PathBuf>,
+    /// 各会话的权限模式状态（`.mock-modes` 指定的变体与当前取值）。
+    permission: HashMap<String, PermissionState>,
     count: u64,
     next_id: u64,
 }
@@ -141,7 +155,9 @@ impl Mock<'_> {
                 let session = format!("mock-session-{}", self.count);
                 let cwd = params.get("cwd").and_then(Value::as_str).unwrap_or(".");
                 self.sessions.insert(session.clone(), PathBuf::from(cwd));
-                self.write(&ok(id, json!({ "sessionId": session })))
+                let mut result = json!({ "sessionId": session });
+                self.announce_modes(&session, &mut result);
+                self.write(&ok(id, result))
             }
             "session/load" => {
                 let session = str_of(&params, "sessionId").to_owned();
@@ -151,7 +167,24 @@ impl Mock<'_> {
                                               "content": { "type": "text", "text": "（回放）任务说明" } }))?;
                 self.update(&session, json!({ "sessionUpdate": "agent_message_chunk",
                                               "content": { "type": "text", "text": "（回放）之前的回复" } }))?;
-                self.write(&ok(id, json!({})))
+                let mut result = json!({});
+                self.announce_modes(&session, &mut result);
+                self.write(&ok(id, result))
+            }
+            "session/set_mode" => {
+                let reply = self.switch_mode(&params, "modeId", None);
+                self.write(&match reply {
+                    Ok(result) => ok(id, result),
+                    Err(message) => rpc_error(id, &message),
+                })
+            }
+            "session/set_config_option" => {
+                let config = str_of(&params, "configId").to_owned();
+                let reply = self.switch_mode(&params, "value", Some(&config));
+                self.write(&match reply {
+                    Ok(result) => ok(id, result),
+                    Err(message) => rpc_error(id, &message),
+                })
             }
             "session/prompt" => self.prompt(id, &params),
             other => self.write(&json!({
@@ -159,6 +192,76 @@ impl Mock<'_> {
                 "error": { "code": -32601, "message": format!("Method not found: {other}") }
             })),
         }
+    }
+
+    /// 会话建立时按工作目录里的 `.mock-modes` 公布权限模式；没有该文件时什么也不公布。
+    fn announce_modes(&mut self, session: &str, result: &mut Value) {
+        let Some(cwd) = self.sessions.get(session) else {
+            return;
+        };
+        let Ok(raw) = std::fs::read_to_string(cwd.join(".mock-modes")) else {
+            return;
+        };
+        let variant = raw.trim().to_owned();
+        let (current, modes, config) = match variant.as_str() {
+            "config" => (
+                "bypassPermissions",
+                json!({ "currentModeId": "default", "availableModes": [
+                    { "id": "default", "name": "Default" }, { "id": "plan", "name": "Plan" }] }),
+                Some(permission_option("bypassPermissions")),
+            ),
+            "modes" | "refuse" => (
+                "bypassPermissions",
+                mode_list("bypassPermissions", MODES_ALL),
+                None,
+            ),
+            "locked" => ("yolo", mode_list("yolo", MODES_LOCKED), None),
+            _ => return,
+        };
+        self.permission.insert(
+            session.to_owned(),
+            PermissionState {
+                variant,
+                current: current.to_owned(),
+            },
+        );
+        result["modes"] = modes;
+        if let Some(config) = config {
+            result["configOptions"] = json!([config]);
+        }
+    }
+
+    /// `session/set_mode`（`config` 为 `None`）和 `session/set_config_option` 的处理；返回响应或错误消息。
+    fn switch_mode(
+        &mut self,
+        params: &Value,
+        value_key: &str,
+        config: Option<&str>,
+    ) -> Result<Value, String> {
+        let session = str_of(params, "sessionId");
+        let value = str_of(params, value_key).to_owned();
+        let state = self
+            .permission
+            .get_mut(session)
+            .ok_or_else(|| "Mock 没有公布任何模式".to_owned())?;
+        if state.variant == "refuse" {
+            return Err("Mock 拒绝切换模式".to_owned());
+        }
+        let allowed: &[&str] = match (state.variant.as_str(), config) {
+            ("config", Some("permissionMode")) => &["default", "auto", "bypassPermissions"],
+            ("config", None) => return Ok(json!({})),
+            ("modes", None) => MODES_ALL,
+            ("locked", None) => MODES_LOCKED,
+            _ => return Err("Mock 不认识这个设置".to_owned()),
+        };
+        if !allowed.contains(&value.as_str()) {
+            return Err(format!("Mock 没有这个取值：{value}"));
+        }
+        state.current = value.clone();
+        Ok(match config {
+            Some(_) => json!({ "configOptions": [permission_option(&value)] }),
+            None => json!({}),
+        })
     }
 
     fn update(&mut self, session: &str, update: Value) -> std::io::Result<()> {
@@ -653,6 +756,13 @@ impl Mock<'_> {
             Some(false) => summary.push_str("命令 echo hello 被拒绝，未执行。"),
             None => {}
         }
+        if has("modes") {
+            let current = self
+                .permission
+                .get(&session)
+                .map_or("none", |p| p.current.as_str());
+            notes.push(format!(" [modes:{current}]"));
+        }
         for n in &notes {
             summary.push_str(n);
         }
@@ -806,6 +916,47 @@ fn process_folder(text: &str) -> Option<String> {
                 .any(|c| c == std::path::Component::ParentDir))
         .then(|| folder.to_owned())
     })
+}
+
+/// 一个会话的权限模式状态。
+struct PermissionState {
+    /// `.mock-modes` 的内容。
+    variant: String,
+    /// 当前取值（`config` 变体是 `permissionMode` 的值，其他是会话模式）。
+    current: String,
+}
+
+const MODES_ALL: &[&str] = &[
+    "bypassPermissions",
+    "plan",
+    "acceptEdits",
+    "dontAsk",
+    "default",
+];
+const MODES_LOCKED: &[&str] = &["yolo", "plan", "acceptEdits", "dontAsk"];
+
+fn mode_list(current: &str, ids: &[&str]) -> Value {
+    let modes: Vec<Value> = ids
+        .iter()
+        .map(|id| json!({ "id": id, "name": id }))
+        .collect();
+    json!({ "currentModeId": current, "availableModes": modes })
+}
+
+fn permission_option(current: &str) -> Value {
+    json!({
+        "type": "select", "id": "permissionMode", "name": "Permission mode",
+        "category": "_permission", "currentValue": current,
+        "options": [
+            { "value": "default", "name": "Ask" },
+            { "value": "auto", "name": "Auto" },
+            { "value": "bypassPermissions", "name": "Full access" }
+        ]
+    })
+}
+
+fn rpc_error(id: Value, message: &str) -> Value {
+    json!({ "jsonrpc": "2.0", "id": id, "error": { "code": -32602, "message": message } })
 }
 
 fn ok(id: Value, result: Value) -> Value {

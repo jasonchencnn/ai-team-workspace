@@ -38,7 +38,7 @@ pub(crate) struct PresetSpec {
 pub(crate) fn preset_spec(preset: AcpPreset) -> PresetSpec {
     match preset {
         AcpPreset::ClaudeCode => PresetSpec {
-            description: "经适配器 claude-code-acp",
+            description: "经适配器 claude-code-acp。默认会话模式 default，命令与写入会请求权限",
             command: Some("claude-code-acp"),
             args: &[],
             requires_cli: Some("claude"),
@@ -48,7 +48,7 @@ pub(crate) fn preset_spec(preset: AcpPreset) -> PresetSpec {
             install_cli: Some("需要安装 Claude Code（claude 命令）并完成登录"),
         },
         AcpPreset::Codex => PresetSpec {
-            description: "经适配器 codex-acp",
+            description: "经适配器 codex-acp。权限行为待验证：会话建立后若公布只读（read-only）模式，Teamspace 会选它以便请求确认",
             command: Some("codex-acp"),
             args: &[],
             requires_cli: Some("codex"),
@@ -58,7 +58,7 @@ pub(crate) fn preset_spec(preset: AcpPreset) -> PresetSpec {
             install_cli: Some("需要安装 Codex CLI（codex 命令）并完成登录"),
         },
         AcpPreset::MinimaxCode => PresetSpec {
-            description: "原生 ACP：mcode acp",
+            description: "原生 ACP：mcode acp。ACP 会话默认是 Full access（命令不请求权限），Teamspace 建立会话后切到 Ask；Ask 下工作目录内的 shell 写入仍可能不经确认",
             command: Some("mcode"),
             args: &["acp"],
             requires_cli: None,
@@ -66,7 +66,7 @@ pub(crate) fn preset_spec(preset: AcpPreset) -> PresetSpec {
             install_cli: None,
         },
         AcpPreset::GeminiCli => PresetSpec {
-            description: "原生 ACP：gemini --experimental-acp",
+            description: "原生 ACP：gemini --experimental-acp。建立会话后若处于 yolo / autoEdit，Teamspace 切到 default（请求确认）",
             command: Some("gemini"),
             args: &["--experimental-acp"],
             requires_cli: None,
@@ -74,15 +74,15 @@ pub(crate) fn preset_spec(preset: AcpPreset) -> PresetSpec {
             install_cli: None,
         },
         AcpPreset::CodeBuddy => PresetSpec {
-            description: "原生 ACP：codebuddy --acp",
+            description: "原生 ACP：codebuddy --acp --permission-mode default（启动时指定向客户端请求权限）",
             command: Some("codebuddy"),
-            args: &["--acp"],
+            args: &["--acp", "--permission-mode", "default"],
             requires_cli: None,
             install: Some("需要安装 CodeBuddy Code 命令行（codebuddy 命令）"),
             install_cli: None,
         },
         AcpPreset::QoderCli => PresetSpec {
-            description: "原生 ACP：qodercli --acp",
+            description: "原生 ACP：qodercli --acp。权限行为未验证：若 Agent 公布权限模式会自动选「请求确认」，否则命令可能不经确认就执行",
             command: Some("qodercli"),
             args: &["--acp"],
             requires_cli: None,
@@ -90,7 +90,7 @@ pub(crate) fn preset_spec(preset: AcpPreset) -> PresetSpec {
             install_cli: None,
         },
         AcpPreset::GrokBuild => PresetSpec {
-            description: "原生 ACP（测试版），需要 SuperGrok Heavy 订阅：grok agent stdio",
+            description: "原生 ACP（测试版），需要 SuperGrok Heavy 订阅：grok agent stdio。权限行为未验证：若未公布权限模式，命令可能不经确认就执行",
             command: Some("grok"),
             args: &["agent", "stdio"],
             requires_cli: None,
@@ -98,7 +98,7 @@ pub(crate) fn preset_spec(preset: AcpPreset) -> PresetSpec {
             install_cli: None,
         },
         AcpPreset::QwenCode => PresetSpec {
-            description: "原生 ACP：qwen --experimental-acp（参数以官方文档为准，可在表单中修改）",
+            description: "原生 ACP：qwen --experimental-acp（参数以官方文档为准，可在表单中修改）。权限行为未验证：若公布权限模式会自动选「请求确认」，否则命令可能不经确认就执行",
             command: Some("qwen"),
             args: &["--experimental-acp"],
             requires_cli: None,
@@ -106,7 +106,7 @@ pub(crate) fn preset_spec(preset: AcpPreset) -> PresetSpec {
             install_cli: None,
         },
         AcpPreset::KimiCli => PresetSpec {
-            description: "原生 ACP：kimi --acp（参数以官方文档为准，可在表单中修改）",
+            description: "原生 ACP：kimi --acp（参数以官方文档为准，可在表单中修改）。权限行为未验证：若公布权限模式会自动选「请求确认」，否则命令可能不经确认就执行",
             command: Some("kimi"),
             args: &["--acp"],
             requires_cli: None,
@@ -114,7 +114,7 @@ pub(crate) fn preset_spec(preset: AcpPreset) -> PresetSpec {
             install_cli: None,
         },
         AcpPreset::OpenCode => PresetSpec {
-            description: "原生 ACP：opencode acp（参数以官方文档为准，可在表单中修改）",
+            description: "原生 ACP：opencode acp（参数以官方文档为准，可在表单中修改）。权限由 opencode.json 的 permission 配置决定，未验证；默认配置下命令可能不经确认就执行",
             command: Some("opencode"),
             args: &["acp"],
             requires_cli: None,
@@ -122,7 +122,7 @@ pub(crate) fn preset_spec(preset: AcpPreset) -> PresetSpec {
             install_cli: None,
         },
         AcpPreset::Custom => PresetSpec {
-            description: "填写任意 ACP Agent 的启动命令",
+            description: "填写任意 ACP Agent 的启动命令。若 Agent 公布权限模式，Teamspace 会自动选「请求确认」；否则命令可能不经确认就执行",
             command: None,
             args: &[],
             requires_cli: None,
