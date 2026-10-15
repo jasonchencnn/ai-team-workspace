@@ -239,6 +239,7 @@ fn bind_and_unbind_harness() {
             team_id: team.id.clone(),
             cursor: None,
             limit: Some(3),
+            ..Default::default()
         })
         .unwrap()
         .events

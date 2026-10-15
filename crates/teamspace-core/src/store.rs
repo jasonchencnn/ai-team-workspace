@@ -12,7 +12,7 @@ use time::OffsetDateTime;
 use crate::error::{Error, Result};
 
 /// 当前 schema 版本。
-pub(crate) const SCHEMA_VERSION: i64 = 9;
+pub(crate) const SCHEMA_VERSION: i64 = 10;
 
 const SCHEMA_V1: &str = r#"
 CREATE TABLE teams (
@@ -317,9 +317,16 @@ ALTER TABLE runs ADD COLUMN review_comment TEXT;
 ALTER TABLE runs ADD COLUMN reviewed_at TEXT;
 "#;
 
+/// v10：活动记录按岗位筛选（活动与审计页的筛选条件之一）。
+/// 任务筛选已由 v2 的 `events_task (task_id, seq)` 覆盖，时间范围走 `events_team` 的区间扫描，
+/// 只有「团队 + 岗位 + 倒序」这一组合缺少索引。
+const SCHEMA_V10: &str = r#"
+CREATE INDEX events_role ON events (team_id, role_id, seq);
+"#;
+
 const MIGRATIONS: &[&str] = &[
     SCHEMA_V1, SCHEMA_V2, SCHEMA_V3, SCHEMA_V4, SCHEMA_V5, SCHEMA_V6, SCHEMA_V7, SCHEMA_V8,
-    SCHEMA_V9,
+    SCHEMA_V9, SCHEMA_V10,
 ];
 
 /// 打开数据库：WAL 日志、synchronous=NORMAL、开启外键，并迁移到当前版本。
@@ -813,6 +820,61 @@ mod tests {
         );
         conn.execute("UPDATE runs SET review_outcome = 'rejected'", [])
             .unwrap();
+    }
+
+    #[test]
+    fn v9_database_migrates_to_v10_with_the_events_role_index() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("t.db");
+        {
+            let conn = Connection::open(&path).unwrap();
+            for sql in &MIGRATIONS[..9] {
+                conn.execute_batch(sql).unwrap();
+            }
+            conn.execute_batch(
+                "INSERT INTO teams VALUES ('t', 'T', '', '/w', 'a', 'a', NULL);
+                 INSERT INTO roles (id, team_id, name, code, task_prefix, created_at, updated_at)
+                     VALUES ('r', 't', '前端', 'role_fe', 'FE', 'a', 'a');
+                 INSERT INTO events (id, team_id, task_id, role_id, kind, actor, summary, data, created_at)
+                     VALUES ('e', 't', NULL, 'r', 'team_created', 'human', 's', '{}', 'a');
+                 PRAGMA user_version = 9;",
+            )
+            .unwrap();
+        }
+        let conn = open(&path).unwrap();
+        let v: i64 = conn
+            .pragma_query_value(None, "user_version", |r| r.get(0))
+            .unwrap();
+        assert_eq!(v, SCHEMA_VERSION);
+        {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'events'",
+                )
+                .unwrap();
+            let indexes: Vec<String> = stmt
+                .query_map([], |r| r.get::<_, String>(0))
+                .unwrap()
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .unwrap();
+            assert!(indexes.contains(&"events_role".to_owned()), "{indexes:?}");
+        }
+        // v9 的验收列原样保留，索引迁移不动 runs 表。
+        let columns: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('runs') WHERE name = 'review_outcome'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(columns, 1);
+        // 重复打开是幂等的（migrate 到当前版本后直接返回）。
+        drop(conn);
+        let conn = open(&path).unwrap();
+        let v: i64 = conn
+            .pragma_query_value(None, "user_version", |r| r.get(0))
+            .unwrap();
+        assert_eq!(v, SCHEMA_VERSION);
     }
 
     #[test]

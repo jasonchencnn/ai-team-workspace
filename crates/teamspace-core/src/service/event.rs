@@ -1,7 +1,11 @@
 //! 活动记录：写入与游标分页。
 
+use rusqlite::types::ToSql;
 use rusqlite::{Connection, params};
 use serde_json::Value;
+use time::OffsetDateTime;
+use time::UtcOffset;
+use time::format_description::well_known::Rfc3339;
 
 use crate::error::{Error, Result};
 use crate::model::{Actor, Event, EventKind, EventPage, EventQuery};
@@ -81,32 +85,106 @@ pub(crate) fn for_task(conn: &Connection, task_id: &str) -> Result<Vec<Event>> {
     Ok(rows.collect::<rusqlite::Result<_>>()?)
 }
 
+/// 把 RFC3339 时间解析成活动记录使用的固定格式（UTC、毫秒精度，与 [`now`] 一致）。
+///
+/// 归一化是必要的：`created_at` 恒为 `…T%H:%M:%S.mmmZ`，而调用方可能传不带毫秒或带时区偏移的
+/// RFC3339（如 `2026-10-15T02:00:00Z`）。统一格式后，时间比较才能直接用字符串比较
+/// （与本文件的排序和分页口径一致），不会因为缺小数位而错判先后。
+fn instant(raw: &str, field: &str) -> Result<String> {
+    let parsed = OffsetDateTime::parse(raw, &Rfc3339)
+        .map_err(|_| {
+            Error::invalid(format!(
+                "活动筛选的{field}不是合法的 RFC3339 时间：{raw}（示例 2026-10-15T02:00:00.000Z）"
+            ))
+        })?
+        // 统一换算到 UTC 再格式化：带时区偏移的输入（如 `+08:00`）否则会按本地小时落盘，
+        // 与 `created_at` 的 UTC 串差一个时区。
+        .to_offset(UtcOffset::UTC);
+    Ok(format!(
+        "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}.{:03}Z",
+        parsed.year(),
+        u8::from(parsed.month()),
+        parsed.day(),
+        parsed.hour(),
+        parsed.minute(),
+        parsed.second(),
+        parsed.millisecond(),
+    ))
+}
+
 /// 按团队分页，按写入顺序倒序。游标为上一页最后一条的 `seq`（十进制字符串，对前端不透明）。
-/// 有无游标分成两条查询，均可直接走 `events_team (team_id, seq)` 索引。
+///
+/// 筛选条件（任务、岗位、种类、时间范围）与游标一起构成 WHERE：游标语义不变，仍然是
+/// 「比上一页更早的记录」，因此筛选条件在翻页时不会丢也不会重。任务或岗位不属于该团队时
+/// 与 `team_id` 条件互斥，结果为空而不是错误。
 pub(crate) fn page(conn: &Connection, query: &EventQuery) -> Result<EventPage> {
     super::team::get_active(conn, &query.team_id)?;
     let limit = query.limit.unwrap_or(DEFAULT_PAGE).clamp(1, MAX_PAGE);
-    let fetch = i64::from(limit) + 1;
-    let rows: Vec<(i64, Event)> = match &query.cursor {
-        None => {
-            let mut stmt = conn.prepare_cached(&format!(
-                "SELECT seq, {COLS} FROM events WHERE team_id = ?1 ORDER BY seq DESC LIMIT ?2"
-            ))?;
-            stmt.query_map(params![query.team_id, fetch], with_seq)?
-                .collect::<rusqlite::Result<_>>()?
+    let since = query
+        .since
+        .as_deref()
+        .map(|raw| instant(raw, "开始时间 since"))
+        .transpose()?;
+    let until = query
+        .until
+        .as_deref()
+        .map(|raw| instant(raw, "结束时间 until"))
+        .transpose()?;
+
+    let mut args: Vec<Box<dyn ToSql>> = vec![Box::new(query.team_id.clone())];
+    let mut clauses: Vec<String> = Vec::new();
+    if let Some(task_id) = query.task_id.as_deref() {
+        clauses.push(format!("task_id = ?{}", args.len() + 1));
+        args.push(Box::new(task_id.to_owned()));
+    }
+    if let Some(role_id) = query.role_id.as_deref() {
+        clauses.push(format!("role_id = ?{}", args.len() + 1));
+        args.push(Box::new(role_id.to_owned()));
+    }
+    if let Some(kinds) = query.kinds.as_deref().filter(|k| !k.is_empty()) {
+        let start = args.len() + 1;
+        let placeholders: Vec<String> = (0..kinds.len())
+            .map(|i| format!("?{}", start + i))
+            .collect();
+        for kind in kinds {
+            args.push(Box::new(enum_str(*kind)));
         }
-        Some(cursor) => {
-            let before: i64 = cursor
-                .parse()
-                .map_err(|_| Error::invalid("活动分页游标无效"))?;
-            let mut stmt = conn.prepare_cached(&format!(
-                "SELECT seq, {COLS} FROM events WHERE team_id = ?1 AND seq < ?2
-                 ORDER BY seq DESC LIMIT ?3"
-            ))?;
-            stmt.query_map(params![query.team_id, before, fetch], with_seq)?
-                .collect::<rusqlite::Result<_>>()?
-        }
+        clauses.push(format!("kind IN ({})", placeholders.join(", ")));
+    }
+    // `since` 含、`until` 不含，两者都是归一化后的定长字符串，可直接比较。
+    if let Some(since) = since {
+        clauses.push(format!("created_at >= ?{}", args.len() + 1));
+        args.push(Box::new(since));
+    }
+    if let Some(until) = until {
+        clauses.push(format!("created_at < ?{}", args.len() + 1));
+        args.push(Box::new(until));
+    }
+    if let Some(cursor) = query.cursor.as_deref() {
+        let before: i64 = cursor
+            .parse()
+            .map_err(|_| Error::invalid("活动分页游标无效"))?;
+        clauses.push(format!("seq < ?{}", args.len() + 1));
+        args.push(Box::new(before));
+    }
+    // 多取一条用来判断还有没有下一页。
+    let limit_placeholder = format!("?{}", args.len() + 1);
+    args.push(Box::new(i64::from(limit) + 1));
+
+    let where_clause = if clauses.is_empty() {
+        String::new()
+    } else {
+        format!(" AND {}", clauses.join(" AND "))
     };
+    let sql = format!(
+        "SELECT seq, {COLS} FROM events WHERE team_id = ?1{where_clause}
+         ORDER BY seq DESC LIMIT {limit_placeholder}"
+    );
+    let mut stmt = conn.prepare_cached(&sql)?;
+    let rows: Vec<(i64, Event)> = stmt
+        .query_map(rusqlite::params_from_iter(args.iter()), with_seq)?
+        .collect::<rusqlite::Result<_>>()?;
+
     let has_more = rows.len() > limit as usize;
     let mut events = Vec::with_capacity(rows.len());
     let mut last_seq = None;
@@ -169,5 +247,18 @@ mod tests {
             assert!(plan.contains("events_team"), "{plan}");
             assert!(!plan.contains("TEMP B-TREE"), "{plan}");
         }
+    }
+
+    /// 按岗位筛选要走 v9 建的 `events_role`，否则 1 万条活动时每次筛选都是全表扫描。
+    #[test]
+    fn role_filter_uses_the_role_index() {
+        let dir = tempfile::tempdir().unwrap();
+        let conn = store::open(&dir.path().join("t.db")).unwrap();
+        let plan = plan(
+            &conn,
+            "SELECT * FROM events WHERE team_id = 't' AND role_id = 'r' ORDER BY seq DESC LIMIT 51",
+        );
+        assert!(plan.contains("events_role"), "{plan}");
+        assert!(!plan.contains("TEMP B-TREE"), "{plan}");
     }
 }

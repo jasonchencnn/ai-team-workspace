@@ -1,0 +1,144 @@
+.act-filters {
+  margin-top: var(--space-section);
+}
+
+.act-filters__row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 16px;
+}
+
+.act-filters__note {
+  margin-top: 16px;
+  color: var(--color-muted);
+  font-size: var(--font-size-caption);
+}
+
+.act-segment {
+  display: inline-flex;
+  gap: 4px;
+}
+
+/* 多选：原生 details 负责展开与收起，面板里是一列复选框。 */
+.act-multi {
+  position: relative;
+}
+
+.act-multi__trigger {
+  min-height: 36px;
+  padding: 0 12px;
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius-control);
+  background: var(--color-surface);
+  color: var(--color-ink);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  white-space: nowrap;
+}
+
+.act-multi__panel {
+  position: absolute;
+  z-index: 20;
+  top: calc(100% + 4px);
+  left: 0;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(150px, 1fr));
+  gap: 2px 16px;
+  max-height: 320px;
+  overflow-y: auto;
+  padding: 12px;
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius-panel);
+  background: var(--color-surface);
+  box-shadow: 0 8px 24px rgb(32 36 45 / 12%);
+}
+
+.act-multi__option {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 0;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.act-state {
+  margin-top: var(--space-section);
+  color: var(--color-muted);
+}
+
+.act-table-wrap {
+  margin-top: var(--space-section);
+  overflow-x: auto;
+}
+
+.act-table {
+  width: 100%;
+  border-collapse: collapse;
+  background: var(--color-surface);
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius-panel);
+}
+
+.act-table th,
+.act-table td {
+  padding: 14px 20px;
+  text-align: left;
+  border-bottom: 1px solid var(--color-line);
+}
+
+.act-table thead th {
+  color: var(--color-muted);
+  font-size: var(--font-size-caption);
+  font-weight: 500;
+  background: var(--color-canvas);
+}
+
+.act-table tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+.act-table__time {
+  white-space: nowrap;
+  color: var(--color-muted);
+}
+
+.act-table__actor {
+  white-space: nowrap;
+}
+
+.act-table__summary {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 320px;
+}
+
+.act-table__text {
+  flex: 1;
+  min-width: 0;
+}
+
+.act-table__link {
+  color: var(--color-brand);
+  white-space: nowrap;
+}
+
+.act-table__link:hover {
+  text-decoration: underline;
+}
+
+.act-more {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 16px;
+  margin-top: var(--space-section);
+}
+
+.act-note {
+  color: var(--color-muted);
+  font-size: var(--font-size-caption);
+}

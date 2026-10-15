@@ -76,8 +76,10 @@ pub struct Event {
     pub created_at: String,
 }
 
-/// 活动分页查询。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+/// 活动分页查询。筛选条件全部可选，缺省表示不按该项过滤；各项之间是「且」的关系。
+///
+/// 派生 `Default` 是为了让既有调用点可以用 `..Default::default()` 补齐新增的筛选字段。
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export)]
 pub struct EventQuery {
@@ -88,6 +90,21 @@ pub struct EventQuery {
     /// 每页条数，默认 50，最大 200。
     #[ts(optional = nullable)]
     pub limit: Option<u32>,
+    /// 只看某个任务的记录。任务不存在或不属于该团队时返回空结果，不报错。
+    #[ts(optional = nullable)]
+    pub task_id: Option<String>,
+    /// 只看某个岗位的记录。岗位不存在或不属于该团队时返回空结果，不报错。
+    #[ts(optional = nullable)]
+    pub role_id: Option<String>,
+    /// 只看这些种类的记录；`null` 或空数组表示不限种类。
+    #[ts(optional = nullable)]
+    pub kinds: Option<Vec<EventKind>>,
+    /// 起始时间，**含**该时刻，UTC RFC3339（如 `2026-10-15T02:00:00.000Z`）。
+    #[ts(optional = nullable)]
+    pub since: Option<String>,
+    /// 结束时间，**不含**该时刻，UTC RFC3339。格式与 `since` 相同。
+    #[ts(optional = nullable)]
+    pub until: Option<String>,
 }
 
 /// 活动分页结果，按时间倒序。

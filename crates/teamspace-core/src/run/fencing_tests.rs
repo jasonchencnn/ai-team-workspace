@@ -81,6 +81,7 @@ fn count_kind(f: &Fixture, team_id: &str, kind: EventKind) -> usize {
         team_id: team_id.to_owned(),
         cursor: None,
         limit: Some(200),
+        ..Default::default()
     })
     .unwrap()
     .events

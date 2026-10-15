@@ -335,14 +335,20 @@ export function TaskDetailPage() {
             {events.length === 0 ? (
               <p className="task-detail__muted">暂无活动。</p>
             ) : (
-              <ul className="task-detail__events">
-                {events.map((event) => (
-                  <li key={event.id}>
-                    <time dateTime={event.createdAt}>{formatTime(event.createdAt)}</time>
-                    <span>{event.summary}</span>
-                  </li>
-                ))}
-              </ul>
+              <>
+                <ul className="task-detail__events">
+                  {events.map((event) => (
+                    <li key={event.id}>
+                      <time dateTime={event.createdAt}>{formatTime(event.createdAt)}</time>
+                      <span>{event.summary}</span>
+                    </li>
+                  ))}
+                </ul>
+                {/* 带上任务筛选跳过去，活动与审计页按这个任务列出全部记录。 */}
+                <p className="task-detail__muted">
+                  <Link to={`/teams/${teamId}/activity?task=${taskId}`}>查看全部活动</Link>
+                </p>
+              </>
             )}
           </section>
         </Panel>

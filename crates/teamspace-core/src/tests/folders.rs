@@ -327,6 +327,7 @@ fn folder_write_failures_do_not_roll_back_and_are_reported_once() {
             team_id: team.id.clone(),
             cursor: None,
             limit: Some(200),
+            ..Default::default()
         })
         .unwrap()
         .events
