@@ -5,6 +5,7 @@ import type { PermissionPrompt } from "../../../bindings/PermissionPrompt.js";
 import type { Run } from "../../../bindings/Run.js";
 import {
   permissionOptionHint,
+  permissionOptionLabel,
   permissionOptionVariant,
   permissionScopeNote,
   toolKindName,
@@ -83,7 +84,7 @@ export function PermissionDialog({
                 onRespond(option.optionId);
               }}
             >
-              {option.name}
+              {permissionOptionLabel(option)}
             </Button>
           ))}
           <Button variant="subtle" onClick={onClose} disabled={submitting}>
@@ -150,6 +151,11 @@ export function PermissionDialog({
         </p>
       )}
       {scopeNote === null ? null : <p className="perm-note perm-note--scope">{scopeNote}</p>}
+      {prompt.options.length === 0 ? null : (
+        <p className="perm-note perm-note--source">
+          {`对应 Agent 提供的选项：${prompt.options.map((option) => option.name).join(" / ")}`}
+        </p>
+      )}
     </Modal>
   );
 }

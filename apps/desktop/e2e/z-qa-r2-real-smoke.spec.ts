@@ -41,7 +41,8 @@ const ACTIVE_STATUSES = ["queued", "running", "waiting_permission"];
 /** MiniMax 一次真实执行的等待上限（毫秒）。 */
 const RUN_LIMIT = 480_000;
 /** 权限弹窗里的原因文案（写入岗位文件夹之外、或执行命令）。 */
-const PERM_REASON = /写入本岗位文件夹与任务引用文件之外需要确认|执行命令需要确认/;
+const PERM_REASON =
+  /写入本岗位文件夹与任务引用文件之外需要确认|读取工作空间之外的文件需要确认|执行命令需要确认/;
 
 function journalOf(root: string, role: string): string {
   return readFileSync(join(root, "Teamspace", role, "工作日志.md"), "utf8");

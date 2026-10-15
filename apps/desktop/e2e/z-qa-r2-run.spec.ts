@@ -475,9 +475,13 @@ test("RUN-PRM-006 权限弹窗内容：标题、意图、命令、工作目录�
   await expect(facts).toContainText("execute · 执行命令");
   await expect(dialog.locator(".perm-reason__title")).toHaveText("为什么需要你确认");
   await expect(dialog.locator(".perm-reason__text")).toHaveText("执行命令需要确认");
-  for (const name of ["允许一次", "总是允许", "拒绝", "稍后处理"]) {
+  for (const name of ["允许一次", "本次执行内总是允许", "拒绝", "稍后处理"]) {
     await expect(dialog.getByRole("button", { name, exact: true })).toBeVisible();
   }
+  // 脚注列出 Agent 提供的原始选项名（mock 的原名即中文）
+  await expect(dialog.locator(".perm-note--source")).toHaveText(
+    "对应 Agent 提供的选项：允许一次 / 总是允许 / 拒绝",
+  );
   await expect(dialog).toContainText("「总是允许」只在本次执行内有效，执行结束即失效。");
   // 执行命令请求不涉及写入授权，不显示授权范围说明
   await expect(dialog.locator(".perm-note--scope")).toHaveCount(0);

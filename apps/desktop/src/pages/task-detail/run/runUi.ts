@@ -135,6 +135,25 @@ export function toolStatusName(status: string | null): string | null {
   return toolStatusLabel[status] ?? status;
 }
 
+/**
+ * 权限选项的按钮文案：按 kind 统一成中文，不直接显示 Agent 提供的 name（真实 Agent 多为英文或各自的名字）。
+ * 未知 kind 回退到 Agent 提供的 name。用 switch 而不是对象查表，避免 kind 撞上 Object 原型上的属性。
+ */
+export function permissionOptionLabel(option: PermissionOption): string {
+  switch (option.kind) {
+    case "allow_once":
+      return "允许一次";
+    case "allow_always":
+      return "本次执行内总是允许";
+    case "reject_once":
+      return "拒绝";
+    case "reject_always":
+      return "总是拒绝";
+    default:
+      return option.name;
+  }
+}
+
 /** 权限选项种类对应的按钮样式：允许为主按钮，拒绝为弱化按钮。 */
 export function permissionOptionVariant(
   option: PermissionOption,
