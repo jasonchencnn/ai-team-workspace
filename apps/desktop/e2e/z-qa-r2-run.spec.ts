@@ -726,6 +726,34 @@ test("RUN-GOAL-001 可用标志：派工、实时进度、批准权限请求、�
   cleanOut();
 });
 
+// ---------------------------------------------------------------- D18 读取边界
+
+test("RUN-PRM-D18 越界读取：弹窗请求确认，允许一次后读取成功", async ({ page }) => {
+  const outsideDir = mkdtempSync(join(tmpdir(), "teamspace-e2e-d18-"));
+  const outside = join(outsideDir, "外部资料.txt");
+  writeFileSync(outside, "外部第一行\n第二行\n");
+  const task = await plainTask(`越界读取 [mock:outsideread=${outside}]`);
+  await startUntilDialog(page, task);
+  const dialog = dialogOf(page);
+  await expect(dialog.locator(".perm-request__intent")).toHaveText(
+    "Agent 想读取工作空间之外的文件",
+  );
+  await expect(dialog.locator(".perm-reason__text")).toHaveText(
+    `读取工作空间之外的文件需要确认：${outside}`,
+  );
+  await expect(dialog.locator(".perm-request__paths")).toContainText(outside);
+  await expect(dialog.locator(".perm-note--scope")).toHaveText(
+    "「允许一次」只放行这一次读取；「总是允许」在本次执行内对这些路径持续有效。允许读取不等于允许写入。",
+  );
+  await dialog.getByRole("button", { name: "允许一次" }).click();
+  const success = page.locator(".run-outcome--success");
+  await expect(success).toBeVisible({ timeout: TIMEOUT });
+  await expect(success.locator(".run-outcome__summary")).toContainText(
+    "[outsideread:ok:外部第一行]",
+  );
+  rmSync(outsideDir, { recursive: true, force: true });
+});
+
 // ---------------------------------------------------------------- 侧栏权限规则
 
 test("RUN-PRM-010 侧栏「权限规则」：原地执行的自动批准 / 转交确认与单执行约束注脚", async ({
@@ -741,7 +769,10 @@ test("RUN-PRM-010 侧栏「权限规则」：原地执行的自动批准 / 转�
   await expect(auto).not.toContainText("worktree");
   // D14：工作日志允许追加，岗位说明需确认
   await expect(auto).toContainText(`在本岗位工作日志 Teamspace/${ROLE}/工作日志.md 末尾追加进展`);
+  // D18：读取工作空间内自动允许，之外需确认
+  await expect(auto).toContainText("读取工作空间内的文件与搜索");
   const ask = panel.locator(".run-rule", { hasText: "转交你确认" });
+  await expect(ask).toContainText("读取工作空间之外的文件");
   await expect(ask).toContainText("写入其他位置");
   await expect(ask).toContainText("修改岗位说明.md；改动或删除工作日志中的已有内容");
   await expect(ask).toContainText("执行命令");
@@ -773,11 +804,14 @@ defect(
     await expect(panel.locator(".run-side__note")).not.toContainText(
       "同一文件夹同时只运行一个执行",
     );
-    // 期望：岗位说明需确认、工作日志只允许追加（D14，已在面板写明）；读取类请求一律自动允许（现状没有）
+    // 期望：岗位说明需确认、工作日志只允许追加（D14）；读取工作空间内自动允许、之外需确认（D18）
     await expect(panel).toContainText("岗位说明");
     await expect(panel).toContainText("工作日志");
-    await expect(panel.locator(".run-rule", { hasText: "自动批准" })).not.toContainText(
-      "读取工作目录内的文件与搜索",
+    await expect(panel.locator(".run-rule", { hasText: "自动批准" })).toContainText(
+      "读取工作空间内的文件与搜索",
+    );
+    await expect(panel.locator(".run-rule", { hasText: "转交你确认" })).toContainText(
+      "读取工作空间之外的文件",
     );
     await cancelActive(task);
   },

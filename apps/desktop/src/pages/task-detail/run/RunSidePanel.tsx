@@ -1,5 +1,5 @@
 // 执行区右栏：权限规则摘要、本次改动文件、历次执行记录。
-// 权限规则是对内核 policy.rs 的文案说明（含 D14：工作日志只允许追加），括号里的岗位文件夹、任务引用文件与隔离方式都取自真实数据。
+// 权限规则是对内核 policy.rs 的文案说明（含 D14：工作日志只允许追加；D18：读取工作空间之外需确认），括号里的岗位文件夹、任务引用文件与隔离方式都取自真实数据。
 import { Tag } from "../../../components/index.js";
 import type { FileRef } from "../../../bindings/FileRef.js";
 import type { Run } from "../../../bindings/Run.js";
@@ -23,7 +23,7 @@ function PermissionRules({ run, roleFolder, fileRefs }: PermissionRulesProps) {
       <div className="run-rule">
         <Tag tone="success">自动批准</Tag>
         <ul className="run-rule__list">
-          <li>读取工作目录内的文件与搜索</li>
+          <li>读取工作空间内的文件与搜索</li>
           {roleFolder === null ? null : <li>写入本岗位文件夹 {roleFolder}/（岗位说明.md 除外）</li>}
           {roleFolder === null ? null : (
             <li>在本岗位工作日志 {roleFolder}/工作日志.md 末尾追加进展</li>
@@ -42,6 +42,7 @@ function PermissionRules({ run, roleFolder, fileRefs }: PermissionRulesProps) {
       <div className="run-rule">
         <Tag tone="warning">转交你确认</Tag>
         <ul className="run-rule__list">
+          <li>读取工作空间之外的文件</li>
           <li>写入其他位置</li>
           <li>修改岗位说明.md；改动或删除工作日志中的已有内容</li>
           <li>执行命令（如 ffmpeg）</li>

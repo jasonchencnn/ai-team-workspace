@@ -157,17 +157,23 @@ export function permissionOptionHint(option: PermissionOption): string | null {
 }
 
 /**
- * 编辑类请求的授权范围说明（与内核 run/grants.rs 一致）：「允许一次」只放行这一次写入，
- * 「总是允许」在本次执行内对同一文件持续有效；改写工作日志已有内容每次都要确认。
+ * 编辑、读取类请求的授权范围说明（与内核 run/grants.rs 一致）：「允许一次」只放行这一次写入或读取，
+ * 「总是允许」在本次执行内持续有效；改写工作日志已有内容每次都要确认；读取授权不能用来写入（D18）。
  */
 export function permissionScopeNote(
   toolKind: string | null,
   options: PermissionOption[],
 ): string | null {
-  if (toolKind !== "edit" || !options.some((option) => option.kind.startsWith("allow"))) {
+  if (!options.some((option) => option.kind.startsWith("allow"))) {
     return null;
   }
-  return "「允许一次」只放行这一次写入；「总是允许」在本次执行内对同一文件持续有效。改写工作日志已有内容每次都需要确认。";
+  if (toolKind === "edit") {
+    return "「允许一次」只放行这一次写入；「总是允许」在本次执行内对同一文件持续有效。改写工作日志已有内容每次都需要确认。";
+  }
+  if (toolKind === "read" || toolKind === "search") {
+    return "「允许一次」只放行这一次读取；「总是允许」在本次执行内对这些路径持续有效。允许读取不等于允许写入。";
+  }
+  return null;
 }
 
 /** 计划项的状态标记。 */

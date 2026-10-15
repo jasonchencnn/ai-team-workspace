@@ -19,9 +19,9 @@ function intentSentence(prompt: PermissionPrompt): string {
     case "edit":
       return "Agent 想写入或修改文件";
     case "read":
-      return "Agent 想读取文件";
+      return "Agent 想读取工作空间之外的文件";
     case "search":
-      return "Agent 想搜索文件";
+      return "Agent 想在工作空间之外搜索";
     case "delete":
       return "Agent 想删除文件";
     case "move":
