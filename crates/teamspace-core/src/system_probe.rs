@@ -323,6 +323,34 @@ impl SystemProbe for LocalProbe {
         path_env(self.path_dirs())
     }
 
+    /// 用系统默认程序打开文件（macOS `open`、Windows `explorer`、其他平台 `xdg-open`）。
+    fn open_path(&self, path: &Path) -> Result<()> {
+        if !path.exists() {
+            return Err(Error::not_found(format!("路径不存在：{}", path.display())));
+        }
+        let opener = if cfg!(target_os = "macos") {
+            "/usr/bin/open"
+        } else if cfg!(windows) {
+            "explorer"
+        } else {
+            "xdg-open"
+        };
+        let status = Command::new(opener)
+            .arg(path)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .map_err(|err| Error::internal(format!("无法打开 {}：{err}", path.display())))?;
+        if !status.success() && !cfg!(windows) {
+            return Err(Error::internal(format!(
+                "无法打开 {}（{opener} 退出码 {status}）",
+                path.display()
+            )));
+        }
+        Ok(())
+    }
+
     /// 用系统自带命令打开（macOS `open`、Windows `explorer`、其他平台 `xdg-open`），不加插件。
     /// 文件：macOS 用 `open -R` 在 Finder 中选中，Windows 用 `explorer /select,`，其他平台打开所在目录。
     fn reveal_path(&self, path: &Path) -> Result<()> {

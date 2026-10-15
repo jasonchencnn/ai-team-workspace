@@ -18,6 +18,13 @@ export const queryKeys = {
    */
   runs: (teamId: string, taskId: string) =>
     ["teams", teamId, "tasks", "detail", taskId, "runs"] as const,
+  /** 验收页数据；挂在 `task` 之下，任务相关查询失效时一并刷新。 */
+  review: (teamId: string, taskId: string) =>
+    ["teams", teamId, "tasks", "detail", taskId, "review"] as const,
+  /** 验收页某个文件的 diff（按执行 ID 区分，退回续接后是新的执行）。 */
+  reviewPatch: (runId: string, path: string) => ["review-patch", runId, path] as const,
+  /** 某团队全部活动查询的前缀。 */
+  teamEvents: (teamId: string) => ["teams", teamId, "events"] as const,
   events: (teamId: string, query: EventQuery) => ["teams", teamId, "events", query] as const,
   roleTemplates: ["role-templates"] as const,
   acpPresets: ["acp-presets"] as const,

@@ -48,6 +48,12 @@ pub trait SystemProbe: Send + Sync {
     /// 文件则打开所在目录并选中该文件。打开失败时返回 internal 错误。
     fn reveal_path(&self, path: &Path) -> Result<()>;
 
+    /// 用系统默认程序打开已存在的文件（内核已校验路径在执行目录内）。默认实现退回到
+    /// [`SystemProbe::reveal_path`]；[`crate::system_probe::LocalProbe`] 改用系统的「打开」命令。
+    fn open_path(&self, path: &Path) -> Result<()> {
+        self.reveal_path(path)
+    }
+
     /// 启动执行用的 Agent 进程和 Git worktree 操作时使用的 PATH（补全后的）。默认为进程继承的 PATH；
     /// [`crate::system_probe::LocalProbe`] 返回与 [`SystemProbe::locate_command`] 一致的补全 PATH。
     fn command_path_env(&self) -> OsString {

@@ -226,6 +226,11 @@ pub fn open_run_dir(ts: State<'_, Teamspace>, run_id: &str) -> Result<(), Error>
 }
 
 #[tauri::command(async)]
+pub fn open_run_file(ts: State<'_, Teamspace>, run_id: &str, path: &str) -> Result<(), Error> {
+    ts.open_run_file(run_id, path)
+}
+
+#[tauri::command(async)]
 pub fn get_run(ts: State<'_, Teamspace>, run_id: &str) -> Result<Run, Error> {
     ts.get_run(run_id)
 }

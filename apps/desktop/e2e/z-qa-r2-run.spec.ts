@@ -1502,7 +1502,7 @@ test("RUN-TKO-006 Git 接管后 worktree 与分支完好，可在其中提交且
 
 // ================================================================ 其他
 
-test("RUN-PKG-006 「去验收」只滚动到状态操作区，路由不变，控制台无错误", async ({ page }) => {
+test("RUN-PKG-006 「去验收」进入验收页，控制台无错误", async ({ page }) => {
   const errors: string[] = [];
   page.on("console", (message) => {
     if (message.type() === "error") {
@@ -1517,13 +1517,9 @@ test("RUN-PKG-006 「去验收」只滚动到状态操作区，路由不变，�
   await startRunUi(page);
   const success = page.locator(".run-outcome--success");
   await expect(success).toBeVisible({ timeout: TIMEOUT });
-  const url = page.url();
   await success.getByRole("button", { name: "去验收" }).click();
-  const target = page.locator("#task-status-actions");
-  await expect(target).toBeInViewport();
-  expect(page.url()).toBe(url);
-  await expect(target.locator("h2")).toHaveText("状态操作");
-  await expect(target.getByRole("button", { name: "已完成" })).toBeVisible();
+  await expect(page).toHaveURL(/\/tasks\/[^/]+\/review$/);
+  await expect(page.getByRole("heading", { level: 1 })).toContainText("验收");
   expect(errors).toEqual([]);
 });
 

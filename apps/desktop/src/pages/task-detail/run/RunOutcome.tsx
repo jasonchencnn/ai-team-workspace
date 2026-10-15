@@ -129,7 +129,7 @@ export interface RunOutcomeProps {
   /** 「查看改动」是否展开。 */
   changedOpen: boolean;
   onToggleChanged: () => void;
-  /** 「去验收」：滚到任务状态操作区。 */
+  /** 「去验收」：进入验收页。 */
   onGoReview: () => void;
   /** 任何执行操作进行中：禁用按钮，避免重复提交。 */
   busy: boolean;

@@ -117,7 +117,7 @@ function TaskCard({
     secondLine(task) ??
     (task.status === "doing" && harness !== null ? `当前绑定 ${harness.name}` : null);
   const last = lastLine(task);
-  return (
+  const card = (
     <Link
       className="task-card-link"
       to={`/teams/${teamId}/tasks/${task.id}`}
@@ -155,6 +155,17 @@ function TaskCard({
         </div>
       </Card>
     </Link>
+  );
+  if (task.status !== "review") {
+    return card;
+  }
+  return (
+    <div className="task-card-wrap">
+      {card}
+      <Link className="task-card__review" to={`/teams/${teamId}/tasks/${task.id}/review`}>
+        去验收
+      </Link>
+    </div>
   );
 }
 

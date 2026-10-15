@@ -912,3 +912,34 @@ fn rerun_after_conflict_requires_readiness() {
     assert!(err.starts_with("不能重新执行："), "{err}");
     assert!(git.calls().is_empty());
 }
+
+#[test]
+fn open_run_file_opens_files_inside_the_exec_dir_only() {
+    let f = plain_fixture();
+    let s = seed(&f, false);
+    std::fs::create_dir_all(f.ws.join("docs")).unwrap();
+    std::fs::write(f.ws.join("docs/a.md"), "x").unwrap();
+    std::fs::write(f.dir.path().join("secret.md"), "x").unwrap();
+    std::os::unix::fs::symlink(f.dir.path().join("secret.md"), f.ws.join("link.md")).unwrap();
+
+    let before = REVEALED.with(|r| r.borrow().len());
+    f.ts.open_run_file(&s.run_id, "docs/a.md").unwrap();
+    let opened = REVEALED.with(|r| r.borrow().last().cloned()).unwrap();
+    assert_eq!(
+        opened.canonicalize().unwrap(),
+        f.ws.join("docs/a.md").canonicalize().unwrap()
+    );
+    for bad in ["", "../secret.md", "/etc/hosts", "link.md", "docs"] {
+        assert_kind(f.ts.open_run_file(&s.run_id, bad), ErrorKind::Invalid);
+    }
+    assert_kind(
+        f.ts.open_run_file(&s.run_id, "nope.md"),
+        ErrorKind::NotFound,
+    );
+    assert_kind(f.ts.open_run_file("nope", "docs/a.md"), ErrorKind::NotFound);
+    assert_eq!(
+        REVEALED.with(|r| r.borrow().len()),
+        before + 1,
+        "被拒绝的路径不应打开"
+    );
+}
