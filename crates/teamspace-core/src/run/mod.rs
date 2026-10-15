@@ -30,6 +30,7 @@ mod fencing_tests;
 
 pub mod brief;
 pub mod env_profile;
+pub mod git_review;
 mod grants;
 pub mod policy;
 mod session_mode;
