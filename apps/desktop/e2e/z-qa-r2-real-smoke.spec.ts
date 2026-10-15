@@ -123,7 +123,9 @@ async function expectOutOfScopeBlocked(
   );
   await expect(success.locator(".run-outcome__alert--scope")).toContainText(file);
   await expect(statusLine(page)).toContainText("受阻");
-  await expect(page.getByText(`Agent 未经确认改动了权限范围外的文件：${file}`)).toBeVisible();
+  await expect(
+    page.getByText(`Agent 未经确认改动了权限范围外的文件：${file}`).first(),
+  ).toBeVisible();
   await expect(success.getByRole("button", { name: "去验收" })).toHaveCount(0);
 
   await success.getByRole("button", { name: "查看改动" }).click();
