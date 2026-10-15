@@ -31,6 +31,209 @@ fn finish(fixture: &Fixture, detail: &TaskDetail) -> TaskDetail {
     fixture.drive(&detail.task.id, &[Doing, Review, Done])
 }
 
+fn precheck(
+    fixture: &Fixture,
+    team: &Team,
+    task: Option<&TaskDetail>,
+    deps: &[&TaskDetail],
+) -> Result<TaskDependencyCheck> {
+    fixture
+        .ts
+        .check_task_dependencies(CheckTaskDependenciesInput {
+            team_id: team.id.clone(),
+            task_id: task.map(|detail| detail.task.id.clone()),
+            depends_on: deps.iter().map(|detail| detail.task.id.clone()).collect(),
+        })
+}
+
+#[test]
+fn dependency_precheck_accepts_create_empty_and_duplicate_dependencies_without_writes() {
+    let fixture = fixture();
+    let team = fixture.team("T");
+    let owner = fixture.role(&team.id, "role_frontend");
+    let first = fixture.task(&team.id, &owner, "A");
+    let before = fixture.ts.get_task(&first.task.id).unwrap();
+    for deps in [vec![], vec![&first], vec![&first, &first]] {
+        let check = precheck(&fixture, &team, None, &deps).unwrap();
+        assert!(check.cycle.is_empty());
+        assert!(check.readiness_notice.contains("文件引用可选"));
+    }
+    assert_eq!(fixture.ts.get_task(&first.task.id).unwrap(), before);
+    assert_eq!(fixture.task(&team.id, &owner, "B").task.key, "FE-002");
+}
+
+#[test]
+fn dependency_precheck_returns_full_cycle_and_save_still_rejects_it() {
+    let fixture = fixture();
+    let team = fixture.team("T");
+    let owner = fixture.role(&team.id, "role_frontend");
+    let first = fixture.task(&team.id, &owner, "A");
+    let second = dependent(&fixture, &team, &owner, "B", &[&first]);
+    let third = dependent(&fixture, &team, &owner, "C", &[&second]);
+    let before = fixture.ts.get_task(&first.task.id).unwrap();
+    let check = precheck(&fixture, &team, Some(&first), &[&third]).unwrap();
+    assert_eq!(check.cycle, ["FE-001", "FE-003", "FE-002", "FE-001"]);
+    let error = assert_kind(
+        fixture.ts.update_task(UpdateTaskInput {
+            task_id: first.task.id.clone(),
+            title: first.task.title.clone(),
+            description: String::new(),
+            owner_role_id: owner.id.clone(),
+            file_refs: vec![],
+            depends_on: vec![third.task.id.clone()],
+        }),
+        ErrorKind::Conflict,
+    );
+    assert_eq!(error, format!("依赖形成环路：{}", check.cycle.join(" → ")));
+    assert_eq!(fixture.ts.get_task(&first.task.id).unwrap(), before);
+    assert!(
+        precheck(&fixture, &team, Some(&first), &[])
+            .unwrap()
+            .cycle
+            .is_empty()
+    );
+}
+
+#[test]
+fn dependency_precheck_detects_self_and_direct_cycles() {
+    let fixture = fixture();
+    let team = fixture.team("T");
+    let owner = fixture.role(&team.id, "role_frontend");
+    let first = fixture.task(&team.id, &owner, "A");
+    let second = dependent(&fixture, &team, &owner, "B", &[&first]);
+    assert_eq!(
+        precheck(&fixture, &team, Some(&first), &[&first])
+            .unwrap()
+            .cycle,
+        ["FE-001", "FE-001"]
+    );
+    assert_eq!(
+        precheck(&fixture, &team, Some(&first), &[&second])
+            .unwrap()
+            .cycle,
+        ["FE-001", "FE-002", "FE-001"]
+    );
+    assert!(
+        precheck(&fixture, &team, Some(&second), &[&first])
+            .unwrap()
+            .cycle
+            .is_empty()
+    );
+    assert!(
+        precheck(&fixture, &team, Some(&second), &[])
+            .unwrap()
+            .cycle
+            .is_empty()
+    );
+}
+
+#[test]
+fn dependency_precheck_rejects_foreign_or_missing_tasks_and_invalid_limits() {
+    let fixture = fixture();
+    let team = fixture.team("T");
+    let other = fixture.team("Other");
+    let owner = fixture.role(&other.id, "role_frontend");
+    let foreign = fixture.task(&other.id, &owner, "foreign");
+    assert_kind(
+        precheck(&fixture, &team, Some(&foreign), &[]),
+        ErrorKind::NotFound,
+    );
+    assert_kind(
+        precheck(&fixture, &team, None, &[&foreign]),
+        ErrorKind::NotFound,
+    );
+    for input in [
+        CheckTaskDependenciesInput {
+            team_id: "missing".into(),
+            task_id: None,
+            depends_on: vec![],
+        },
+        CheckTaskDependenciesInput {
+            team_id: team.id.clone(),
+            task_id: Some("missing".into()),
+            depends_on: vec![],
+        },
+        CheckTaskDependenciesInput {
+            team_id: team.id.clone(),
+            task_id: None,
+            depends_on: vec!["missing".into()],
+        },
+    ] {
+        assert_kind(
+            fixture.ts.check_task_dependencies(input),
+            ErrorKind::NotFound,
+        );
+    }
+    assert_kind(
+        fixture
+            .ts
+            .check_task_dependencies(CheckTaskDependenciesInput {
+                team_id: team.id,
+                task_id: None,
+                depends_on: vec![foreign.task.id; 21],
+            }),
+        ErrorKind::Invalid,
+    );
+}
+
+#[test]
+fn dependency_detail_reports_direct_links_live_status_and_readiness_reasons() {
+    let fixture = fixture();
+    let team = fixture.team("T");
+    let owner = fixture.role(&team.id, "role_frontend");
+    let first = fixture.task(&team.id, &owner, "A");
+    let second = dependent(&fixture, &team, &owner, "B", &[&first]);
+    let third = dependent(&fixture, &team, &owner, "C", &[&second]);
+    let second = fixture.ts.get_task(&second.task.id).unwrap();
+    assert_eq!(second.dependencies.len(), 1);
+    assert_eq!(second.dependencies[0].key, first.task.key);
+    assert_eq!(second.dependencies[0].title, "A");
+    assert_eq!(second.dependencies[0].status, Todo);
+    assert_eq!(second.dependents.len(), 1);
+    assert_eq!(second.dependents[0].id, third.task.id);
+    assert_eq!(second.readiness, ["依赖任务 FE-001 尚未完成（TODO）"]);
+    assert!(second.run_problems.contains(&second.readiness[0]));
+    assert!(
+        second
+            .dependency_notice
+            .unwrap()
+            .contains("前置完成后会自动变为 READY")
+    );
+    finish(&fixture, &first);
+    let second = fixture.ts.get_task(&second.task.id).unwrap();
+    assert_eq!(second.dependencies[0].status, Done);
+    assert_eq!(second.task.status, Ready);
+    assert!(second.readiness.is_empty());
+    assert!(second.dependency_notice.is_none());
+    let reopened = fixture.move_to(&first.task.id, Ready).unwrap();
+    let second = fixture.ts.get_task(&second.task.id).unwrap();
+    assert_eq!(second.task.status, Ready);
+    assert_eq!(second.dependencies[0].status, Ready);
+    assert!(!second.readiness.is_empty());
+    assert!(
+        reopened
+            .events
+            .iter()
+            .any(|event| event.summary.contains("未回退"))
+    );
+}
+
+#[test]
+fn dependency_notice_covers_todo_with_completed_predecessors_and_optional_files() {
+    let fixture = fixture();
+    let team = fixture.team("T");
+    let owner = fixture.role(&team.id, "role_frontend");
+    let first = fixture.task(&team.id, &owner, "A");
+    assert!(first.dependency_notice.is_none());
+    finish(&fixture, &first);
+    let waiting = dependent(&fixture, &team, &owner, "B", &[&first]);
+    assert_eq!(waiting.task.status, Todo);
+    assert!(waiting.readiness.is_empty());
+    let notice = waiting.dependency_notice.unwrap();
+    assert!(notice.contains("前置完成后会自动变为 READY"));
+    assert!(notice.contains("文件引用可选"));
+}
+
 #[test]
 fn completion_advances_only_the_next_link_and_returns_fresh_dependents() {
     let fixture = fixture();

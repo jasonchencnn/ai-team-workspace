@@ -233,6 +233,25 @@ pub struct TaskDetail {
     pub latest_run: Option<super::Run>,
     /// 现在点「开始执行」会被拒绝的原因（中文）；为空表示可以开始（`start_run`）。
     pub run_problems: Vec<String>,
+    pub dependency_notice: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct CheckTaskDependenciesInput {
+    pub team_id: String,
+    #[ts(optional = nullable)]
+    pub task_id: Option<String>,
+    pub depends_on: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct TaskDependencyCheck {
+    pub cycle: Vec<String>,
+    pub readiness_notice: String,
 }
 
 /// 创建任务。

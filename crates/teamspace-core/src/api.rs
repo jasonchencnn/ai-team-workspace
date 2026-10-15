@@ -71,6 +71,7 @@ pub const COMMANDS: &[&str] = &[
     "get_task",
     "create_task",
     "update_task",
+    "check_task_dependencies",
     "change_task_status",
     "search_workspace_files",
     "start_run",
@@ -660,6 +661,13 @@ impl Teamspace {
         let (workspace, refs) = task::workspace_and_refs(&self.lock(), task_id)?;
         let files = FileCheck::scan(Path::new(&workspace), &refs);
         task::detail(&self.lock(), task_id, &files)
+    }
+
+    pub fn check_task_dependencies(
+        &self,
+        input: CheckTaskDependenciesInput,
+    ) -> Result<TaskDependencyCheck> {
+        task::check_dependencies(&self.lock(), input)
     }
 
     /// 创建任务：标题、负责岗位必填；初始状态只能是 todo 或 ready（ready 需满足就绪条件）；

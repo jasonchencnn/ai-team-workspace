@@ -44,4 +44,4 @@ latestRun: Run | null,
 /**
  * 现在点「开始执行」会被拒绝的原因（中文）；为空表示可以开始（`start_run`）。
  */
-runProblems: Array<string>, };
+runProblems: Array<string>, dependencyNotice: string | null, };

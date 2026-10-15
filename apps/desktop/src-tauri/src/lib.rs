@@ -47,6 +47,7 @@ register_commands!(
     get_task,
     create_task,
     update_task,
+    check_task_dependencies,
     change_task_status,
     search_workspace_files,
     start_run,

@@ -9,6 +9,7 @@ import type { RoleView } from "../../bindings/RoleView.js";
 import type { TaskStatus } from "../../bindings/TaskStatus.js";
 import type { TaskSummary } from "../../bindings/TaskSummary.js";
 import {
+  checkTaskDependencies,
   createTask,
   getTask,
   getTaskBoard,
@@ -32,6 +33,7 @@ import {
   TextareaField,
 } from "../../components/index.js";
 import type { TagTone } from "../../components/index.js";
+import { TaskDependencyChain } from "../../components/TaskDependencyChain.js";
 import { isRunActive } from "../task-detail/run/useRunEvents.js";
 import "./task-form.css";
 
@@ -199,6 +201,16 @@ export function TaskFormPage() {
   // 预填只在对应任务的数据首次到达时执行一次，之后的重新拉取不覆盖用户正在编辑的内容。
   const prefilledFor = useRef<string | null>(null);
   const detail = detailQuery.data;
+  const dependencyCheck = useQuery({
+    queryKey: ["task-dependency-check", teamId, taskId ?? null, dependsOn],
+    queryFn: () => checkTaskDependencies({ teamId, taskId: taskId ?? null, dependsOn }),
+    enabled: ready && (!isEdit || detail !== undefined),
+    retry: false,
+    staleTime: 0,
+  });
+  const cycle = dependencyCheck.data?.cycle ?? [];
+  const dependenciesValid =
+    dependencyCheck.isSuccess && !dependencyCheck.isFetching && cycle.length === 0;
   useEffect(() => {
     if (detail === undefined || prefilledFor.current === detail.task.id) {
       return;
@@ -312,6 +324,9 @@ export function TaskFormPage() {
 
   const submit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
+    if (!dependenciesValid) {
+      return;
+    }
     setSubmitted(true);
     if (title.trim() === "") {
       // 标题为空时前端直接拦下，不发请求；错误走 InputField 的 error 通道。
@@ -332,7 +347,7 @@ export function TaskFormPage() {
   };
 
   const busy = rolesQuery.isPending || (isEdit && detailQuery.isPending);
-  const canSubmit = !busy && !saveMutation.isPending;
+  const canSubmit = !busy && !saveMutation.isPending && dependenciesValid;
   const detailBlocked = isEdit && detailQuery.isError;
   // 有活动执行时后端会拒绝编辑；这里提前提示并禁用保存，文案与后端一致。
   const editBlocked = isEdit && isRunActive(detail?.latestRun ?? null);
@@ -607,7 +622,11 @@ export function TaskFormPage() {
             ) : null}
 
             {boardQuery.isSuccess ? (
-              <fieldset className="task-form__fieldset">
+              <fieldset
+                className="task-form__fieldset"
+                aria-invalid={cycle.length > 0}
+                aria-describedby={cycle.length > 0 ? "dependency-cycle-error" : undefined}
+              >
                 <legend className="task-form__label">依赖</legend>
                 {dependencyOptions.length === 0 ? (
                   <EmptyState
@@ -659,6 +678,11 @@ export function TaskFormPage() {
                   return (
                     <li key={id} className="task-form__chip">
                       <span className="task-form__chip-text">{label}</span>
+                      {task === undefined ? null : (
+                        <Tag tone={cycle.length > 0 ? "danger" : statusTone(task.status)}>
+                          {boardLabel.get(task.status) ?? labelOf(task.status)}
+                        </Tag>
+                      )}
                       <button
                         type="button"
                         className="task-form__chip-remove"
@@ -673,6 +697,45 @@ export function TaskFormPage() {
                   );
                 })}
               </ul>
+            ) : null}
+            {dependencyCheck.isFetching ? <p role="status">正在检查依赖…</p> : null}
+            {dependencyCheck.isError ? (
+              <ErrorBanner
+                error={dependencyCheck.error}
+                action={
+                  <Button variant="neutral" onClick={() => void dependencyCheck.refetch()}>
+                    重试依赖检查
+                  </Button>
+                }
+              />
+            ) : cycle.length > 0 ? (
+              <div className="dependency-cycle" id="dependency-cycle-error" role="alert">
+                <strong>不能保存：依赖形成了循环</strong>
+                <span>依赖形成环路：{cycle.join(" → ")}</span>
+                <p>请移除环路中的一条依赖。保存时后端仍会重新校验，拒绝环路并保留原有依赖。</p>
+              </div>
+            ) : dependsOn.length > 0 || (detail?.dependents.length ?? 0) > 0 ? (
+              <TaskDependencyChain
+                preview
+                teamId={teamId}
+                current={{
+                  id: taskId ?? "",
+                  key: detail?.task.key ?? "新任务",
+                  title,
+                  status: detail?.task.status ?? initialStatus,
+                }}
+                dependencies={dependsOn.flatMap((id) => {
+                  const task = dependencyById.get(id);
+                  return task === undefined ? [] : [task];
+                })}
+                dependents={detail?.dependents ?? []}
+                statusLabel={(status) => boardLabel.get(status) ?? labelOf(status)}
+              />
+            ) : null}
+            {dependsOn.length > 0 && cycle.length === 0 && dependencyCheck.isSuccess ? (
+              <Card title="自动就绪" tone="info">
+                <p>{dependencyCheck.data.readinessNotice}</p>
+              </Card>
             ) : null}
           </div>
 
