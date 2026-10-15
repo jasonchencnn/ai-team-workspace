@@ -209,8 +209,7 @@ fn ready_requires_existing_refs_if_any_and_done_dependencies() {
     f.drive(&dep.task.id, &[Ready, Doing, Review, Done]);
     let t = f.ts.get_task(&t.task.id).unwrap();
     assert!(t.readiness.is_empty());
-    assert_eq!(t.allowed_transitions, [Ready, Cancelled]);
-    let t = f.move_to(&t.task.id, Ready).unwrap();
+    assert_eq!(t.allowed_transitions, [Todo, Doing, Cancelled]);
     assert_eq!(t.task.status, Ready);
     assert!(t.file_refs[0].exists);
 }
@@ -379,10 +378,11 @@ fn dependency_cycles_are_rejected_with_the_path() {
             .is_empty()
     );
 
-    assert_kind(
+    let message = assert_kind(
         edit(&f, &a, vec![], vec![a.task.id.clone()]),
         ErrorKind::Invalid,
     );
+    assert_eq!(message, "依赖形成环路：FE-001 → FE-001");
     let other = f.team("U");
     let other_fe = f.role(&other.id, "role_frontend");
     let foreign = f.task(&other.id, &other_fe, "x");
