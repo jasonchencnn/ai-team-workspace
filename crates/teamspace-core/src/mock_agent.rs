@@ -45,6 +45,8 @@
 //! - `[mock:shellwrite=<相对路径>]`：模拟 Agent 用 shell（如 `printf … > 路径`）直接写文件：不申请权限、不经 ACP 的
 //!   `fs/write_text_file`，只报一次「执行命令」工具调用，然后由 Mock 自己把文件写到工作目录下的该路径
 //!   （目录不存在时创建）；结果记入总结（`[shellwrite:ok]`）。用来测试改动统计的快照兜底；
+//! - `[mock:shellrm=<相对路径>]`：模拟 Agent 用 shell（`rm`）直接删除工作目录下的文件，不申请权限；
+//! - `[mock:rmgrant=<相对路径>]`：先申请一次 `delete` 类权限（Human 确认），允许才由 Mock 自己删除该文件；
 //! - `[mock:modes]`：在总结里报告会话当前的权限模式（`[modes:<取值>]`，没有公布模式时为 `[modes:none]`）；
 //! - `[mock:linger]`：与其他标记合用；其余步骤（含权限请求的结果）都完成后不立刻总结，发一条消息后等待
 //!   `session/cancel`（或 stdin 关闭），用来在界面上观察「权限处理之后仍在执行中」的状态；
@@ -729,6 +731,60 @@ impl Mock<'_> {
                 "status": if result.is_ok() { "completed" } else { "failed" } }),
             )?;
             notes.push(note("shellwrite", &result));
+        }
+        if let Some(rel) = marker_arg(task, "shellrm") {
+            let target = cwd.join(rel);
+            self.update(
+                &session,
+                json!({
+                    "sessionUpdate": "tool_call", "toolCallId": "mock-shellrm",
+                    "title": format!("运行 rm {rel}"), "kind": "execute", "status": "in_progress",
+                    "rawInput": { "command": format!("rm {rel}") }
+                }),
+            )?;
+            let result = std::fs::remove_file(&target).map_err(|err| err.to_string());
+            self.tool(
+                &session,
+                json!({ "toolCallId": "mock-shellrm",
+                "status": if result.is_ok() { "completed" } else { "failed" } }),
+            )?;
+            notes.push(note("shellrm", &result));
+        }
+        if let Some(rel) = marker_arg(task, "rmgrant") {
+            let target = cwd.join(rel);
+            let shown = target.display().to_string();
+            self.update(
+                &session,
+                json!({
+                    "sessionUpdate": "tool_call", "toolCallId": "mock-rmgrant",
+                    "title": format!("删除 {rel}"), "kind": "delete", "status": "pending",
+                    "locations": [{ "path": shown }]
+                }),
+            )?;
+            let reply = self.request(
+                "session/request_permission",
+                json!({ "sessionId": session, "toolCall": { "toolCallId": "mock-rmgrant" }, "options": options() }),
+                &mut cancelled,
+            )?;
+            let allowed = match reply {
+                Reply::Eof => return Ok(()),
+                Reply::Result(r) => selected(&r).is_some_and(|o| o.starts_with("allow")),
+                Reply::Error(_) => false,
+            };
+            let result = if allowed && !cancelled {
+                std::fs::remove_file(&target).map_err(|err| err.to_string())
+            } else {
+                Err("权限未被允许，没有删除".to_owned())
+            };
+            self.tool(
+                &session,
+                json!({ "toolCallId": "mock-rmgrant",
+                "status": if result.is_ok() { "completed" } else { "failed" } }),
+            )?;
+            if cancelled {
+                return self.finish(id, "cancelled");
+            }
+            notes.push(note("rmgrant", &result));
         }
         if has("appendjournal") {
             let target = journal_path(&text).map_or_else(|| journal.clone(), PathBuf::from);

@@ -233,6 +233,8 @@ pub struct Run {
     pub out_of_scope: Vec<String>,
     /// 改动统计的补充说明（中文），如文件太多、快照降级后统计不完整；没有时为 `null`。
     pub change_note: Option<String>,
+    /// 改动统计不完整：执行目录里的文件太多，快照降级，部分位置的改动没有统计（说明见 `changeNote`）。
+    pub change_incomplete: bool,
     /// 本次执行中的工具调用次数。
     pub tool_call_count: u32,
     /// 是否为人工接管而停止。

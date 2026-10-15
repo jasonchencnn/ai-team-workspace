@@ -709,6 +709,8 @@ impl Teamspace {
             RunIsolation::InPlace
         };
         let mut registry = self.runs.registry();
+        // 顶掉的中断执行：不会再续接，它的快照在事务提交之后再删（不在持锁的事务里做文件操作）。
+        let mut replaced: Option<String> = None;
         let run = self.write(|tx| {
             let task = task::get(tx, task_id)?;
             let problems = run_svc::start_problems(tx, &task, &files)?;
@@ -733,14 +735,14 @@ impl Teamspace {
                         changed_files: prev.changed_files.clone(),
                         out_of_scope: prev.out_of_scope.clone(),
                         change_note: prev.change_note.clone(),
+                        change_incomplete: prev.change_incomplete,
                         tool_call_count: prev.tool_call_count,
                         ..Ending::default()
                     },
                 )?;
                 if ended {
                     run_svc::status_update(tx, &prev.id, RunStatus::Failed, Some(failure))?;
-                    // 不会再续接，执行前快照不再需要。
-                    let _ = std::fs::remove_file(self.snapshot_path(&prev.id));
+                    replaced = Some(prev.id.clone());
                 }
             }
             let owner = role::get_active(tx, &task.owner_role_id)?;
@@ -793,6 +795,9 @@ impl Teamspace {
             run_svc::status_update(tx, &run.id, RunStatus::Queued, None)?;
             Ok(run)
         })?;
+        if let Some(id) = &replaced {
+            self.remove_snapshots(id);
+        }
         self.core
             .spawn_driver(&mut registry, run.clone(), Mode::Start);
         drop(registry);
@@ -825,7 +830,7 @@ impl Teamspace {
             return run_svc::get(&self.lock(), run_id);
         }
         self.write(|tx| run_svc::takeover(tx, run_id))?;
-        let _ = std::fs::remove_file(self.snapshot_path(&run.id));
+        self.remove_snapshots(&run.id);
         self.sync_role_folders(&run.team_id);
         self.emit_run(run_id);
         run_svc::get(&self.lock(), run_id)
@@ -921,6 +926,7 @@ impl Teamspace {
                     changed_files: run.changed_files.clone(),
                     out_of_scope: run.out_of_scope.clone(),
                     change_note: run.change_note.clone(),
+                    change_incomplete: run.change_incomplete,
                     tool_call_count: run.tool_call_count,
                     ..Ending::default()
                 },
@@ -952,7 +958,7 @@ impl Teamspace {
                                     "status": RunStatus::Failed, "failure": failure }),
             )
         })?;
-        let _ = std::fs::remove_file(self.snapshot_path(&run.id));
+        self.remove_snapshots(&run.id);
         self.sync_role_folders(&run.team_id);
         self.emit_run(run_id);
         run_svc::get(&self.lock(), run_id)

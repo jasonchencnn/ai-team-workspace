@@ -9,4 +9,8 @@ export type TaskSummary = { id: string, key: string, title: string, status: Task
 /**
  * 尚未 done 的依赖数。
  */
-openDependencyCount: number, blockedReason: string | null, updatedAt: string, };
+openDependencyCount: number, blockedReason: string | null, updatedAt: string, 
+/**
+ * 最近一次执行的改动统计不完整（任务卡据此提示）。
+ */
+changeIncomplete: boolean, };

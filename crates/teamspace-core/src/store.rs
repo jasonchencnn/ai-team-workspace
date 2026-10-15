@@ -12,7 +12,7 @@ use time::OffsetDateTime;
 use crate::error::{Error, Result};
 
 /// 当前 schema 版本。
-pub(crate) const SCHEMA_VERSION: i64 = 7;
+pub(crate) const SCHEMA_VERSION: i64 = 8;
 
 const SCHEMA_V1: &str = r#"
 CREATE TABLE teams (
@@ -295,8 +295,13 @@ ALTER TABLE runs ADD COLUMN out_of_scope TEXT NOT NULL DEFAULT '[]';
 ALTER TABLE runs ADD COLUMN change_note TEXT;
 "#;
 
+/// v8：执行记录增加「改动统计不完整」标记（快照降级，任务卡与执行面板据此提示）。
+const SCHEMA_V8: &str = r#"
+ALTER TABLE runs ADD COLUMN change_incomplete INTEGER NOT NULL DEFAULT 0;
+"#;
+
 const MIGRATIONS: &[&str] = &[
-    SCHEMA_V1, SCHEMA_V2, SCHEMA_V3, SCHEMA_V4, SCHEMA_V5, SCHEMA_V6, SCHEMA_V7,
+    SCHEMA_V1, SCHEMA_V2, SCHEMA_V3, SCHEMA_V4, SCHEMA_V5, SCHEMA_V6, SCHEMA_V7, SCHEMA_V8,
 ];
 
 /// 打开数据库：WAL 日志、synchronous=NORMAL、开启外键，并迁移到当前版本。

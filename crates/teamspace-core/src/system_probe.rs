@@ -448,6 +448,11 @@ fn run_command(command: &mut Command, timeout: Duration) -> std::io::Result<Comm
 ///
 /// Teamspace 若是从 Claude Code 的终端启动的，会继承这些变量；`claude-code-acp` 看到它们会报
 /// 「cannot be launched inside another Claude Code session」而无法启动，所以启动 Agent 时要去掉。
+///
+/// 只清理这两类，是有意的：它们标记的是「当前处在一个 Claude Code 会话里」，与 Agent 能否登录无关。
+/// `ANTHROPIC_API_KEY`、`ANTHROPIC_AUTH_TOKEN`、`ANTHROPIC_BASE_URL` 之类的凭据与端点变量照旧继承——
+/// 登录由各 CLI 自己管理（D6），用户可能正是靠这些变量让 Agent 登录；平台既不保存也不擅自改写它们。
+/// 需要隔离某个变量时，在 Harness 的环境配置档案里显式设置即可（显式设置的优先）。
 pub(crate) fn is_claude_session_var(name: &str) -> bool {
     name == "CLAUDECODE" || name.starts_with("CLAUDE_CODE_")
 }
@@ -467,6 +472,19 @@ pub(crate) fn scrub_claude_session_env(
             command.env_remove(&name);
         }
     }
+}
+
+/// 环境配置档案里显式写了的 Claude Code 会话变量名。显式设置的会原样传给 Agent，若写成
+/// `CLAUDECODE=1` 之类，适配器仍会拒绝启动，所以启动时要把这件事说清楚。
+pub(crate) fn explicit_session_vars(
+    explicit: &[(std::ffi::OsString, std::ffi::OsString)],
+) -> Vec<String> {
+    explicit
+        .iter()
+        .filter_map(|(key, _)| key.to_str())
+        .filter(|name| is_claude_session_var(name))
+        .map(str::to_owned)
+        .collect()
 }
 
 /// 同 [`scrub_claude_session_env`]，`inherited` 取当前进程的真实环境。
@@ -1357,6 +1375,21 @@ echo '{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":1,"agentInfo":{"name":
         assert_eq!(first_non_empty_line("\n  x  \n y\n").as_deref(), Some("x"));
         assert_eq!(first_non_empty_line("  \n\n"), None);
     }
+    #[test]
+    fn explicit_session_vars_are_reported_by_name_only() {
+        let os = std::ffi::OsString::from;
+        let explicit = vec![
+            (os("CLAUDECODE"), os("1")),
+            (os("CLAUDE_CODE_USE_BEDROCK"), os("secret-looking-value")),
+            (os("ANTHROPIC_API_KEY"), os("sk-x")),
+        ];
+        assert_eq!(
+            explicit_session_vars(&explicit),
+            vec!["CLAUDECODE", "CLAUDE_CODE_USE_BEDROCK"]
+        );
+        assert!(explicit_session_vars(&[]).is_empty());
+    }
+
     #[test]
     fn claude_session_vars_are_recognised() {
         for name in [

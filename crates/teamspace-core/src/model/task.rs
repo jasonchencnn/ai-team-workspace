@@ -173,6 +173,8 @@ pub struct TaskSummary {
     pub open_dependency_count: u32,
     pub blocked_reason: Option<String>,
     pub updated_at: String,
+    /// 最近一次执行的改动统计不完整（任务卡据此提示）。
+    pub change_incomplete: bool,
 }
 
 /// 看板的一列。
