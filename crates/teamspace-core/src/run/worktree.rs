@@ -22,9 +22,11 @@ pub struct Worktree {
     pub branch: String,
     /// 基线提交（完整哈希）。
     pub base_commit: String,
+    /// 创建时 HEAD 所在分支；分离 HEAD 时为 None。
+    pub base_branch: Option<String>,
 }
 
-fn git(dir: &Path, args: &[&str], path_env: Option<&OsStr>) -> Result<String, String> {
+pub(crate) fn git(dir: &Path, args: &[&str], path_env: Option<&OsStr>) -> Result<String, String> {
     let mut command = Command::new("git");
     command.arg("-C").arg(dir).args(args);
     if let Some(path) = path_env {
@@ -59,6 +61,9 @@ pub fn create(
     let base_commit = git(workspace, &["rev-parse", "--verify", "HEAD"], path_env)
         .map(|s| s.trim().to_owned())
         .map_err(|_| "Git 仓库还没有任何提交，无法创建 worktree；请先提交一次".to_owned())?;
+    let base_branch = git(workspace, &["symbolic-ref", "--quiet", "HEAD"], path_env)
+        .ok()
+        .and_then(|name| name.trim().strip_prefix("refs/heads/").map(str::to_owned));
     let prefix = git(workspace, &["rev-parse", "--show-prefix"], path_env)
         .map_err(|err| format!("无法读取仓库信息：{err}"))?
         .trim()
@@ -116,6 +121,7 @@ pub fn create(
         exec_dir,
         branch,
         base_commit,
+        base_branch,
     })
 }
 
@@ -206,11 +212,13 @@ mod tests {
         fs::write(ws.join("gone.txt"), "1").unwrap();
         run(&ws, &["add", "."]);
         run(&ws, &["commit", "-q", "-m", "init"]);
+        run(&ws, &["tag", "main"]);
 
         let wt = create(&ws, &tmp.path().join("wt/A-r1"), "teamspace/A-r1", None).unwrap();
         assert_eq!(wt.branch, "teamspace/A-r1");
         assert_eq!(wt.exec_dir, wt.root);
         assert_eq!(wt.base_commit.len(), 40);
+        assert_eq!(wt.base_branch.as_deref(), Some("main"));
         assert!(wt.root.join("app/old.txt").is_file());
 
         // 同名分支已存在：加后缀。
@@ -251,5 +259,16 @@ mod tests {
         );
         // 工作空间本身不受影响。
         assert_eq!(fs::read_to_string(ws.join("app/old.txt")).unwrap(), "1");
+    }
+
+    #[test]
+    fn detached_head_has_no_base_branch() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = tmp.path().join("repo");
+        repo(&ws);
+        run(&ws, &["commit", "--allow-empty", "-q", "-m", "init"]);
+        run(&ws, &["checkout", "--detach", "-q"]);
+        let wt = create(&ws, &tmp.path().join("wt"), "run", None).unwrap();
+        assert_eq!(wt.base_branch, None);
     }
 }
