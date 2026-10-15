@@ -14,6 +14,10 @@
 //! 该团队的岗位文件夹（建立、改名、重写岗位说明、追加工作日志）；打开团队概览和读取岗位文件夹时
 //! 也会同步一次，从而为迁移前已有的岗位补建文件夹。文件写入失败不回滚已提交的数据，失败原因记入
 //! 岗位视图的 `folderProblem` 并记录一条 `role_folder_error` 活动。
+//!
+//! 共享文件（页面 `4:435`）：`list_workspace_markdown` 只列工作空间内的 Markdown，`read_workspace_markdown`
+//! 只读单个文件（路径校验见 [`crate::workspace_file`]），`list_tasks_referencing_file` 反查引用该文件的
+//! 任务。三条都是只读命令，不写活动。
 
 use std::collections::HashSet;
 use std::ops::Deref;
@@ -25,8 +29,7 @@ use rusqlite::Connection;
 use crate::acp::AgentLaunch;
 use crate::error::{Error, Result};
 use crate::model::*;
-use crate::probe::FILE_SEARCH_LIMIT;
-use crate::probe::SystemProbe;
+use crate::probe::{FILE_SEARCH_LIMIT, MARKDOWN_FILE_LIMIT, SystemProbe};
 use crate::role_folder;
 use crate::run::review_seam::{self, Cleanup, ReviewGit};
 use crate::run::{Mode, Stop};
@@ -34,6 +37,7 @@ use crate::service::run::{self as run_svc, Ending, NewRun};
 use crate::service::task::FileCheck;
 use crate::service::{event, folder, harness, review, role, task, team, workspace};
 use crate::store;
+use crate::workspace_file;
 
 /// 只在 Tauri 层实现、不经过 [`Teamspace`] 的命令。
 pub const TAURI_ONLY_COMMANDS: &[&str] = &[
@@ -74,6 +78,9 @@ pub const COMMANDS: &[&str] = &[
     "update_task",
     "change_task_status",
     "search_workspace_files",
+    "list_workspace_markdown",
+    "read_workspace_markdown",
+    "list_tasks_referencing_file",
     "start_run",
     "cancel_run",
     "resume_run",
@@ -750,6 +757,42 @@ impl Teamspace {
         )?;
         files.truncate(FILE_SEARCH_LIMIT);
         Ok(files)
+    }
+
+    /// 列出工作空间里的全部 Markdown 文件（共享文件页 `4:435` 的文件列表）。
+    ///
+    /// 只列 `.md`：Git 工作空间按 `git ls-files`（`.gitignore` 忽略的与 `node_modules`、`target`
+    /// 等大目录不会出现），普通文件夹遍历目录树；**解析符号链接后指向工作空间之外的链接不列**。
+    /// 最多 [`MARKDOWN_FILE_LIMIT`] 个，返回条数正好等于上限时 `truncated` 为 `true`（可能还有更多）。
+    pub fn list_workspace_markdown(&self, input: MarkdownListQuery) -> Result<MarkdownList> {
+        let workspace = team::get_active(&self.lock(), &input.team_id)?.workspace_path;
+        let files = self
+            .probe
+            .list_markdown_files(Path::new(&workspace), MARKDOWN_FILE_LIMIT)?;
+        Ok(MarkdownList {
+            truncated: files.len() >= MARKDOWN_FILE_LIMIT,
+            team_id: input.team_id,
+            files,
+        })
+    }
+
+    /// 读取工作空间内的一个 Markdown 文件（只读）。
+    ///
+    /// `path` 必须是工作空间内的相对路径、不含 `..`、是 `.md`，且**解析符号链接后仍在工作空间内**
+    /// （越界返回 invalid，文件不存在返回 not_found，都是中文说明）。超过
+    /// [`crate::workspace_file::MAX_MARKDOWN_BYTES`] 时截断内容并在 `truncated` 里说明。
+    pub fn read_workspace_markdown(&self, input: MarkdownReadQuery) -> Result<MarkdownFile> {
+        let workspace = team::get_active(&self.lock(), &input.team_id)?.workspace_path;
+        workspace_file::read(Path::new(&workspace), &input.team_id, &input.path)
+    }
+
+    /// 引用了某个文件的任务（共享文件页右侧），带编号、标题、状态和负责岗位；没有则返回空列表。
+    ///
+    /// 只看本团队的任务；团队不存在或已归档为 not_found。
+    pub fn list_tasks_referencing_file(&self, input: FileTasksQuery) -> Result<Vec<FileTaskRef>> {
+        let conn = self.lock();
+        team::get_active(&conn, &input.team_id)?;
+        task::referencing_file(&conn, &input.team_id, input.path.trim())
     }
 
     // ---------------------------------------------------------------- 执行

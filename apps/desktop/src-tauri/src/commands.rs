@@ -191,6 +191,30 @@ pub fn search_workspace_files(
 }
 
 #[tauri::command(async)]
+pub fn list_workspace_markdown(
+    ts: State<'_, Teamspace>,
+    input: MarkdownListQuery,
+) -> Result<MarkdownList, Error> {
+    ts.list_workspace_markdown(input)
+}
+
+#[tauri::command(async)]
+pub fn read_workspace_markdown(
+    ts: State<'_, Teamspace>,
+    input: MarkdownReadQuery,
+) -> Result<MarkdownFile, Error> {
+    ts.read_workspace_markdown(input)
+}
+
+#[tauri::command(async)]
+pub fn list_tasks_referencing_file(
+    ts: State<'_, Teamspace>,
+    input: FileTasksQuery,
+) -> Result<Vec<FileTaskRef>, Error> {
+    ts.list_tasks_referencing_file(input)
+}
+
+#[tauri::command(async)]
 pub fn list_events(ts: State<'_, Teamspace>, input: EventQuery) -> Result<EventPage, Error> {
     ts.list_events(input)
 }
