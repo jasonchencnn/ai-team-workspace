@@ -823,6 +823,61 @@ mod tests {
     }
 
     #[test]
+    fn v9_database_migrates_to_v10_with_the_events_role_index() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("t.db");
+        {
+            let conn = Connection::open(&path).unwrap();
+            for sql in &MIGRATIONS[..9] {
+                conn.execute_batch(sql).unwrap();
+            }
+            conn.execute_batch(
+                "INSERT INTO teams VALUES ('t', 'T', '', '/w', 'a', 'a', NULL);
+                 INSERT INTO roles (id, team_id, name, code, task_prefix, created_at, updated_at)
+                     VALUES ('r', 't', '前端', 'role_fe', 'FE', 'a', 'a');
+                 INSERT INTO events (id, team_id, task_id, role_id, kind, actor, summary, data, created_at)
+                     VALUES ('e', 't', NULL, 'r', 'team_created', 'human', 's', '{}', 'a');
+                 PRAGMA user_version = 9;",
+            )
+            .unwrap();
+        }
+        let conn = open(&path).unwrap();
+        let v: i64 = conn
+            .pragma_query_value(None, "user_version", |r| r.get(0))
+            .unwrap();
+        assert_eq!(v, SCHEMA_VERSION);
+        {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'events'",
+                )
+                .unwrap();
+            let indexes: Vec<String> = stmt
+                .query_map([], |r| r.get::<_, String>(0))
+                .unwrap()
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .unwrap();
+            assert!(indexes.contains(&"events_role".to_owned()), "{indexes:?}");
+        }
+        // v9 的验收列原样保留，索引迁移不动 runs 表。
+        let columns: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('runs') WHERE name = 'review_outcome'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(columns, 1);
+        // 重复打开是幂等的（migrate 到当前版本后直接返回）。
+        drop(conn);
+        let conn = open(&path).unwrap();
+        let v: i64 = conn
+            .pragma_query_value(None, "user_version", |r| r.get(0))
+            .unwrap();
+        assert_eq!(v, SCHEMA_VERSION);
+    }
+
+    #[test]
     fn timestamps_have_fixed_width() {
         let t = now();
         assert_eq!(t.len(), "2026-10-12T06:06:01.262Z".len());
