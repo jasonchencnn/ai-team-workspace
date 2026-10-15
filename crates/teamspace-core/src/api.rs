@@ -824,13 +824,7 @@ impl Teamspace {
         if run.status.is_active() && self.stop_run(run_id, Stop::Takeover) {
             return run_svc::get(&self.lock(), run_id);
         }
-        if !run_svc::can_take_over(&run) {
-            return Err(Error::conflict(format!(
-                "执行已结束（{}），不能接管",
-                run.status.label()
-            )));
-        }
-        self.write(|tx| run_svc::takeover(tx, &run))?;
+        self.write(|tx| run_svc::takeover(tx, run_id))?;
         let _ = std::fs::remove_file(self.snapshot_path(&run.id));
         self.sync_role_folders(&run.team_id);
         self.emit_run(run_id);

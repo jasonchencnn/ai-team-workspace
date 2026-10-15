@@ -60,7 +60,7 @@ fn k_perm_002_outside_write_waits_for_human_then_reject_blocks_and_allow_writes(
         summary(&run)
     );
 
-    // 允许：该路径随后的写入放行，原因为「Human 已允许对应的权限请求」。
+    // 允许：该路径随后的写入放行，原因为「Human 已允许对应的权限请求（仅这一次）」。
     let allowed = e.task("越界允许 [mock:outside]");
     let run = e.ts.start_run(&allowed.id).unwrap();
     let waiting = e.wait(&run.id, "waiting_permission", |r| {
@@ -82,7 +82,7 @@ fn k_perm_002_outside_write_waits_for_human_then_reject_blocks_and_allow_writes(
         .find(|(p, ..)| p.ends_with("/out.md"))
         .unwrap();
     assert!(granted.1);
-    assert_eq!(granted.2, "Human 已允许对应的权限请求");
+    assert_eq!(granted.2, "Human 已允许对应的权限请求（仅这一次）");
     assert!(
         run.changed_files.iter().any(|c| c.path == "out.md"),
         "{:?}",

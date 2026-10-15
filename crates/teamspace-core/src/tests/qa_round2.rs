@@ -2275,6 +2275,7 @@ fn k_sec_002_symlink_outside_workspace_is_not_embedded_or_writable() {
             path: "notes.md".into(),
             anchor: None,
             absolute: link.clone(),
+            unavailable: None,
         }],
         true,
         &[f.ws.as_path()],

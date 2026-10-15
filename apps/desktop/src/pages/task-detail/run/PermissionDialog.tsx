@@ -6,6 +6,7 @@ import type { Run } from "../../../bindings/Run.js";
 import {
   permissionOptionHint,
   permissionOptionVariant,
+  permissionScopeNote,
   toolKindName,
   toolKindTone,
 } from "./runUi.js";
@@ -62,6 +63,7 @@ export function PermissionDialog({
   const allowAlways = prompt.options.find((option) => option.kind === "allow_always");
   const rejectAlways = prompt.options.find((option) => option.kind === "reject_always");
   const hint = allowAlways === undefined ? null : permissionOptionHint(allowAlways);
+  const scopeNote = permissionScopeNote(prompt.toolKind, prompt.options);
 
   return (
     <Modal
@@ -147,6 +149,7 @@ export function PermissionDialog({
           {rejectAlways === undefined ? null : "「总是拒绝」可在「更多选项」中选择。"}
         </p>
       )}
+      {scopeNote === null ? null : <p className="perm-note perm-note--scope">{scopeNote}</p>}
     </Modal>
   );
 }

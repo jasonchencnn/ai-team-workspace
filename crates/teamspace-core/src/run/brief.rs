@@ -27,6 +27,8 @@ pub struct BriefRef {
     pub anchor: Option<String>,
     /// 磁盘上的绝对路径（执行目录中存在时用执行目录中的，否则用工作空间中的）。
     pub absolute: PathBuf,
+    /// 引用不可用的原因（[`ref_problem`]），如「文件不存在」；可用时为 `None`。
+    pub unavailable: Option<String>,
 }
 
 /// 依赖任务。
@@ -132,9 +134,14 @@ pub fn render(input: &BriefInput) -> String {
             .as_deref()
             .map(|a| format!("（定位：#{a}）"))
             .unwrap_or_default();
+        let note = r
+            .unavailable
+            .as_deref()
+            .map(|why| format!("（{why}）"))
+            .unwrap_or_default();
         push(
             &mut out,
-            &format!("- `{}`{anchor}：{}", r.path, r.absolute.display()),
+            &format!("- `{}`{anchor}：{}{note}", r.path, r.absolute.display()),
         );
     }
     if !input.refs.is_empty() {
@@ -244,6 +251,15 @@ fn embeddable(path: &Path) -> Option<String> {
     String::from_utf8(std::fs::read(path).ok()?).ok()
 }
 
+/// 引用不可用的原因：文件不存在时为「文件不存在」，真实路径不在 `roots` 之内时为
+/// 「引用不可用：真实路径不在工作空间内」；可用时为 `None`。
+pub fn ref_problem(path: &Path, roots: &[&Path]) -> Option<String> {
+    if path.canonicalize().is_err() {
+        return Some("文件不存在".to_owned());
+    }
+    (!ref_inside(path, roots)).then(|| "引用不可用：真实路径不在工作空间内".to_owned())
+}
+
 /// 引用文件的真实路径（解析符号链接后）是否在 `roots`（工作空间、执行目录）之一之内（Q-06）。
 /// 文件不存在或无法解析时为 `false`。
 pub fn ref_inside(path: &Path, roots: &[&Path]) -> bool {
@@ -265,7 +281,10 @@ pub fn prompt_blocks(
     roots: &[&Path],
 ) -> Vec<Value> {
     let mut blocks = vec![json!({ "type": "text", "text": text })];
-    for r in refs.iter().filter(|r| ref_inside(&r.absolute, roots)) {
+    for r in refs
+        .iter()
+        .filter(|r| r.unavailable.is_none() && ref_inside(&r.absolute, roots))
+    {
         let uri = file_uri(&r.absolute);
         let content = embedded_context.then(|| embeddable(&r.absolute)).flatten();
         blocks.push(match content {
@@ -404,6 +423,7 @@ mod tests {
                 path: "docs/设计 稿.md".into(),
                 anchor: Some("登录".into()),
                 absolute: "/ws/docs/设计 稿.md".into(),
+                unavailable: None,
             }],
             dependencies: vec![BriefDependency {
                 key: "BE-001".into(),
@@ -508,11 +528,13 @@ mod tests {
                 path: "a.md".into(),
                 anchor: None,
                 absolute: small.clone(),
+                unavailable: None,
             },
             BriefRef {
                 path: "big.txt".into(),
                 anchor: None,
                 absolute: big,
+                unavailable: None,
             },
         ];
         let root = dir.path();
@@ -541,15 +563,37 @@ mod tests {
             BriefRef {
                 path: "link.md".into(),
                 anchor: None,
-                absolute: link,
+                absolute: link.clone(),
+                unavailable: None,
             },
             BriefRef {
                 path: "missing.md".into(),
                 anchor: None,
                 absolute: dir.path().join("missing.md"),
+                unavailable: None,
             },
         ];
         assert_eq!(prompt_blocks("正文", &outside, true, &[root]).len(), 1);
+        assert_eq!(
+            ref_problem(&link, &[root]).as_deref(),
+            Some("引用不可用：真实路径不在工作空间内")
+        );
+        assert_eq!(
+            ref_problem(&dir.path().join("missing.md"), &[root]).as_deref(),
+            Some("文件不存在")
+        );
+        assert_eq!(ref_problem(&small, &[root]), None);
+    }
+
+    #[test]
+    fn unavailable_refs_are_marked_in_the_brief() {
+        let mut input = input();
+        input.refs[0].unavailable = Some("文件不存在".into());
+        let text = render(&input);
+        assert!(
+            text.contains("- `docs/设计 稿.md`（定位：#登录）：/ws/docs/设计 稿.md（文件不存在）"),
+            "{text}"
+        );
     }
 
     #[test]

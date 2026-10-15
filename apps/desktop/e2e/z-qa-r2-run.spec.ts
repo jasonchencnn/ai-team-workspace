@@ -479,6 +479,8 @@ test("RUN-PRM-006 权限弹窗内容：标题、意图、命令、工作目录�
     await expect(dialog.getByRole("button", { name, exact: true })).toBeVisible();
   }
   await expect(dialog).toContainText("「总是允许」只在本次执行内有效，执行结束即失效。");
+  // 执行命令请求不涉及写入授权，不显示授权范围说明
+  await expect(dialog.locator(".perm-note--scope")).toHaveCount(0);
   await cancelActive(task);
 });
 
@@ -537,7 +539,9 @@ test("RUN-DEC-001 允许后：弹窗关闭、执行恢复，进度流记「你�
   );
   const written = streamOf(page).locator(".run-filewrite", { hasText: "out.md" });
   await expect(written).toContainText("已写入");
-  await expect(written.locator(".run-filewrite__reason")).toHaveText("Human 已允许对应的权限请求");
+  await expect(written.locator(".run-filewrite__reason")).toHaveText(
+    "Human 已允许对应的权限请求（仅这一次）",
+  );
   expect(existsSync(join(plain, "out.md"))).toBe(true);
   await cancelActive(task);
   cleanOut();
@@ -663,6 +667,10 @@ test("RUN-PRM-009 越界写入：弹窗说明原因，拒绝后磁盘无文件�
   await expect(dialogOf(page).locator(".perm-reason__text")).toContainText(
     "写入本岗位文件夹与任务引用文件之外需要确认",
   );
+  // 编辑请求说明「允许一次」与「总是允许」的授权范围
+  await expect(dialogOf(page).locator(".perm-note--scope")).toHaveText(
+    "「允许一次」只放行这一次写入；「总是允许」在本次执行内对同一文件持续有效。改写工作日志已有内容每次都需要确认。",
+  );
   await dialogOf(page).getByRole("button", { name: "允许一次" }).click();
   await expect(page.locator(".run-outcome--success")).toBeVisible({ timeout: TIMEOUT });
   expect(readFileSync(join(plain, "out.md"), "utf8")).toContain("# Mock 越权写入");
@@ -672,7 +680,7 @@ test("RUN-PRM-009 越界写入：弹窗说明原因，拒绝后磁盘无文件�
   );
   expect(writes).toHaveLength(1);
   expect(writes[0]?.body.allowed).toBe(true);
-  expect(writes[0]?.body.reason).toBe("Human 已允许对应的权限请求");
+  expect(writes[0]?.body.reason).toBe("Human 已允许对应的权限请求（仅这一次）");
   cleanOut();
 });
 
