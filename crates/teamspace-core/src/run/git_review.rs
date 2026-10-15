@@ -516,16 +516,74 @@ pub fn merge_into_base(
     resolve_commit(&root, "HEAD", path_env).map(|commit| MergeOutcome::Merged { commit })
 }
 
-/// 删除执行 worktree 后安全删除分支；目录和分支已经不存在时可重复调用。
+pub enum BranchCleanup<'a> {
+    /// 校验执行分支已并入指定基线；未并入时报错并保留分支及 worktree。
+    MergedInto(&'a str),
+    /// 强制删除；调用方须先在活动里记录分支名与提交。
+    Force,
+}
+
+/// 执行分支的当前提交是否已并入基线；任一分支不存在时返回错误。
+pub fn is_merged_into(
+    repo_dir: &Path,
+    run_branch: &str,
+    base_branch: &str,
+    path_env: Option<&OsStr>,
+) -> Result<bool, String> {
+    let root = repo_root(repo_dir, path_env)?;
+    if !valid_branch(&root, run_branch, path_env) || !valid_branch(&root, base_branch, path_env) {
+        return Err("执行分支或基线分支名称无效".into());
+    }
+    let run = resolve_commit(&root, &branch_ref(run_branch), path_env)?;
+    let base = resolve_commit(&root, &branch_ref(base_branch), path_env)?;
+    let mut command = Command::new("git");
+    command
+        .arg("-C")
+        .arg(&root)
+        .args(["merge-base", "--is-ancestor", &run, &base]);
+    if let Some(path) = path_env {
+        command.env("PATH", path);
+    }
+    crate::system_probe::git_env(&mut command);
+    let output = command
+        .output()
+        .map_err(|err| format!("无法检查执行分支是否已合并：{err}"))?;
+    match output.status.code() {
+        Some(0) => Ok(true),
+        Some(1) => Ok(false),
+        _ => Err(format!(
+            "检查执行分支是否已合并失败：{}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        )),
+    }
+}
+
+/// 按指定策略删除执行 worktree 与分支；目录和分支已经不存在时可重复调用。
 pub fn remove_run_worktree(
     repo_dir: &Path,
     worktree_root: &Path,
     branch: &str,
+    cleanup: BranchCleanup<'_>,
     path_env: Option<&OsStr>,
 ) -> Result<(), String> {
     let root = repo_root(repo_dir, path_env)?;
     if !valid_branch(&root, branch, path_env) {
         return Err("执行分支名称无效，无法清理".into());
+    }
+    let refs = git(
+        &root,
+        &["for-each-ref", "--format=%(refname)", &branch_ref(branch)],
+        path_env,
+    )
+    .map_err(|err| format!("检查执行分支失败：{err}"))?;
+    let branch_exists = refs.lines().any(|name| name == branch_ref(branch));
+    if branch_exists
+        && let BranchCleanup::MergedInto(base) = cleanup
+        && !is_merged_into(&root, branch, base, path_env)?
+    {
+        return Err(format!(
+            "执行分支 {branch} 尚未并入基线 {base}，保留分支与 worktree"
+        ));
     }
     if worktree_root.exists() {
         git(
@@ -544,15 +602,9 @@ pub fn remove_run_worktree(
         git(&root, &["worktree", "prune"], path_env)
             .map_err(|err| format!("清理失效 worktree 记录失败：{err}"))?;
     }
-    let refs = git(
-        &root,
-        &["for-each-ref", "--format=%(refname)", &branch_ref(branch)],
-        path_env,
-    )
-    .map_err(|err| format!("检查执行分支失败：{err}"))?;
-    if refs.lines().any(|name| name == branch_ref(branch)) {
-        git(&root, &["branch", "-d", "--", branch], path_env)
-            .map_err(|err| format!("安全删除执行分支失败（未合并的分支将保留）：{err}"))?;
+    if branch_exists {
+        git(&root, &["branch", "-D", "--", branch], path_env)
+            .map_err(|err| format!("删除执行分支失败：{err}"))?;
     }
     Ok(())
 }
@@ -1132,7 +1184,14 @@ mod tests {
         save(&run.root);
         merged(repo.merge());
         for _attempt in 0..2 {
-            remove_run_worktree(&repo.root, &run.root, "run", None).unwrap();
+            remove_run_worktree(
+                &repo.root,
+                &run.root,
+                "run",
+                BranchCleanup::MergedInto("main"),
+                None,
+            )
+            .unwrap();
             assert!(!run.root.exists());
             assert!(
                 git(
@@ -1150,7 +1209,14 @@ mod tests {
         let repo = Repo::new();
         let run = repo.worktree();
         fs::remove_dir_all(&run.root).unwrap();
-        remove_run_worktree(&repo.root, &run.root, "run", None).unwrap();
+        remove_run_worktree(
+            &repo.root,
+            &run.root,
+            "run",
+            BranchCleanup::MergedInto("main"),
+            None,
+        )
+        .unwrap();
         assert!(
             !checked(&repo.root, &["worktree", "list", "--porcelain"]).contains("refs/heads/run")
         );
@@ -1162,9 +1228,94 @@ mod tests {
         let run = repo.worktree();
         fs::write(run.root.join("new.txt"), "new\n").unwrap();
         let head = save(&run.root);
-        assert!(remove_run_worktree(&repo.root, &run.root, "run", None).is_err());
+        assert!(
+            remove_run_worktree(
+                &repo.root,
+                &run.root,
+                "run",
+                BranchCleanup::MergedInto("main"),
+                None
+            )
+            .is_err()
+        );
+        assert!(run.root.exists());
         assert_eq!(checked(&repo.root, &["rev-parse", "run"]).trim(), head);
         assert_eq!(repo.main_head(), repo.base);
+    }
+
+    #[test]
+    fn cleanup_succeeds_after_unchecked_base_merge() {
+        let repo = Repo::new();
+        let run = repo.worktree();
+        fs::write(run.root.join("new.txt"), "new\n").unwrap();
+        save(&run.root);
+        checked(&repo.root, &["checkout", "-q", "-b", "other"]);
+        let commit = merged(repo.merge());
+        remove_run_worktree(
+            &repo.root,
+            &run.root,
+            "run",
+            BranchCleanup::MergedInto("main"),
+            None,
+        )
+        .unwrap();
+        assert!(!run.root.exists());
+        assert!(resolve_commit(&repo.root, "refs/heads/run", None).is_err());
+        assert_eq!(repo.main_head(), commit);
+        assert_eq!(resolve_commit(&repo.root, "HEAD", None).unwrap(), repo.base);
+    }
+
+    #[test]
+    fn cleanup_succeeds_after_main_checkout_switches_branch() {
+        let repo = Repo::new();
+        let run = repo.worktree();
+        fs::write(run.root.join("new.txt"), "new\n").unwrap();
+        save(&run.root);
+        let commit = merged(repo.merge());
+        checked(&repo.root, &["checkout", "-q", "-b", "other", &repo.base]);
+        remove_run_worktree(
+            &repo.root,
+            &run.root,
+            "run",
+            BranchCleanup::MergedInto("main"),
+            None,
+        )
+        .unwrap();
+        assert!(!run.root.exists());
+        assert!(resolve_commit(&repo.root, "refs/heads/run", None).is_err());
+        assert_eq!(repo.main_head(), commit);
+    }
+
+    #[test]
+    fn force_cleanup_deletes_unmerged_branch() {
+        let repo = Repo::new();
+        let run = repo.worktree();
+        fs::write(run.root.join("new.txt"), "new\n").unwrap();
+        save(&run.root);
+        for _attempt in 0..2 {
+            remove_run_worktree(&repo.root, &run.root, "run", BranchCleanup::Force, None).unwrap();
+            assert!(!run.root.exists());
+            assert!(resolve_commit(&repo.root, "refs/heads/run", None).is_err());
+        }
+        assert_eq!(repo.main_head(), repo.base);
+    }
+
+    #[test]
+    fn merged_into_checks_current_commit_and_both_branches() {
+        let repo = Repo::new();
+        let run = repo.worktree();
+        fs::write(run.root.join("new.txt"), "new\n").unwrap();
+        save(&run.root);
+        assert!(!is_merged_into(&repo.root, "run", "main", None).unwrap());
+        merged(repo.merge());
+        assert!(is_merged_into(&repo.root, "run", "main", None).unwrap());
+        fs::write(run.root.join("later.txt"), "later\n").unwrap();
+        save(&run.root);
+        assert!(!is_merged_into(&repo.root, "run", "main", None).unwrap());
+        for (run_branch, base_branch) in [("missing", "main"), ("run", "missing"), ("run", "HEAD")]
+        {
+            assert!(is_merged_into(&repo.root, run_branch, base_branch, None).is_err());
+        }
     }
 
     #[test]

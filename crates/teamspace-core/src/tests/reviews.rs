@@ -128,7 +128,7 @@ impl ReviewGit for FakeGit {
         _: Option<&std::ffi::OsStr>,
     ) -> std::result::Result<(), String> {
         let how = match cleanup {
-            Cleanup::Merged => "",
+            Cleanup::Merged(_) => "",
             Cleanup::Force => " --force",
         };
         self.log(format!("remove {} {branch}{how}", root.display()));

@@ -12,10 +12,10 @@ use super::worktree::{Worktree, git};
 use crate::model::FileChangeKind;
 
 /// 删除执行分支的方式。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Cleanup {
-    /// 合并之后：只安全删除（`git branch -d`）。
-    Merged,
+    /// 合并之后：先校验执行分支已并入该基线分支，再删除。
+    Merged(String),
     /// 冲突后重新执行：未合并的分支也删除。
     Force,
 }
@@ -196,44 +196,11 @@ impl ReviewGit for RealGit {
         cleanup: Cleanup,
         path_env: Option<&OsStr>,
     ) -> Result<(), String> {
-        let safe = git_review::remove_run_worktree(repo_dir, worktree_root, branch, path_env);
-        match (cleanup, safe) {
-            (_, Ok(())) => Ok(()),
-            (Cleanup::Merged, Err(err)) => Err(err),
-            // TODO(M3-03 的 BranchCleanup::Force 合入后改为直接调用)：安全删除失败（分支未合并）时强制删除。
-            (Cleanup::Force, Err(_)) => {
-                if worktree_root.exists() {
-                    git(
-                        repo_dir,
-                        &[
-                            "worktree",
-                            "remove",
-                            "--force",
-                            "--",
-                            &worktree_root.to_string_lossy(),
-                        ],
-                        path_env,
-                    )
-                    .map_err(|err| format!("删除执行 worktree 失败：{err}"))?;
-                }
-                let exists = git(
-                    repo_dir,
-                    &[
-                        "show-ref",
-                        "--verify",
-                        "--quiet",
-                        &format!("refs/heads/{branch}"),
-                    ],
-                    path_env,
-                )
-                .is_ok();
-                if exists {
-                    git(repo_dir, &["branch", "-D", "--", branch], path_env)
-                        .map_err(|err| format!("删除执行分支失败：{err}"))?;
-                }
-                Ok(())
-            }
-        }
+        let cleanup = match &cleanup {
+            Cleanup::Merged(base) => git_review::BranchCleanup::MergedInto(base),
+            Cleanup::Force => git_review::BranchCleanup::Force,
+        };
+        git_review::remove_run_worktree(repo_dir, worktree_root, branch, cleanup, path_env)
     }
 
     fn is_merged_into(
@@ -243,33 +210,7 @@ impl ReviewGit for RealGit {
         base_branch: &str,
         path_env: Option<&OsStr>,
     ) -> Result<bool, String> {
-        // TODO(M3-03 的 git_review::is_merged_into 合入后改为调用它)。
-        let verify = |name: &str| {
-            git(
-                repo_dir,
-                &[
-                    "rev-parse",
-                    "--verify",
-                    "--quiet",
-                    &format!("refs/heads/{name}"),
-                ],
-                path_env,
-            )
-            .map_err(|_| format!("分支 {name} 不存在"))
-        };
-        verify(run_branch)?;
-        verify(base_branch)?;
-        Ok(git(
-            repo_dir,
-            &[
-                "merge-base",
-                "--is-ancestor",
-                &format!("refs/heads/{run_branch}"),
-                &format!("refs/heads/{base_branch}"),
-            ],
-            path_env,
-        )
-        .is_ok())
+        git_review::is_merged_into(repo_dir, run_branch, base_branch, path_env)
     }
 
     fn branch_head(

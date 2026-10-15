@@ -1567,7 +1567,7 @@ fn k_task_009_cancelled_dependency_does_not_satisfy_ready() {
     // 重开并完成后可以就绪。
     f.drive(&c.task.id, &[Todo, Ready, Doing, Review, Done]);
     assert_eq!(open(&f), 0);
-    assert_eq!(f.move_to(&b.task.id, Ready).unwrap().task.status, Ready);
+    assert_eq!(f.ts.get_task(&b.task.id).unwrap().task.status, Ready);
 }
 
 /// K-TASK-010：READY 之后环境变化（引用被删、工作空间缺失、负责岗位归档）。
@@ -1882,9 +1882,9 @@ fn k_dep_004_long_chain_cycle_lists_every_node_and_skips_the_branch() {
     );
 }
 
-/// K-DEP-006：上游完成后下游不会自动变 READY（M3 范围），也不产生系统活动。
+/// K-DEP-006：上游完成后下游自动变 READY，并产生一条系统活动（M3）。
 #[test]
-fn k_dep_006_downstream_is_not_promoted_automatically() {
+fn k_dep_006_downstream_is_promoted_automatically() {
     use TaskStatus::*;
     let f = plain_fixture();
     let team = f.team("T");
@@ -1896,14 +1896,15 @@ fn k_dep_006_downstream_is_not_promoted_automatically() {
     f.drive(&a.task.id, &[Ready, Doing, Review, Done]);
     let before = count_events(&f);
     let b_now = f.ts.get_task(&b.task.id).unwrap();
-    assert_eq!(b_now.task.status, Todo, "依赖自动推进属于 M3");
+    assert_eq!(b_now.task.status, Ready);
     assert!(b_now.readiness.is_empty(), "{:?}", b_now.readiness);
     assert_eq!(count_events(&f), before);
-    assert!(
-        events(&f, &team.id).iter().all(|e| e.actor == Actor::Human),
-        "没有系统活动"
-    );
-    assert_eq!(f.move_to(&b.task.id, Ready).unwrap().task.status, Ready);
+    let automatic: Vec<_> = events(&f, &team.id)
+        .into_iter()
+        .filter(|e| e.actor == Actor::System)
+        .collect();
+    assert_eq!(automatic.len(), 1);
+    assert_eq!(automatic[0].task_id.as_deref(), Some(b.task.id.as_str()));
 }
 
 // ---------------------------------------------------------------- K-EVT

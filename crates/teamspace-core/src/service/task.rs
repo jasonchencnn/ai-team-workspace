@@ -172,7 +172,7 @@ pub(crate) fn board(conn: &Connection, query: &TaskBoardQuery) -> Result<TaskBoa
     })
 }
 
-/// 在锁外预先完成的文件存在性检查结果（避免在全局锁和写事务内做文件系统 I/O）。
+/// 文件存在性检查结果；人工命令在锁外预检，自动依赖推进在事务内检查下游引用。
 ///
 /// 未检查过的路径视为不存在。
 pub(crate) struct FileCheck {
@@ -409,7 +409,11 @@ fn validate_deps(
             continue;
         }
         if Some(dep.as_str()) == task_id {
-            return Err(Error::invalid("任务不能依赖自身"));
+            let key: String =
+                conn.query_row("SELECT key FROM tasks WHERE id = ?1", params![dep], |row| {
+                    row.get(0)
+                })?;
+            return Err(Error::invalid(format!("依赖形成环路：{key} → {key}")));
         }
         let same_team: bool = conn.query_row(
             "SELECT EXISTS (SELECT 1 FROM tasks WHERE id = ?1 AND team_id = ?2)",
@@ -421,10 +425,11 @@ fn validate_deps(
         }
         out.push(dep);
     }
-    if let Some(task_id) = task_id {
+    if !out.is_empty() {
         let mut stmt = conn.prepare(
             "SELECT d.task_id, d.depends_on_id FROM task_dependencies d
-             JOIN tasks t ON t.id = d.task_id WHERE t.team_id = ?1 AND d.task_id <> ?2",
+             JOIN tasks t ON t.id = d.task_id
+             WHERE t.team_id = ?1 AND (?2 IS NULL OR d.task_id <> ?2)",
         )?;
         let mut edges: HashMap<String, Vec<String>> = HashMap::new();
         for edge in stmt.query_map(params![team_id, task_id], |row| {
@@ -433,8 +438,14 @@ fn validate_deps(
             let (from, to) = edge?;
             edges.entry(from).or_default().push(to);
         }
-        edges.insert(task_id.to_owned(), out.clone());
-        if let Some(cycle) = find_cycle(&edges, task_id) {
+        if let Some(task_id) = task_id {
+            edges.insert(task_id.to_owned(), out.clone());
+        }
+        let starts = task_id.map_or_else(|| out.clone(), |id| vec![id.to_owned()]);
+        for start in starts {
+            let Some(cycle) = find_cycle(&edges, &start) else {
+                continue;
+            };
             let keys = cycle
                 .iter()
                 .map(|id| {
@@ -452,33 +463,41 @@ fn validate_deps(
     Ok(out)
 }
 
-/// 从 `start` 出发沿依赖边查找回到 `start` 的路径；返回首尾相同的环路。
+/// 从 `start` 出发沿依赖边查找可达环路；返回首尾相同的完整环路。
 pub(crate) fn find_cycle(edges: &HashMap<String, Vec<String>>, start: &str) -> Option<Vec<String>> {
     fn dfs(
         edges: &HashMap<String, Vec<String>>,
-        start: &str,
         node: &str,
         path: &mut Vec<String>,
         seen: &mut HashSet<String>,
-    ) -> bool {
+        active: &mut HashMap<String, usize>,
+    ) -> Option<Vec<String>> {
+        if let Some(&index) = active.get(node) {
+            let mut cycle = path[index..].to_vec();
+            cycle.push(node.to_owned());
+            return Some(cycle);
+        }
+        if !seen.insert(node.to_owned()) {
+            return None;
+        }
+        active.insert(node.to_owned(), path.len());
+        path.push(node.to_owned());
         for next in edges.get(node).into_iter().flatten() {
-            if next == start {
-                path.push(next.clone());
-                return true;
-            }
-            if seen.insert(next.clone()) {
-                path.push(next.clone());
-                if dfs(edges, start, next, path, seen) {
-                    return true;
-                }
-                path.pop();
+            if let Some(cycle) = dfs(edges, next, path, seen, active) {
+                return Some(cycle);
             }
         }
-        false
+        path.pop();
+        active.remove(node);
+        None
     }
-    let mut path = vec![start.to_owned()];
-    let mut seen = HashSet::new();
-    dfs(edges, start, start, &mut path, &mut seen).then_some(path)
+    dfs(
+        edges,
+        start,
+        &mut Vec::new(),
+        &mut HashSet::new(),
+        &mut HashMap::new(),
+    )
 }
 
 /// 下一个任务编号：前缀 + 团队内该前缀的序号，补零到 3 位。
@@ -710,6 +729,14 @@ pub(crate) fn change_status(
     if let Some(reason) = &reason {
         summary.push_str(&format!("：{reason}"));
     }
+    let mut data = json!({ "from": from, "to": to, "reason": reason });
+    if from == TaskStatus::Done && to == TaskStatus::Ready {
+        let affected = super::dependency::active_dependent_keys(conn, &task.id)?;
+        if !affected.is_empty() {
+            summary.push_str(&format!("；下游 {} 个任务已在进行，未回退", affected.len()));
+        }
+        data["affectedDependentKeys"] = json!(affected);
+    }
     event::record(
         conn,
         NewEvent {
@@ -718,7 +745,7 @@ pub(crate) fn change_status(
             role_id: Some(&task.owner_role_id),
             kind: EventKind::TaskStatusChanged,
             summary,
-            data: json!({ "from": from, "to": to, "reason": reason }),
+            data,
         },
     )?;
     if to == TaskStatus::Done {
@@ -738,8 +765,8 @@ pub(crate) fn review_needs_merge(conn: &Connection, task: &Task) -> Result<bool>
         .is_some_and(|r| r.isolation == crate::model::RunIsolation::Worktree))
 }
 
-/// 任务转为 DONE 之后的依赖推进钩子：前置任务完成后，满足就绪条件的下游任务自动转为 READY（M3-03 填充，
-/// 目前什么也不做）。
+/// 任务转为 DONE 之后的依赖推进钩子：前置任务完成后，满足就绪条件的下游任务自动转为 READY
+/// （[`super::dependency::advance_dependents`]）。
 ///
 /// 调用约定：在把任务置为 DONE 的**同一个事务**里、紧随状态更新（及其活动记录）之后调用——验收通过
 /// （[`crate::api`] 的 `approve_review`）与 `change_task_status` 置为 DONE 两处。这样「上游完成」与
@@ -747,8 +774,7 @@ pub(crate) fn review_needs_merge(conn: &Connection, task: &Task) -> Result<bool>
 /// 事务回滚，任务也不会变成 DONE。钩子只做数据库内的工作（不做文件或进程 I/O，岗位文件夹由调用方在
 /// 事务提交后同步）。
 pub(crate) fn on_task_done(conn: &Connection, task_id: &str) -> Result<()> {
-    let _ = (conn, task_id);
-    Ok(())
+    super::dependency::advance_dependents(conn, task_id).map(|_| ())
 }
 
 #[cfg(test)]
