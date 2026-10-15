@@ -18,13 +18,30 @@ import {
   runElapsedSeconds,
 } from "./runUi.js";
 
+/** 快照比对不检查的目录（与内核的跳过规则一致），写在界面上让用户知道检查范围。 */
+const SKIPPED_DIRS_NOTE = "（未检查 .git、node_modules、target、dist、build 等目录）";
+
+/** 改动统计的说明：快照降级（改动统计不完整）、快照没能保存、续接间隙等，后端给出文字。 */
+function ChangeNotice({ run }: { run: Run }) {
+  if (run.changeNote === null && !run.changeIncomplete) {
+    return null;
+  }
+  return (
+    <div className="run-outcome__change-note" role="note">
+      {run.changeIncomplete ? <Tag tone="warning">改动统计不完整</Tag> : null}
+      {run.changeNote === null ? null : <p>{run.changeNote}</p>}
+    </div>
+  );
+}
+
 /** Agent 未经确认改动了权限范围外的文件（快照比对的结果，后端给出清单）。 */
 function OutOfScopeAlert({ run }: { run: Run }) {
   return (
     <section className="run-outcome__alert run-outcome__alert--scope" role="alert">
       <h4 className="run-outcome__alert-title">⚠ Agent 未经确认改动了范围外的文件</h4>
       <p className="run-outcome__alert-text">
-        这些文件不在本岗位文件夹、不在任务引用的文件里，执行中也没有收到对应的权限请求。
+        这些文件不在本岗位文件夹、不在任务引用的文件里，执行中也没有收到对应的权限请求
+        {run.isolation === "in_place" ? SKIPPED_DIRS_NOTE : ""}。
         {run.isolation === "in_place" ? "原地执行不会自动回滚，请检查后处理。" : ""}
       </p>
       <ul className="run-outcome__alert-files">
@@ -65,12 +82,11 @@ function ChangedFiles({ run, showHint }: { run: Run; showHint: boolean }) {
           ))}
         </ul>
       )}
-      {run.changeNote === null ? null : <p className="run-outcome__muted">{run.changeNote}</p>}
       {showHint ? (
         <p className="run-outcome__muted">
           {run.isolation === "worktree"
             ? "改动都在本次执行的 worktree 分支里，验收通过后才会合并回基线分支。"
-            : "原地执行直接改在工作空间里，不会自动回滚。"}
+            : `原地执行直接改在工作空间里，不会自动回滚。改动统计${SKIPPED_DIRS_NOTE}。`}
         </p>
       ) : null}
     </div>
@@ -150,6 +166,7 @@ export function RunOutcome(props: RunOutcomeProps) {
     <>
       {alert}
       {panel}
+      <ChangeNotice run={run} />
     </>
   );
 }
@@ -198,6 +215,8 @@ function SuccessOutcome({
       </Card>
 
       <RunFacts run={run} />
+
+      <ChangeNotice run={run} />
 
       {changedOpen ? <ChangedFiles run={run} showHint /> : null}
 

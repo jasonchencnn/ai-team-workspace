@@ -78,6 +78,10 @@ outOfScope: Array<string>,
  */
 changeNote: string | null, 
 /**
+ * 改动统计不完整：执行目录里的文件太多，快照降级，部分位置的改动没有统计（说明见 `changeNote`）。
+ */
+changeIncomplete: boolean, 
+/**
  * 本次执行中的工具调用次数。
  */
 toolCallCount: number, 

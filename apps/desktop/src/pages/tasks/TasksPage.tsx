@@ -127,7 +127,10 @@ function TaskCard({
         tone={task.status === "blocked" ? "warning" : "default"}
         title={
           <span className="task-card__title">
-            {badge === null && task.status !== "todo" && task.status !== "ready" ? null : (
+            {badge === null &&
+            task.status !== "todo" &&
+            task.status !== "ready" &&
+            !task.changeIncomplete ? null : (
               <span className="task-card__badges">
                 {badge === null ? null : <Tag tone={badge.tone}>{badge.label}</Tag>}
                 {task.status === "todo" || task.status === "ready" ? (
@@ -135,6 +138,7 @@ function TaskCard({
                     {task.status === "todo" ? "TODO" : "READY"}
                   </Tag>
                 ) : null}
+                {task.changeIncomplete ? <Tag tone="warning">改动统计不完整</Tag> : null}
               </span>
             )}
             <span className="task-card__name">

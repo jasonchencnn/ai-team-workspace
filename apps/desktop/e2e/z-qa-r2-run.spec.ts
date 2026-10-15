@@ -1038,6 +1038,46 @@ test("RUN-SCP-002 [S-1b] 岗位文件夹内的 shell 写入计入改动，任务
   expect(run.changedFiles.map((f) => f.path)).toContain(note);
 });
 
+// 交叉审查 06b：隐藏文件也检查，界面写明不检查的目录。
+test("RUN-SCP-003 [S-1b] 隐藏文件（.env）的 shell 写入同样算范围外，界面写明未检查的目录", async ({
+  page,
+}) => {
+  const target = join(plain, ".env");
+  rmSync(target, { force: true });
+  const task = await plainTask("改环境变量 [mock:shellwrite=.env]");
+  await openTask(page, task);
+  await startRunUi(page);
+  const success = page.locator(".run-outcome--success");
+  await expect(success).toBeVisible({ timeout: TIMEOUT });
+  await expect(success).toContainText("已完成 · 受阻");
+  const alert = success.locator(".run-outcome__alert--scope");
+  await expect(alert).toContainText(".env");
+  await expect(alert).toContainText("未检查 .git、node_modules、target、dist、build 等目录");
+  await expect(
+    page.getByText("受阻原因：Agent 未经确认改动了权限范围外的文件：.env，请检查后处理"),
+  ).toBeVisible();
+  rmSync(target, { force: true });
+});
+
+// 交叉审查 06b：快照降级（文件太多）时，任务卡和执行面板显示「改动统计不完整」。
+test("RUN-SCP-004 快照降级：任务卡与执行面板显示「改动统计不完整」及说明", async ({ page }) => {
+  const task = await plainTask("降级提示");
+  await runToEnd(task);
+  const run = (await runsOf(task.id))[0] as RunInfo;
+  // 降级的执行记录用数据库直接构造（真实降级需要两万个文件）。
+  const note = "改动统计不完整：执行目录里的文件太多（超过 20000 个），测试说明";
+  sqlite(`UPDATE runs SET change_incomplete = 1, change_note = '${note}' WHERE id = '${run.id}'`);
+
+  await page.goto(`/#/teams/${teamP.teamId}/tasks`);
+  const card = page.getByRole("link", { name: new RegExp(`${task.key} 降级提示`) });
+  await expect(card).toContainText("改动统计不完整");
+
+  await openTask(page, task);
+  const notice = page.locator(".run-outcome__change-note");
+  await expect(notice).toContainText("改动统计不完整");
+  await expect(notice).toContainText("超过 20000 个");
+});
+
 test("RUN-RCV-003 支持 loadSession：续接能力、「续接会话」为主按钮、图例说明", async ({ page }) => {
   const task = await plainTask("可续接 [mock:hang]");
   const run = await interrupt(task, "正在长时间处理");

@@ -351,7 +351,7 @@ impl Core {
                 interrupt_with_changes(tx, &run.id, INTERRUPTED_RESTART, Some(&changes))
             })?;
         }
-        self.discard_stale_snapshots();
+        self.discard_stale_snapshots(SNAPSHOT_KEEP);
         Ok(())
     }
 
@@ -372,47 +372,106 @@ impl Core {
             .join(format!("{run_id}.json"))
     }
 
-    /// 删除不再需要的快照：只有仍处于已中断（可能续接）的执行才保留。
-    fn discard_stale_snapshots(&self) {
+    /// 中断那一刻的快照：续接时用它分清「中断到续接之间」的改动。
+    fn interrupted_snapshot_path(&self, run_id: &str) -> PathBuf {
+        self.data_dir
+            .join("run-snapshots")
+            .join(format!("{run_id}.interrupted.json"))
+    }
+
+    /// 删除一次执行的全部快照文件（执行已经结束，不会再续接）。
+    pub(crate) fn remove_snapshots(&self, run_id: &str) {
+        let _ = std::fs::remove_file(self.snapshot_path(run_id));
+        let _ = std::fs::remove_file(self.interrupted_snapshot_path(run_id));
+    }
+
+    /// 删除不再需要的快照：只有仍处于已中断（可能续接）的执行才保留，而且最多保留 `keep`
+    ///（长期无人处理的中断执行，快照会过期；续接时没有快照只是少了对比基准，会在记录里说明）。
+    pub(crate) fn discard_stale_snapshots(&self, keep: Duration) {
         let dir = self.data_dir.join("run-snapshots");
         let Ok(entries) = std::fs::read_dir(&dir) else {
             return;
         };
         for entry in entries.flatten() {
             let path = entry.path();
-            let Some(id) = path.file_stem().and_then(|s| s.to_str()) else {
+            let Some(name) = path.file_name().and_then(|s| s.to_str()) else {
                 continue;
             };
-            let keep = store_run::get(&self.lock(), id)
+            let id = name
+                .strip_suffix(".interrupted.json")
+                .or_else(|| name.strip_suffix(".json"))
+                .unwrap_or(name);
+            let interrupted = store_run::get(&self.lock(), id)
                 .is_ok_and(|run| run.status == RunStatus::Interrupted);
-            if !keep {
+            let expired = entry
+                .metadata()
+                .and_then(|m| m.modified())
+                .ok()
+                .and_then(|t| t.elapsed().ok())
+                .is_some_and(|age| age > keep);
+            if !interrupted || expired {
                 let _ = std::fs::remove_file(&path);
             }
         }
     }
 
-    /// 被中断的执行已经改了哪些文件：Git worktree 用 Git 统计；原地执行把存下的执行前快照与现在的
-    /// 目录比对（没有快照时只能用 Agent 经 ACP 写入的记录）。第二项为统计的补充说明。
-    fn interrupted_changes(&self, run: &Run) -> (Vec<ChangedFile>, Option<String>) {
-        let fallback = || (run.changed_files.clone(), None);
+    /// 本次执行的岗位的文件夹（相对工作空间，如 `Teamspace/前端`）。
+    fn role_folder_of(&self, run: &Run) -> Option<String> {
+        self.lock()
+            .query_row(
+                "SELECT folder FROM roles WHERE id = ?1",
+                rusqlite::params![run.role_id],
+                |row| row.get::<_, Option<String>>(0),
+            )
+            .ok()
+            .flatten()
+    }
+
+    /// 被中断的执行已经改了哪些文件：worktree 用 Git 统计；原地执行把存下的执行前快照与现在的
+    /// 目录比对（没有快照时只能用 Agent 经 ACP 写入的记录）。同时把「中断这一刻」的快照存下来，
+    /// 续接时用它分清中断期间别人改的文件。
+    fn interrupted_changes(&self, run: &Run) -> Changes {
+        let fallback = || Changes {
+            files: run.changed_files.clone(),
+            note: None,
+            incomplete: false,
+        };
         if run.isolation == RunIsolation::Worktree {
             let Some(base) = &run.base_commit else {
                 return fallback();
             };
             let path_env = self.probe.command_path_env();
             return match worktree::changed_files(Path::new(&run.exec_dir), base, Some(&path_env)) {
-                Ok(files) => (files, None),
-                Err(err) => (
-                    run.changed_files.clone(),
-                    Some(format!("无法统计 worktree 的改动：{err}")),
-                ),
+                Ok(files) => Changes {
+                    files,
+                    note: None,
+                    incomplete: false,
+                },
+                Err(err) => Changes {
+                    note: Some(format!("无法统计 worktree 的改动：{err}")),
+                    ..fallback()
+                },
             };
         }
         let dir = Path::new(&run.exec_dir);
         if let Some(before) = snapshot::load(&self.snapshot_path(&run.id)) {
-            let after = snapshot::take(dir, before.max_entries);
-            let diff = snapshot::diff(dir, &before, &after);
-            return (diff.changes, diff.note);
+            let own_role = self.role_folder_of(run);
+            let after = snapshot::take(dir, before.max_entries, &before.priority);
+            let diff = snapshot::diff(dir, &before, &after, own_role.as_deref());
+            let mut note = diff.note;
+            if let Err(err) = snapshot::save(&self.interrupted_snapshot_path(&run.id), &after) {
+                let text =
+                    format!("无法保存中断时的快照（{err}），续接后无法分清中断期间别人改动的文件");
+                note = Some(match note {
+                    Some(n) => format!("{n}；{text}"),
+                    None => text,
+                });
+            }
+            return Changes {
+                files: diff.changes,
+                note,
+                incomplete: diff.incomplete,
+            };
         }
         // 没有执行前的快照（执行在拍快照之前就中断了）：只能汇总 Agent 经 ACP 写入的文件。
         let root = dir.canonicalize().unwrap_or_else(|_| dir.to_path_buf());
@@ -428,13 +487,14 @@ impl Core {
             .session_id
             .is_some()
             .then(|| "没有执行前的快照，改动文件只包含 Agent 经 ACP 写入的记录".to_owned());
-        (
-            changes
+        Changes {
+            files: changes
                 .into_iter()
                 .map(|(path, change)| ChangedFile { path, change })
                 .collect(),
             note,
-        )
+            incomplete: false,
+        }
     }
 
     /// 执行进度里记录的、被允许写入的文件路径。
@@ -485,21 +545,33 @@ fn interrupt_with_changes(
     conn: &rusqlite::Connection,
     run_id: &str,
     reason: &str,
-    changes: Option<&(Vec<ChangedFile>, Option<String>)>,
+    changes: Option<&Changes>,
 ) -> Result<()> {
     let run = store_run::get(conn, run_id)?;
     if !run.status.is_active() {
         return Ok(());
     }
-    let (files, note) = match changes {
-        Some((files, note)) => (files.clone(), note.clone()),
-        None => (run.changed_files.clone(), run.change_note.clone()),
+    let (files, note, incomplete) = match changes {
+        Some(c) => (c.files.clone(), c.note.clone(), c.incomplete),
+        None => (
+            run.changed_files.clone(),
+            run.change_note.clone(),
+            run.change_incomplete,
+        ),
     };
     let changed = conn.execute(
         "UPDATE runs SET status = 'interrupted', ended_at = ?2, failure = ?3, failure_kind = NULL,
-                         pending_permission = NULL, changed_files = ?4, change_note = ?5
+                         pending_permission = NULL, changed_files = ?4, change_note = ?5,
+                         change_incomplete = ?6
          WHERE id = ?1 AND status IN ('queued', 'running', 'waiting_permission')",
-        rusqlite::params![run_id, now(), reason, serde_json::to_string(&files)?, note],
+        rusqlite::params![
+            run_id,
+            now(),
+            reason,
+            serde_json::to_string(&files)?,
+            note,
+            incomplete
+        ],
     )?;
     if changed == 0 {
         return Ok(());
@@ -608,11 +680,15 @@ struct Driver {
     /// 本次执行内总是允许才持续有效。规则自动允许的请求、Human 允许的其他类型请求（读取、搜索、
     /// 执行命令等）都不会记入这里（Q-01）。
     granted: grants::Grants,
-    /// Human 允许过的编辑、删除、移动请求涉及的路径（规范化），含「允许一次」已用掉的。只用于判断
+    /// Human 允许过的编辑、删除、移动请求涉及的路径（规范化）及类型，含「允许一次」已用掉的。只用于判断
     /// 快照发现的改动是否「未经确认」，不放开 `fs/write_text_file`。
-    approved: Vec<PathBuf>,
+    approved: Vec<(PathBuf, Approved)>,
     /// 普通文件夹原地执行：执行前的目录快照（S-1b）；Git worktree 执行为 `None`。
     baseline: Option<snapshot::Snapshot>,
+    /// 本岗位文件夹（相对工作空间）：快照比对只排除这个文件夹里 Teamspace 维护的文件。
+    own_role: Option<String>,
+    /// 与快照有关的补充说明（如快照没能保存），并入改动统计说明。
+    baseline_notes: Vec<String>,
     tool_call_count: u32,
 }
 
@@ -646,6 +722,8 @@ impl Driver {
             granted: grants::Grants::default(),
             approved: Vec::new(),
             baseline: None,
+            own_role: None,
+            baseline_notes: Vec::new(),
         }
     }
 
@@ -820,11 +898,28 @@ impl Driver {
 
         // 2b. 原地执行：对执行目录拍快照（续接时沿用存下的执行前快照），结束时比对出真实改动
         if self.run.isolation == RunIsolation::InPlace {
-            self.baseline = Some(self.prepare_baseline(mode, &exec_dir));
+            self.own_role = ctx.role_folder.clone();
+            let priority = priority_paths(&ctx);
+            self.baseline = Some(self.prepare_baseline(mode, &exec_dir, &priority));
         }
 
         // 3. 启动 Agent
         let spec = self.spawn_spec(&ctx, &exec_dir)?;
+        let session_vars = crate::system_probe::explicit_session_vars(&spec.env);
+        if !session_vars.is_empty() {
+            // 环境配置档案里显式设置了会让适配器拒绝启动的变量：照常传，但在执行记录里说清楚。
+            self.insert(
+                None,
+                &RunUpdateBody::Warning {
+                    text: format!(
+                        "环境配置档案里显式设置了 {}：它们会原样传给 Agent，Claude Code 适配器可能因此\
+                         拒绝启动（cannot be launched inside another Claude Code session）",
+                        session_vars.join("、")
+                    ),
+                    files: Vec::new(),
+                },
+            );
+        }
         let tx = self.tx.clone();
         let process = AgentProcess::spawn(&spec, move |m| {
             let _ = tx.send(Msg::Agent(m));
@@ -961,17 +1056,49 @@ impl Driver {
         Ok(())
     }
 
-    /// 执行前快照：续接时读回存下的那一份，否则现在拍一份并存下来（应用重启后据此算出中断时的改动）。
-    fn prepare_baseline(&self, mode: Mode, exec_dir: &Path) -> snapshot::Snapshot {
+    /// 执行前快照：续接时读回存下的那一份，并以现在为界重定基线（中断到续接之间别人改的文件不算
+    /// 本次执行的）；否则现在拍一份并存下来（应用重启后据此算出中断时的改动）。
+    fn prepare_baseline(
+        &mut self,
+        mode: Mode,
+        exec_dir: &Path,
+        priority: &[String],
+    ) -> snapshot::Snapshot {
         let path = self.core.snapshot_path(&self.run.id);
+        let max = self.settings.snapshot_max_entries;
         if mode == Mode::Resume
             && let Some(saved) = snapshot::load(&path)
         {
-            return saved;
+            let current = snapshot::take(exec_dir, saved.max_entries, &saved.priority);
+            let rebased = match snapshot::load(&self.core.interrupted_snapshot_path(&self.run.id)) {
+                Some(interrupted) => snapshot::rebase_after_gap(
+                    exec_dir,
+                    &saved,
+                    &interrupted,
+                    &current,
+                    self.own_role.as_deref(),
+                ),
+                None => {
+                    let mut base = saved;
+                    base.notes.push(
+                        "没有中断时的快照，中断到续接期间别人改动的文件无法分清，可能被计入本次执行"
+                            .to_owned(),
+                    );
+                    base
+                }
+            };
+            if let Err(err) = snapshot::save(&path, &rebased) {
+                self.baseline_notes
+                    .push(format!("无法保存重定基线后的快照（{err}）"));
+            }
+            return rebased;
         }
-        let taken = snapshot::take(exec_dir, self.settings.snapshot_max_entries);
+        let taken = snapshot::take(exec_dir, max, priority);
         if let Err(err) = snapshot::save(&path, &taken) {
             eprintln!("teamspace run {}: 无法保存执行前快照：{err}", self.run.id);
+            self.baseline_notes.push(format!(
+                "执行前的快照没有保存成功（{err}）：本次执行仍会比对改动，但应用中途退出后无法据此统计"
+            ));
         }
         taken
     }
@@ -1732,9 +1859,14 @@ impl Driver {
                 .get(&p.prompt.tool_call_id)
                 .map(|t| t.edits.iter().map(|e| e.path.clone()).collect())
                 .unwrap_or_default();
+            let kind = if p.prompt.tool_kind.as_deref() == Some("edit") {
+                Approved::Edit
+            } else {
+                Approved::Remove
+            };
             for path in p.prompt.paths.iter().chain(&edit_targets) {
                 if let Ok(real) = policy::resolve(Path::new(path), &base) {
-                    self.approved.push(real);
+                    self.approved.push((real, kind));
                 }
             }
         }
@@ -1947,13 +2079,15 @@ impl Driver {
         }
         // 快照比对：不依赖 Agent 自觉，shell 直接写的文件也在内。
         let mut out_of_scope = Vec::new();
-        let mut note = None;
+        let mut notes: Vec<String> = self.baseline_notes.clone();
+        let mut incomplete = false;
         if let Some(before) = &self.baseline {
-            let after = snapshot::take(&root, before.max_entries);
-            let diff = snapshot::diff(&root, before, &after);
-            note = diff.note;
+            let after = snapshot::take_light(&root, before.max_entries, &before.priority);
+            let diff = snapshot::diff(&root, before, &after, self.own_role.as_deref());
+            incomplete = diff.incomplete;
+            notes.extend(diff.note);
             for change in diff.changes {
-                if self.is_out_of_scope(&root, &change.path) {
+                if self.is_out_of_scope(&root, &change.path, change.change) {
                     out_of_scope.push(change.path.clone());
                 }
                 // 快照看到的是真实的新增 / 修改 / 删除，覆盖 ACP 报告里粗略的类型。
@@ -1967,23 +2101,39 @@ impl Driver {
                 .map(|(path, change)| ChangedFile { path, change })
                 .collect(),
             out_of_scope,
-            note,
+            note: (!notes.is_empty()).then(|| notes.join("；")),
+            incomplete,
         }
     }
 
-    /// 快照发现的改动（相对 `root`）是否落在权限范围外：不在本岗位文件夹、不在任务引用文件
-    /// （即 [`Scope::write_target`] 不放行），也没有被 Human 明确允许写入。
-    fn is_out_of_scope(&self, root: &Path, rel: &str) -> bool {
+    /// 快照发现的改动（相对 `root`）是否落在权限范围外：
+    /// - 删除：只有 Human 允许过针对该路径的删除或移动才算范围内（允许过编辑不等于允许删除）；
+    /// - 其他改动：在本岗位文件夹或任务引用文件里（[`Scope::write_target`] 放行），或 Human 允许过
+    ///   对该路径的编辑（含「允许一次」已用掉的）、删除、移动。
+    fn is_out_of_scope(&self, root: &Path, rel: &str, change: FileChangeKind) -> bool {
         let Some(scope) = &self.scope else {
             return false;
         };
         let abs = root.join(rel);
+        let real = policy::resolve(&abs, scope.exec_dir()).ok();
+        let approved = |kinds: &[Approved]| {
+            real.as_ref().is_some_and(|real| {
+                self.approved
+                    .iter()
+                    .any(|(path, kind)| path == real && kinds.contains(kind))
+            })
+        };
+        if change == FileChangeKind::Deleted {
+            return !approved(&[Approved::Remove]);
+        }
         if scope.write_target(&abs.display().to_string()).is_ok() {
             return false;
         }
-        match policy::resolve(&abs, scope.exec_dir()) {
-            Ok(real) => !(self.granted.has(&real) || self.approved.contains(&real)),
-            Err(_) => true,
+        match &real {
+            Some(real) => {
+                !(self.granted.has(real) || approved(&[Approved::Edit, Approved::Remove]))
+            }
+            None => true,
         }
     }
 
@@ -2002,6 +2152,7 @@ impl Driver {
             changed_files: audit.files.clone(),
             out_of_scope: audit.out_of_scope.clone(),
             change_note: audit.note.clone(),
+            change_incomplete: audit.incomplete,
             tool_call_count: self.tool_call_count,
             ..Ending::default()
         };
@@ -2168,22 +2319,68 @@ impl Driver {
             }
             Ok(Some(updates))
         });
-        if let Some(Some(updates)) = saved {
+        if let Some(Some(updates)) = &saved {
             for update in updates {
-                self.emit_update(update);
+                self.emit_update(update.clone());
             }
         }
-        // 执行已结束，不再需要执行前快照（被中断的执行才保留，以便续接）。
-        let _ = std::fs::remove_file(self.core.snapshot_path(&self.run.id));
+        // 执行确实在这里结束了，就不再需要快照（被中断的执行才保留，以便续接）。结局被 fencing 忽略
+        // （执行已被中断或别处结束）时保留，别的路径可能正在读它，由启动时的清理处理。
+        if matches!(saved, Some(Some(_))) {
+            self.core.remove_snapshots(&self.run.id);
+        }
         self.core.sync_role_folders(&self.run.team_id);
         self.core.emit_run(&self.run.id);
     }
+}
+
+/// Human 允许过的操作类型（只用于判断快照发现的改动是否「未经确认」）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Approved {
+    /// 编辑。
+    Edit,
+    /// 删除或移动。
+    Remove,
+}
+
+/// 保留中断执行的快照的最长时间。
+const SNAPSHOT_KEEP: Duration = Duration::from_secs(30 * 24 * 3600);
+
+/// 中断时算出的改动统计。
+#[derive(Debug, Clone, Default)]
+pub(crate) struct Changes {
+    pub files: Vec<ChangedFile>,
+    pub note: Option<String>,
+    pub incomplete: bool,
+}
+
+/// 降级时优先完整扫描的路径：本岗位文件夹和任务引用所在的目录（文件夹引用就是它本身；根目录下的
+/// 文件引用就是该文件）。
+fn priority_paths(ctx: &Context) -> Vec<String> {
+    let mut paths: Vec<String> = ctx.role_folder.iter().cloned().collect();
+    for r in &ctx.task.file_refs {
+        let rel = r.path.trim_matches('/');
+        if rel.is_empty() {
+            continue;
+        }
+        if ctx.workspace.join(rel).is_dir() {
+            paths.push(rel.to_owned());
+        } else {
+            match rel.rsplit_once('/') {
+                Some((parent, _)) => paths.push(parent.to_owned()),
+                None => paths.push(rel.to_owned()),
+            }
+        }
+    }
+    paths
 }
 
 /// 一次执行的改动统计结果。
 #[derive(Debug, Default)]
 struct Audit {
     files: Vec<ChangedFile>,
+    /// 改动统计不完整（快照降级）。
+    incomplete: bool,
     /// 快照发现的范围外改动（相对工作空间，已排序）。
     out_of_scope: Vec<String>,
     /// 统计的补充说明（快照降级等）。

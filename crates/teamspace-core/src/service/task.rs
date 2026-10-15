@@ -78,7 +78,9 @@ SELECT t.id, t.key, t.title, t.status, t.blocked_reason, t.updated_at,
        (SELECT COUNT(*) FROM task_file_refs f WHERE f.task_id = t.id),
        (SELECT COUNT(*) FROM task_dependencies d WHERE d.task_id = t.id),
        (SELECT COUNT(*) FROM task_dependencies d JOIN tasks u ON u.id = d.depends_on_id
-         WHERE d.task_id = t.id AND u.status <> 'done')
+         WHERE d.task_id = t.id AND u.status <> 'done'),
+       COALESCE((SELECT x.change_incomplete FROM runs x WHERE x.task_id = t.id
+                 ORDER BY x.attempt DESC LIMIT 1), 0)
 FROM tasks t JOIN roles r ON r.id = t.owner_role_id";
 
 fn summaries(conn: &Connection, filter: &str, param: &str) -> Result<Vec<TaskSummary>> {
@@ -103,6 +105,7 @@ fn summaries(conn: &Connection, filter: &str, param: &str) -> Result<Vec<TaskSum
             file_ref_count: row.get(11)?,
             dependency_count: row.get(12)?,
             open_dependency_count: row.get(13)?,
+            change_incomplete: row.get(14)?,
         })
     })?;
     Ok(rows.collect::<rusqlite::Result<_>>()?)

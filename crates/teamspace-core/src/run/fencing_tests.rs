@@ -373,3 +373,67 @@ fn takeover_requires_the_task_to_still_be_where_the_run_left_it() {
     assert!(s.f.ts.takeover_run(interrupted).unwrap().taken_over);
     assert_eq!(task_status(&s.core, interrupted_task), TaskStatus::Doing);
 }
+
+/// 轻微 #2：结局被 fencing 忽略（执行已被中断）时，迟到的 `finish` 不删除快照；
+/// 真正结束这次执行的 `finish` 才删除。
+#[test]
+fn late_finish_keeps_snapshots_but_a_real_finish_removes_them() {
+    let s = seed(&["running", "running"]);
+    let save = |id: &str| {
+        let path = s.core.snapshot_path(id);
+        snapshot::save(&path, &snapshot::take(&s.f.ws, 10, &[])).unwrap();
+        path
+    };
+
+    let (late_id, _) = &s.runs[0];
+    let late_path = save(late_id);
+    let mut late = driver_for(&s.core, late_id);
+    s.core
+        .write(|tx| interrupt(tx, late_id, "应用退出时执行仍在进行，已中断"))
+        .unwrap();
+    late.finish(End::Succeeded("end_turn".into()));
+    assert!(late_path.is_file(), "被 fencing 忽略的 finish 不应删除快照");
+
+    let (real_id, _) = &s.runs[1];
+    let real_path = save(real_id);
+    let mut real = driver_for(&s.core, real_id);
+    real.finish(End::Succeeded("end_turn".into()));
+    assert_eq!(get_run(&s.core, real_id).status, RunStatus::Succeeded);
+    assert!(!real_path.exists(), "执行结束后应删除快照");
+}
+
+/// 轻微 #6：只保留仍处于已中断的执行的快照，而且最多保留设定的时长。
+#[test]
+fn stale_snapshots_are_discarded_by_status_and_age() {
+    let s = seed(&["interrupted", "succeeded"]);
+    let (interrupted, _) = &s.runs[0];
+    let (finished, _) = &s.runs[1];
+    let snap = |id: &str| {
+        let path = s.core.snapshot_path(id);
+        snapshot::save(&path, &snapshot::take(&s.f.ws, 10, &[])).unwrap();
+        path
+    };
+    let kept = snap(interrupted);
+    let gap = s.core.snapshot_path(&format!("{interrupted}.interrupted"));
+    std::fs::copy(&kept, &gap).unwrap();
+    let ended = snap(finished);
+    let orphan = snap("no-such-run");
+
+    s.core.discard_stale_snapshots(Duration::from_secs(3600));
+    assert!(kept.is_file() && gap.is_file(), "已中断执行的快照要保留");
+    assert!(!ended.exists(), "已结束执行的快照要删除");
+    assert!(!orphan.exists(), "没有对应执行的快照要删除");
+
+    // 超过保留时长的也删除。
+    let old = std::time::SystemTime::now() - Duration::from_secs(7200);
+    for path in [&kept, &gap] {
+        std::fs::File::options()
+            .write(true)
+            .open(path)
+            .unwrap()
+            .set_modified(old)
+            .unwrap();
+    }
+    s.core.discard_stale_snapshots(Duration::from_secs(3600));
+    assert!(!kept.exists() && !gap.exists(), "过期的快照要删除");
+}

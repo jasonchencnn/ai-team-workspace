@@ -388,32 +388,66 @@ fn interrupted_worktree_run_reports_git_changes() {
     assert_eq!(run.changed_files.len(), 2, "{:?}", paths(&run));
 }
 
-/// 快照文件数超过上限时降级：不会误报，也不会崩，并在执行记录里说明统计不完整。
+/// 快照文件数超过上限时降级：先扫本岗位文件夹和任务引用所在的目录，其余只扫靠前的一部分；
+/// 不会误报，也不会崩，执行记录和任务卡都标出「改动统计不完整」。
 #[test]
 fn snapshot_over_the_file_limit_degrades_and_says_so() {
     let e = env(false);
+    // 一大堆无关文件，排在优先目录之后。
+    for i in 0..30 {
+        let dir = e.ws.join("zz");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join(format!("f{i:02}.txt")), "x").unwrap();
+    }
     e.ts.set_run_settings(RunSettings {
-        snapshot_max_entries: 3,
+        snapshot_max_entries: 14,
         idle_timeout: Duration::from_secs(30),
         ..RunSettings::default()
     });
-    // 范围外的 shell 写入排在快照覆盖范围之后（路径 `output.txt` 在 `Teamspace/…` 与 `docs/…` 之后）。
-    let task = e.task("写文件 [mock:shellwrite=zz-output.txt]");
+    // docs/ 是任务引用所在的目录（优先扫描），里面的范围外写入照样发现；
+    // 根目录下靠后的 zzz-late.txt 在覆盖范围之外，不会被发现，也不会被误报成别的。
+    let task = e.task("写文件 [mock:shellwrite=docs/extra.txt]");
     let run = e.ts.start_run(&task.id).unwrap();
     let run = e.wait_end(&run.id);
 
     assert_eq!(run.status, RunStatus::Succeeded, "{run:#?}");
+    assert!(run.change_incomplete);
     let note = run.change_note.clone().expect("降级时必须有说明");
-    assert!(note.contains("快照只覆盖了前 3 个"), "{note}");
+    assert!(note.contains("改动统计不完整"), "{note}");
+    assert!(note.contains("超过 14 个"), "{note}");
     assert!(note.contains("没有统计"), "{note}");
-    // 覆盖范围之后的写入没有被发现（也没有被误报成别的），ACP 报告的过程文件仍然计入。
-    assert!(!has_change(&run, "zz-output.txt", FileChangeKind::Added));
+    assert!(has_change(&run, "docs/extra.txt", FileChangeKind::Added));
+    assert_eq!(run.out_of_scope, vec!["docs/extra.txt".to_owned()]);
+    assert_eq!(
+        e.ts.get_task(&task.id).unwrap().task.status,
+        TaskStatus::Blocked
+    );
+    // 看板上的任务卡也带着「改动统计不完整」。
+    let board =
+        e.ts.get_task_board(TaskBoardQuery {
+            team_id: e.team.id.clone(),
+            include_cancelled: None,
+        })
+        .unwrap();
+    let card = board
+        .columns
+        .iter()
+        .flat_map(|c| &c.tasks)
+        .find(|t| t.id == task.id)
+        .unwrap();
+    assert!(card.change_incomplete);
+
+    // 另一个任务：靠后位置的写入看不到，但执行记录说明了统计不完整；任务照常进入待验收。
+    let late = e.task("写文件 [mock:shellwrite=zzz-late.txt]");
+    let run = e.ts.start_run(&late.id).unwrap();
+    let run = e.wait_end(&run.id);
+    assert_eq!(run.status, RunStatus::Succeeded, "{run:#?}");
+    assert!(run.change_incomplete);
+    assert!(!has_change(&run, "zzz-late.txt", FileChangeKind::Added));
     assert!(run.out_of_scope.is_empty());
-    assert_eq!(run.changed_files.len(), 1, "{:?}", paths(&run));
-    assert!(
-        run.changed_files[0]
-            .path
-            .starts_with("Teamspace/前端/过程文件/mock-")
+    assert_eq!(
+        e.ts.get_task(&late.id).unwrap().task.status,
+        TaskStatus::Review
     );
 }
 
@@ -425,5 +459,236 @@ fn complete_snapshots_leave_no_change_note() {
     let run = e.ts.start_run(&task.id).unwrap();
     let run = e.wait_end(&run.id);
     assert_eq!(run.change_note, None);
+    assert!(!run.change_incomplete);
     assert!(run.out_of_scope.is_empty());
+}
+
+// ------------------------------------------------------------------ 交叉审查 06b 的修复
+
+/// 一般 #1：隐藏文件（如 `.env`）也在检查范围内：shell 写入它算范围外改动。
+#[test]
+fn a_shell_write_to_a_hidden_file_is_checked() {
+    let e = env(false);
+    let task = e.task("改环境变量 [mock:shellwrite=.env]");
+    let run = e.ts.start_run(&task.id).unwrap();
+    let run = e.wait_end(&run.id);
+    assert_eq!(run.status, RunStatus::Succeeded, "{run:#?}");
+    assert!(has_change(&run, ".env", FileChangeKind::Added));
+    assert_eq!(run.out_of_scope, vec![".env".to_owned()]);
+    assert_eq!(
+        e.ts.get_task(&task.id).unwrap().task.status,
+        TaskStatus::Blocked
+    );
+}
+
+/// 一般 #1：`.git`、`node_modules` 等目录不检查（界面也这么写），里面的写入不算改动。
+#[test]
+fn writes_into_skipped_directories_are_not_checked() {
+    let e = env(false);
+    for rel in [
+        "node_modules/pkg/index.js",
+        "dist/bundle.js",
+        ".git/hooks-note",
+    ] {
+        let task = e.task(&format!("写 {rel} [mock:shellwrite={rel}]"));
+        let run = e.ts.start_run(&task.id).unwrap();
+        let run = e.wait_end(&run.id);
+        assert_eq!(run.status, RunStatus::Succeeded, "{rel}: {run:#?}");
+        assert!(run.out_of_scope.is_empty(), "{rel}");
+        assert!(!run.changed_files.iter().any(|f| f.path == rel), "{rel}");
+        assert_eq!(
+            e.ts.get_task(&task.id).unwrap().task.status,
+            TaskStatus::Review
+        );
+    }
+}
+
+/// 一般 #4：本岗位的岗位说明由 Teamspace 维护，不算改动；别的岗位的同名文件按普通文件处理。
+#[test]
+fn only_the_own_role_brief_is_exempt_other_roles_are_ordinary_files() {
+    let e = env(false);
+    let own = e.task("改本岗位说明 [mock:shellwrite=Teamspace/前端/岗位说明.md]");
+    let run = e.ts.start_run(&own.id).unwrap();
+    let run = e.wait_end(&run.id);
+    assert!(run.out_of_scope.is_empty(), "{:?}", run.out_of_scope);
+    assert!(
+        !run.changed_files
+            .iter()
+            .any(|f| f.path == "Teamspace/前端/岗位说明.md")
+    );
+
+    let other = e.task("改别的岗位 [mock:shellwrite=Teamspace/测试/岗位说明.md]");
+    let run = e.ts.start_run(&other.id).unwrap();
+    let run = e.wait_end(&run.id);
+    assert_eq!(
+        run.out_of_scope,
+        vec!["Teamspace/测试/岗位说明.md".to_owned()]
+    );
+    assert_eq!(
+        e.ts.get_task(&other.id).unwrap().task.status,
+        TaskStatus::Blocked
+    );
+
+    let fake = e.task("编造岗位 [mock:shellwrite=Teamspace/编造/工作日志.md]");
+    let run = e.ts.start_run(&fake.id).unwrap();
+    let run = e.wait_end(&run.id);
+    assert_eq!(
+        run.out_of_scope,
+        vec!["Teamspace/编造/工作日志.md".to_owned()]
+    );
+}
+
+/// 一般 #5：被删除的文件，只有 Human 允许过针对该路径的删除才算范围内；
+/// 任务引用文件里的文件也一样（允许编辑不等于允许删除）。
+#[test]
+fn deleting_a_file_needs_an_approved_delete() {
+    let e = env(false);
+    std::fs::write(e.ws.join("docs/other.md"), "keep me").unwrap();
+    std::fs::write(e.ws.join("docs/third.md"), "keep me too").unwrap();
+
+    // shell 直接删除任务引用文件：没有批准，算范围外。
+    let task = e.task("删规格 [mock:shellrm=docs/spec.md]");
+    let run = e.ts.start_run(&task.id).unwrap();
+    let run = e.wait_end(&run.id);
+    assert_eq!(run.status, RunStatus::Succeeded, "{run:#?}");
+    assert!(has_change(&run, "docs/spec.md", FileChangeKind::Deleted));
+    assert_eq!(run.out_of_scope, vec!["docs/spec.md".to_owned()]);
+    assert_eq!(
+        e.ts.get_task(&task.id).unwrap().task.status,
+        TaskStatus::Blocked
+    );
+
+    std::fs::write(e.ws.join("docs/spec.md"), "# 规格\n").unwrap();
+
+    // Human 允许了针对该路径的删除：范围内。
+    let task = e.task("删文件 [mock:rmgrant=docs/other.md]");
+    let run = e.ts.start_run(&task.id).unwrap();
+    let waiting = e.wait(&run.id, "waiting_permission", |r| {
+        r.status == RunStatus::WaitingPermission
+    });
+    let prompt = waiting.pending_permission.unwrap();
+    assert_eq!(prompt.tool_kind.as_deref(), Some("delete"));
+    e.respond(&run, &prompt, "allow");
+    let run = e.wait_end(&run.id);
+    assert_eq!(run.status, RunStatus::Succeeded, "{run:#?}");
+    assert!(!e.ws.join("docs/other.md").exists());
+    assert!(has_change(&run, "docs/other.md", FileChangeKind::Deleted));
+    assert!(run.out_of_scope.is_empty(), "{:?}", run.out_of_scope);
+    assert_eq!(
+        e.ts.get_task(&task.id).unwrap().task.status,
+        TaskStatus::Review
+    );
+
+    // Human 拒绝：文件还在，没有改动。
+    let task = e.task("删文件被拒 [mock:rmgrant=docs/third.md]");
+    let run = e.ts.start_run(&task.id).unwrap();
+    let waiting = e.wait(&run.id, "waiting_permission", |r| {
+        r.status == RunStatus::WaitingPermission
+    });
+    let prompt = waiting.pending_permission.unwrap();
+    e.respond(&run, &prompt, "reject");
+    let run = e.wait_end(&run.id);
+    assert!(e.ws.join("docs/third.md").is_file());
+    assert!(!has_change(&run, "docs/third.md", FileChangeKind::Deleted));
+    assert!(run.out_of_scope.is_empty());
+}
+
+/// 一般 #3：续接时，中断到续接之间别人（Human）改的文件不算本次执行的，也不判范围外，
+/// 只在统计说明里写明；中断前 Agent 自己写的文件仍然计入。
+#[test]
+fn resume_does_not_blame_the_agent_for_changes_made_while_interrupted() {
+    let e = env(false);
+    let note = "Teamspace/前端/过程文件/before-interrupt.md";
+    let task = e.task(&format!("写完等着 [mock:shellwrite={note}] [mock:linger]"));
+    let run = e.ts.start_run(&task.id).unwrap();
+    e.wait(&run.id, "linger message", |_| {
+        e.updates(&run.id).iter().any(|u| {
+            matches!(&u.body, RunUpdateBody::Message { text, .. } if text.contains("步骤已处理完"))
+        })
+    });
+    e.ts.shutdown();
+    let interrupted = e.wait(&run.id, "interrupted", |r| {
+        r.status == RunStatus::Interrupted
+    });
+    assert!(has_change(&interrupted, note, FileChangeKind::Added));
+    assert!(
+        e.dir
+            .path()
+            .join(format!("data/run-snapshots/{}.interrupted.json", run.id))
+            .is_file(),
+        "中断时的快照要存下来"
+    );
+
+    // 中断期间 Human 在范围外手动改了文件。
+    std::fs::write(e.ws.join("cleanup-notes.txt"), "by human").unwrap();
+    e.ts.resume_run(&run.id).unwrap();
+    let run = e.wait_end(&run.id);
+    assert_eq!(run.status, RunStatus::Succeeded, "{run:#?}");
+    assert!(
+        has_change(&run, note, FileChangeKind::Added),
+        "{:?}",
+        paths(&run)
+    );
+    assert!(!has_change(
+        &run,
+        "cleanup-notes.txt",
+        FileChangeKind::Added
+    ));
+    assert!(run.out_of_scope.is_empty(), "{:?}", run.out_of_scope);
+    let change_note = run.change_note.clone().expect("要写明间隙里的改动");
+    assert!(
+        change_note.contains("中断到续接期间另有 1 个文件被改动"),
+        "{change_note}"
+    );
+    assert!(change_note.contains("cleanup-notes.txt"), "{change_note}");
+    assert_eq!(
+        e.ts.get_task(&task.id).unwrap().task.status,
+        TaskStatus::Review
+    );
+}
+
+/// 一般 #3 的另一面：没有中断时的快照时无法分清，宁可保守——按现状计入，并在说明里写明。
+#[test]
+fn resume_without_the_interrupt_snapshot_says_it_cannot_tell() {
+    let e = env(false);
+    let task = e.task("写完等着 [mock:shellwrite=Teamspace/前端/过程文件/a.md] [mock:linger]");
+    let run = e.ts.start_run(&task.id).unwrap();
+    e.wait(&run.id, "linger message", |_| {
+        e.updates(&run.id).iter().any(|u| {
+            matches!(&u.body, RunUpdateBody::Message { text, .. } if text.contains("步骤已处理完"))
+        })
+    });
+    e.ts.shutdown();
+    e.wait(&run.id, "interrupted", |r| {
+        r.status == RunStatus::Interrupted
+    });
+    std::fs::remove_file(
+        e.dir
+            .path()
+            .join(format!("data/run-snapshots/{}.interrupted.json", run.id)),
+    )
+    .unwrap();
+    std::fs::write(e.ws.join("cleanup-notes.txt"), "by human").unwrap();
+    e.ts.resume_run(&run.id).unwrap();
+    let run = e.wait_end(&run.id);
+    let change_note = run.change_note.clone().unwrap_or_default();
+    assert!(change_note.contains("没有中断时的快照"), "{change_note}");
+    assert_eq!(run.out_of_scope, vec!["cleanup-notes.txt".to_owned()]);
+}
+
+/// 一般 #7：快照存不下来时，改动统计说明里写明，界面看得到；本次执行仍然照常比对。
+#[test]
+fn a_snapshot_that_cannot_be_saved_is_reported_in_the_change_note() {
+    let e = env(false);
+    // 让保存快照的目录位置被一个普通文件占住。
+    std::fs::write(e.dir.path().join("data/run-snapshots"), "not a directory").unwrap();
+    let task = e.task("写文件 [mock:shellwrite=output.txt]");
+    let run = e.ts.start_run(&task.id).unwrap();
+    let run = e.wait_end(&run.id);
+    assert_eq!(run.status, RunStatus::Succeeded, "{run:#?}");
+    let note = run.change_note.clone().expect("保存失败必须在说明里写明");
+    assert!(note.contains("执行前的快照没有保存成功"), "{note}");
+    // 内存里的基线仍然有效：范围外改动照样发现。
+    assert_eq!(run.out_of_scope, vec!["output.txt".to_owned()]);
+    assert!(!run.change_incomplete);
 }
