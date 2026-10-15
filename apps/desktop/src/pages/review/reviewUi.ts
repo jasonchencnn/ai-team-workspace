@@ -121,3 +121,15 @@ export function mergeCommand(baseBranch: string | null, branch: string | null): 
   const merge = `git merge --no-ff ${branch}`;
   return baseBranch === null ? merge : `git switch ${baseBranch} && ${merge}`;
 }
+
+/** 合并 / 标记完成后自动转 READY 的下游任务。后端字段（`advancedTasks`）合入前恒为空；合入后只需改这里。 */
+export interface AdvancedTask {
+  id: string;
+  key: string;
+  title: string;
+}
+
+export function advancedTasksOf(result: object): AdvancedTask[] {
+  const value = (result as { advancedTasks?: unknown }).advancedTasks;
+  return Array.isArray(value) ? (value as AdvancedTask[]) : [];
+}

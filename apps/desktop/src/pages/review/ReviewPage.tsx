@@ -32,7 +32,7 @@ import type { ReviewView } from "../../bindings/ReviewView.js";
 import { fileChangeLabel, fileChangeTone } from "../task-detail/run/runUi.js";
 import { formatTime } from "../tasks/taskUi.js";
 import { DiffCard } from "./DiffCard.js";
-import { formatCount, mergeCommand, reviewActionState } from "./reviewUi.js";
+import { advancedTasksOf, formatCount, mergeCommand, reviewActionState } from "./reviewUi.js";
 import "./review.css";
 
 /** 评审意见的上限（与后端一致，仅用于输入框限制，校验以后端为准）。 */
@@ -679,6 +679,11 @@ function ProblemList({ problems }: { problems: string[] }) {
 
 /** 通过 / 恢复之后的结果提示条（不用弹窗，D22）。下游自动就绪的任务由后端提供后再显示。 */
 function ResultBanner({ result }: { result: ApproveReviewResult }) {
+  const advanced = advancedTasksOf(result);
+  const downstream =
+    advanced.length === 0 ? null : (
+      <p>下游已自动就绪：{advanced.map((item) => `${item.key} ${item.title}`).join("、")}</p>
+    );
   const commit = result.mergedCommit === null ? null : result.mergedCommit.slice(0, 7);
   switch (result.outcome) {
     case "merged":
@@ -690,6 +695,7 @@ function ResultBanner({ result }: { result: ApproveReviewResult }) {
               {result.task.key} 已合并到 {result.run.baseBranch ?? "基线分支"}
               {commit === null ? "" : `，合并提交 ${commit}`}，任务已完成。
             </p>
+            {downstream}
             {result.cleanupProblem === null ? null : (
               <p className="review__warn">清理执行目录或分支时遇到问题：{result.cleanupProblem}</p>
             )}
