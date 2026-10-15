@@ -9,21 +9,24 @@ import {
   EmptyState,
   ErrorBanner,
   PageHeader,
+  Panel,
   SelectField,
   Spinner,
   Tag,
 } from "../../components/index.js";
-import type { EventKind } from "../../bindings/EventKind.js";
 import type { EventQuery } from "../../bindings/EventQuery.js";
 import type { TaskSummary } from "../../bindings/TaskSummary.js";
-import { formatTime } from "../tasks/taskUi.js";
 import {
   ACTOR_LABELS,
   EVENT_KINDS,
   KIND_LABELS,
   TIME_RANGES,
+  formatEventTime,
+  kindsTriggerLabel,
+  parseKinds,
   parseRange,
   rangeBounds,
+  serializeKinds,
 } from "./activityUi.js";
 import "./activity.css";
 
@@ -38,58 +41,8 @@ const KIND_PARAM = "kind";
 /** 任务下拉的数据来自任务面板接口，避免另开一个接口只为填下拉框。 */
 const INCLUDE_CANCELLED = true;
 
-function EventRow({
-  event,
-  teamId,
-  tasks,
-  roles,
-}: {
-  event: {
-    id: string;
-    kind: EventKind;
-    actor: string;
-    summary: string;
-    createdAt: string;
-    taskId: string | null;
-    roleId: string | null;
-  };
-  teamId: string;
-  tasks: Map<string, TaskSummary>;
-  roles: Map<string, string>;
-}) {
-  const task = event.taskId === null ? undefined : tasks.get(event.taskId);
-  const roleName = event.roleId === null ? undefined : roles.get(event.roleId);
-  return (
-    <li className="act-event">
-      <div className="act-event__head">
-        <time className="act-event__time" dateTime={event.createdAt}>
-          {formatTime(event.createdAt)}
-        </time>
-        <Tag tone={event.actor === "system" ? "info" : "neutral"}>{KIND_LABELS[event.kind]}</Tag>
-      </div>
-      <p className="act-event__actor">操作者：{ACTOR_LABELS[event.actor] ?? event.actor}</p>
-      <p className="act-event__summary">{event.summary}</p>
-      {task === undefined && roleName === undefined ? null : (
-        <p className="act-event__links">
-          {task === undefined ? null : (
-            <Link className="act-event__link" to={`/teams/${teamId}/tasks/${task.id}`}>
-              关联任务 {task.key} {task.title}
-            </Link>
-          )}
-          {task === undefined || roleName === undefined ? null : <span aria-hidden="true">·</span>}
-          {roleName === undefined ? null : (
-            <Link
-              className="act-event__link"
-              to={`/teams/${teamId}/roles/${event.roleId ?? ""}/workbench`}
-            >
-              关联岗位 {roleName}
-            </Link>
-          )}
-        </p>
-      )}
-    </li>
-  );
-}
+/** 没有关联对象时表格里显示的占位。 */
+const DASH = "—";
 
 export function ActivityPage() {
   const { teamId = "" } = useParams();
@@ -97,7 +50,7 @@ export function ActivityPage() {
 
   const taskId = params.get(TASK_PARAM) ?? "";
   const roleId = params.get(ROLE_PARAM) ?? "";
-  const kindParam = params.get(KIND_PARAM) ?? "";
+  const kinds = parseKinds(params.get(KIND_PARAM));
   const range = parseRange(params.get(RANGE_PARAM));
 
   // 筛选条件全部存在地址栏：刷新、复制链接、从任务详情跳回来都能保持一致。
@@ -111,16 +64,21 @@ export function ActivityPage() {
     // 用 replace：调整筛选不应该在历史里堆一串记录，但当前地址栏仍是筛选后的状态。
     setParams(next, { replace: true });
   };
+  const clearAll = () => {
+    setParams(new URLSearchParams(), { replace: true });
+  };
+  const hasFilters = taskId !== "" || roleId !== "" || kinds.length > 0 || range !== "all";
 
-  const kinds = EVENT_KINDS.includes(kindParam as EventKind) ? [kindParam as EventKind] : undefined;
   // 零点对齐的时间条件在会话内是常量，据此组成的查询 key 不会每次渲染都变。
   const bounds = useMemo(() => rangeBounds(range, new Date()), [range]);
+  // 列表里的「今天 / 昨天」也要一个稳定的参照时间。
+  const clock = useMemo(() => new Date(), []);
 
   const filterQuery: EventQuery = {
     teamId,
     taskId: taskId === "" ? null : taskId,
     roleId: roleId === "" ? null : roleId,
-    kinds: kinds ?? null,
+    kinds: kinds.length === 0 ? null : kinds,
     since: bounds?.since ?? null,
     until: bounds?.until ?? null,
   };
@@ -161,92 +119,96 @@ export function ActivityPage() {
     }
     return map;
   }, [roleViews.data]);
-
-  // 任务或岗位下拉读不到时只影响名称显示，不影响列表本身。
   const taskOptions = useMemo(
     () => [...tasks.values()].sort((a, b) => a.key.localeCompare(b.key, "zh-CN")),
     [tasks],
   );
-  const filtered = events.data?.pages.flatMap((page) => page.events) ?? [];
-  const hasFilters = taskId !== "" || roleId !== "" || kindParam !== "" || range !== "all";
 
   const header = (
     <PageHeader
       title="活动与审计"
-      description="系统事实与可回放的操作记录；不保存 Harness 完整私有对话。"
+      description="系统事实与可回放的操作记录，只追加不修改；不保存 Harness 的完整私有对话。"
     />
   );
 
   const toolbar = (
-    <div className="act-toolbar">
-      <SelectField
-        label="任务"
-        value={taskId}
-        onChange={(event) => {
-          update(TASK_PARAM, event.target.value);
-        }}
-      >
-        <option value="">全部任务</option>
-        {taskOptions.map((task) => (
-          <option key={task.id} value={task.id}>
-            {task.key} {task.title}
-          </option>
-        ))}
-      </SelectField>
-      <SelectField
-        label="岗位"
-        value={roleId}
-        onChange={(event) => {
-          update(ROLE_PARAM, event.target.value);
-        }}
-      >
-        <option value="">全部岗位</option>
-        {(roleViews.data ?? []).map((view) => (
-          <option key={view.role.id} value={view.role.id}>
-            {view.role.name}
-          </option>
-        ))}
-      </SelectField>
-      <SelectField
-        label="时间范围"
-        value={range}
-        onChange={(event) => {
-          // 「全部」是默认值，选回它时删掉参数而不是写 range=all，保持地址栏干净。
-          const value = event.target.value;
-          update(RANGE_PARAM, value === "all" ? "" : value);
-        }}
-      >
-        {TIME_RANGES.map((entry) => (
-          <option key={entry.value} value={entry.value}>
-            {entry.label}
-          </option>
-        ))}
-      </SelectField>
-      <SelectField
-        label="活动种类"
-        value={kindParam}
-        onChange={(event) => {
-          update(KIND_PARAM, event.target.value);
-        }}
-      >
-        <option value="">全部种类</option>
-        {EVENT_KINDS.map((value) => (
-          <option key={value} value={value}>
-            {KIND_LABELS[value]}
-          </option>
-        ))}
-      </SelectField>
-      {hasFilters ? (
-        <Button
-          variant="neutral"
-          onClick={() => {
-            setParams(new URLSearchParams(), { replace: true });
+    <Panel className="act-filters">
+      <div className="act-filters__row">
+        <SelectField
+          label="任务"
+          value={taskId}
+          onChange={(event) => {
+            update(TASK_PARAM, event.target.value);
           }}
         >
-          清除筛选
-        </Button>
-      ) : null}
-    </div>
+          <option value="">全部任务</option>
+          {taskOptions.map((task) => (
+            <option key={task.id} value={task.id}>
+              {task.key} {task.title}
+            </option>
+          ))}
+        </SelectField>
+        <SelectField
+          label="岗位"
+          value={roleId}
+          onChange={(event) => {
+            update(ROLE_PARAM, event.target.value);
+          }}
+        >
+          <option value="">全部岗位</option>
+          {(roleViews.data ?? []).map((view) => (
+            <option key={view.role.id} value={view.role.id}>
+              {view.role.name}
+            </option>
+          ))}
+        </SelectField>
+        <div className="act-segment" role="group" aria-label="时间范围">
+          {TIME_RANGES.map((entry) => (
+            <Button
+              key={entry.value}
+              variant={range === entry.value ? "primary" : "neutral"}
+              aria-pressed={range === entry.value}
+              onClick={() => {
+                // 「全部」是默认值，选回它时删掉参数而不是写 range=all，保持地址栏干净。
+                update(RANGE_PARAM, entry.value === "all" ? "" : entry.value);
+              }}
+            >
+              {entry.label}
+            </Button>
+          ))}
+        </div>
+        {/* 原生 details 做多选：展开与收起不需要脚本，键盘也能用。 */}
+        <details className="act-multi">
+          <summary className="act-multi__trigger">{kindsTriggerLabel(kinds)}</summary>
+          <div className="act-multi__panel" role="group" aria-label="活动种类">
+            {EVENT_KINDS.map((kind) => (
+              <label key={kind} className="act-multi__option">
+                <input
+                  type="checkbox"
+                  checked={kinds.includes(kind)}
+                  onChange={(event) => {
+                    const next = event.target.checked
+                      ? [...kinds, kind]
+                      : kinds.filter((value) => value !== kind);
+                    update(KIND_PARAM, serializeKinds(next) ?? "");
+                  }}
+                />
+                <span>{KIND_LABELS[kind]}</span>
+              </label>
+            ))}
+          </div>
+        </details>
+        {hasFilters ? (
+          <Button variant="subtle" onClick={clearAll}>
+            清除筛选
+          </Button>
+        ) : null}
+      </div>
+      <p className="act-filters__note">
+        筛选条件写进地址栏，刷新或返回后保留。时间按本地时区显示；「今天」「近 7 天」「近 30
+        天」按本地时间换算。
+      </p>
+    </Panel>
   );
 
   if (events.isPending) {
@@ -277,26 +239,23 @@ export function ActivityPage() {
     );
   }
 
+  const rows = events.data.pages.flatMap((page) => page.events);
+
   return (
     <>
       {header}
       {toolbar}
-      {filtered.length === 0 ? (
+      {rows.length === 0 ? (
         <EmptyState
-          title={hasFilters ? "当前筛选下没有活动记录" : "还没有活动记录"}
+          title="没有符合条件的活动"
           description={
             hasFilters
-              ? "换一个任务、岗位或时间范围，或清除筛选查看全部记录。"
+              ? "换一个任务、岗位、时间范围或活动种类再看看。"
               : "创建任务、调整任务状态或绑定 Harness 之后，这里会留下可回放的操作记录。"
           }
           action={
             hasFilters ? (
-              <Button
-                variant="neutral"
-                onClick={() => {
-                  setParams(new URLSearchParams(), { replace: true });
-                }}
-              >
+              <Button variant="neutral" onClick={clearAll}>
                 清除筛选
               </Button>
             ) : undefined
@@ -304,12 +263,69 @@ export function ActivityPage() {
         />
       ) : (
         <>
-          <ul className="act-list">
-            {filtered.map((event) => (
-              <EventRow key={event.id} event={event} teamId={teamId} tasks={tasks} roles={roles} />
-            ))}
-          </ul>
+          <div className="act-table-wrap">
+            <table className="act-table">
+              <thead>
+                <tr>
+                  <th scope="col">时间</th>
+                  <th scope="col">操作者</th>
+                  <th scope="col">摘要</th>
+                  <th scope="col">关联任务</th>
+                  <th scope="col">关联岗位</th>
+                </tr>
+              </thead>
+              <tbody>
+                {rows.map((event) => {
+                  const task = event.taskId === null ? undefined : tasks.get(event.taskId);
+                  const roleName = event.roleId === null ? undefined : roles.get(event.roleId);
+                  return (
+                    <tr key={event.id}>
+                      <td className="act-table__time">
+                        <time dateTime={event.createdAt}>
+                          {formatEventTime(event.createdAt, clock)}
+                        </time>
+                      </td>
+                      <td className="act-table__actor">
+                        {ACTOR_LABELS[event.actor] ?? event.actor}
+                      </td>
+                      <td className="act-table__summary">
+                        <span className="act-table__text">{event.summary}</span>
+                        <Tag tone={event.actor === "system" ? "info" : "neutral"}>
+                          {KIND_LABELS[event.kind]}
+                        </Tag>
+                      </td>
+                      <td>
+                        {task === undefined ? (
+                          DASH
+                        ) : (
+                          <Link
+                            className="act-table__link"
+                            to={`/teams/${teamId}/tasks/${task.id}`}
+                          >
+                            {task.key}
+                          </Link>
+                        )}
+                      </td>
+                      <td>
+                        {event.roleId === null || roleName === undefined ? (
+                          DASH
+                        ) : (
+                          <Link
+                            className="act-table__link"
+                            to={`/teams/${teamId}/roles/${event.roleId}/workbench`}
+                          >
+                            {roleName}
+                          </Link>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
           <div className="act-more">
+            <p className="act-note">已显示 {String(rows.length)} 条，按时间从新到旧</p>
             {events.hasNextPage ? (
               <Button
                 variant="neutral"
@@ -319,9 +335,7 @@ export function ActivityPage() {
               >
                 加载更多
               </Button>
-            ) : (
-              <p className="act-note">没有更早的记录了。</p>
-            )}
+            ) : null}
           </div>
         </>
       )}

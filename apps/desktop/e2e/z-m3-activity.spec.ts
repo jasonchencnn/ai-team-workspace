@@ -45,9 +45,32 @@ async function choose(page: Page, label: string, optionLabel: string): Promise<v
   await page.getByLabel(label, { exact: true }).selectOption({ label: optionLabel });
 }
 
+/**
+ * 勾选或取消多选框里的活动种类。
+ *
+ * 勾选状态是地址栏回写的：点一下先改 URL，React 随后才把新的 kinds 渲染成勾选状态，
+ * 所以这里点完等它落定，不用 Playwright 的 check()（它会立刻断言状态，撞上这个间隙）。
+ */
+async function tickKind(page: Page, kindLabel: string): Promise<void> {
+  // 触发器是原生 details 的 summary；复选框在收起的面板里，先展开再操作。
+  const open = await page.locator(".act-multi").evaluate((el) => (el as HTMLDetailsElement).open);
+  if (!open) {
+    await page.locator(".act-multi__trigger").click();
+  }
+  const box = page.getByRole("checkbox", { name: kindLabel, exact: true });
+  const before = await box.isChecked();
+  await box.click();
+  await expect(box).toBeChecked({ checked: !before });
+}
+
+/** 时间范围是分段按钮，不是下拉。 */
+async function chooseRange(page: Page, label: string): Promise<void> {
+  await page.getByRole("group", { name: "时间范围" }).getByRole("button", { name: label }).click();
+}
+
 /** 记录行的摘要文字。 */
 function summary(page: Page, text: string | RegExp) {
-  return page.locator(".act-event__summary", { hasText: text });
+  return page.locator(".act-table__text", { hasText: text });
 }
 
 test("ACT-001 建团队、两个岗位各建一个任务并改一次状态", async ({ page }) => {
@@ -77,7 +100,7 @@ test("ACT-002 不带筛选时列出两个任务的记录，时间倒序", async 
   await expect(summary(page, `创建任务 ${taskBe.key}`)).toHaveCount(1);
   await expect(summary(page, `${taskFe.key} 状态 TODO → READY`)).toHaveCount(1);
   // 时间倒序：最早的是建团队，最新的是刚才那次状态变化。
-  await expect(page.locator(".act-event").first()).toContainText("状态 TODO → READY");
+  await expect(page.locator(".act-table tbody tr").first()).toContainText("状态 TODO → READY");
   // 侧边栏入口在，且高亮的是活动与审计。
   await expect(page.locator(".sidebar__nav .nav-item--active")).toHaveText("活动与审计");
 });
@@ -117,55 +140,126 @@ test("ACT-005 任务与岗位同时筛选时取交集", async ({ page }) => {
 
   // 换成不匹配的岗位：交集为空。
   await gotoActivity(page, `?task=${taskFe.id}&role=${roleBe}`);
-  await expect(page.locator(".act-event")).toHaveCount(0);
-  await expect(page.getByText("当前筛选下没有活动记录")).toBeVisible();
+  await expect(page.locator(".act-table tbody tr")).toHaveCount(0);
+  await expect(page.getByText("没有符合条件的活动")).toBeVisible();
 });
 
-test("ACT-006 按活动种类筛选", async ({ page }) => {
+test("ACT-006 活动种类可多选，并写进地址栏", async ({ page }) => {
   await gotoActivity(page);
-  await choose(page, "活动种类", "任务状态变化");
-  await expect(page.locator(".act-event")).toHaveCount(1);
-  await expect(summary(page, `${taskFe.key} 状态 TODO → READY`)).toHaveCount(1);
+  // 未选时触发器显示默认文案。
+  await expect(page.locator(".act-multi__trigger")).toHaveText("全部种类（可多选）");
 
-  await choose(page, "活动种类", "创建任务");
-  await expect(page.locator(".act-event")).toHaveCount(2);
-  await expect(summary(page, `${taskFe.key} 状态 TODO → READY`)).toHaveCount(0);
-
-  // 清除筛选回到全部。
-  await page.getByRole("button", { name: "清除筛选" }).click();
-  await expect(page).not.toHaveURL(/kind=/);
+  await tickKind(page, "任务状态变化");
+  await expect(page.locator(".act-table tbody tr")).toHaveCount(1);
   await expect(summary(page, `${taskFe.key} 状态 TODO → READY`)).toHaveCount(1);
+  await expect(page.locator(".act-multi__trigger")).toHaveText("已选 1 种");
+  await expect(page).toHaveURL(/kind=task_status_changed/);
+
+  // 再选一种：两个种类取并集。
+  await tickKind(page, "创建任务");
+  await expect(page.locator(".act-table tbody tr")).toHaveCount(3);
+  await expect(page.locator(".act-multi__trigger")).toHaveText("已选 2 种");
+  // 逗号在地址栏里是转义后的 %2C，两种写法都接受。
+  await expect(page).toHaveURL(/kind=task_created(%2C|,)task_status_changed/);
+  await expect(summary(page, `创建任务 ${taskBe.key}`)).toHaveCount(1);
+
+  // 取消一个回到只剩另一种。
+  await tickKind(page, "任务状态变化");
+  await expect(page.locator(".act-table tbody tr")).toHaveCount(2);
+  await expect(page).toHaveURL(/kind=task_created$/);
+
+  // 刷新后多选状态仍在。
+  await page.reload();
+  await expect(page.locator(".act-multi__trigger")).toHaveText("已选 1 种");
+  await expect(page.locator(".act-table tbody tr")).toHaveCount(2);
 });
 
-test("ACT-007 记录里的关联任务可跳到任务详情，关联岗位可跳到岗位工作台", async ({ page }) => {
+test("ACT-007 筛选栏的「清除筛选」一次清掉全部条件", async ({ page }) => {
+  await gotoActivity(page);
+  // 没有筛选时不显示清除按钮。
+  await expect(page.getByRole("button", { name: "清除筛选" })).toHaveCount(0);
+
+  await choose(page, "任务", `${taskFe.key} ${T_FE}`);
+  await tickKind(page, "创建任务");
+  await chooseRange(page, "今天");
+  await expect(page.locator(".act-table tbody tr")).toHaveCount(1);
+  await expect(page).toHaveURL(/task=/);
+
+  await page.getByRole("button", { name: "清除筛选" }).click();
+  await expect(page).not.toHaveURL(/task=|kind=|range=/);
+  await expect(page.locator(".act-multi__trigger")).toHaveText("全部种类（可多选）");
+  await expect(page.locator(".act-table tbody tr")).toHaveCount(4);
+
+  // 空结果时清除按钮也在 EmptyState 里。
+  await gotoActivity(page, `?task=${taskFe.id}&role=${roleBe}`);
+  await expect(page.getByText("没有符合条件的活动")).toBeVisible();
+  await page.getByRole("button", { name: "清除筛选" }).last().click();
+  await expect(page.locator(".act-table tbody tr")).toHaveCount(4);
+});
+
+test("ACT-008 记录里的关联任务可跳到任务详情，关联岗位可跳到岗位工作台", async ({ page }) => {
   await gotoActivity(page, `?task=${taskFe.id}`);
   await page
-    .locator(".act-event__link", { hasText: `关联任务 ${taskFe.key}` })
+    .locator(".act-table__link", { hasText: new RegExp(`^${taskFe.key}$`) })
     .first()
     .click();
   await expect(page.getByRole("heading", { level: 1, name: T_FE })).toBeVisible();
 
   await gotoActivity(page, `?role=${roleBe}`);
-  await page
-    .locator(".act-event__link", { hasText: `关联岗位 ${ROLE_BE}` })
-    .first()
-    .click();
+  await page.locator(".act-table__link", { hasText: ROLE_BE }).first().click();
   await expect(page.getByRole("heading", { level: 1, name: ROLE_BE })).toBeVisible();
 });
 
-test("ACT-008 时间范围为今天时包含刚写入的记录", async ({ page }) => {
+test("ACT-009 表格按时间倒序并给出已显示条数", async ({ page }) => {
   await gotoActivity(page);
-  await choose(page, "时间范围", "今天");
+  const rows = page.locator(".act-table tbody tr");
+  await expect(rows).toHaveCount(4);
+  await expect(page.getByText("已显示 4 条，按时间从新到旧")).toBeVisible();
+  // 表头五列，与画板一致。
+  await expect(page.locator(".act-table thead th")).toHaveText([
+    "时间",
+    "操作者",
+    "摘要",
+    "关联任务",
+    "关联岗位",
+  ]);
+  // 第一行是最新那条，第二行是建团队那条（最早）。
+  await expect(rows.first()).toContainText("状态 TODO → READY");
+  await expect(rows.last()).toContainText("创建团队");
+  // 时间按本地时区显示，当天的记「今天」。
+  await expect(rows.first().locator(".act-table__time")).toContainText("今天 ");
+  // 操作者：人操作记「你」。
+  await expect(rows.last().locator(".act-table__actor")).toHaveText("你");
+  // 没有关联对象的行显示占位而不是空白。
+  await expect(rows.last().locator("td").nth(3)).toHaveText("—");
+});
+
+test("ACT-010 时间范围为今天时包含刚写入的记录", async ({ page }) => {
+  await gotoActivity(page);
+  await chooseRange(page, "今天");
   await expect(summary(page, `${taskFe.key} 状态 TODO → READY`)).toHaveCount(1);
   await expect(page).toHaveURL(/range=today/);
+  await expect(page.getByRole("button", { name: "今天" })).toHaveAttribute("aria-pressed", "true");
 
   await gotoActivity(page);
-  await choose(page, "时间范围", "全部");
+  await chooseRange(page, "全部");
   await expect(page).not.toHaveURL(/range=/);
   await expect(summary(page, `${taskFe.key} 状态 TODO → READY`)).toHaveCount(1);
 });
 
-test("ACT-009 任务详情的「查看全部活动」带着任务筛选跳到本页", async ({ page }) => {
+test("ACT-011 侧边栏里「活动与审计」在「岗位与绑定」之后、「待我处理」之前", async ({ page }) => {
+  await gotoActivity(page);
+  await expect(page.locator(".sidebar__nav .nav-item")).toHaveText([
+    "团队空间",
+    "任务面板",
+    "共享文件M3 提供",
+    "岗位与绑定",
+    "活动与审计",
+    "待我处理M5 提供",
+  ]);
+});
+
+test("ACT-012 任务详情的「查看全部活动」带着任务筛选跳到本页", async ({ page }) => {
   await openTask(page, taskFe);
   await page.getByRole("link", { name: "查看全部活动" }).click();
   await expect(page.getByRole("heading", { level: 1, name: "活动与审计" })).toBeVisible();

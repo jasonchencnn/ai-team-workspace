@@ -24,9 +24,9 @@ const NAV_ENTRIES: NavEntry[] = [
   // 岗位工作台在 /roles 之下，但按 Figma 属于「团队空间」，
   // 因此这里必须 end 精确匹配，不能让前缀匹配把工作台也点亮。
   { label: "岗位与绑定", to: "/roles", end: true },
-  { label: "待我处理", note: "M5 提供" },
-  // 活动与审计是跨任务、跨岗位的只读记录页，放在日常操作区之后。
+  // 活动与审计按 D22 放在「岗位与绑定」之后、「待我处理」之前。
   { label: "活动与审计", to: "/activity", end: true },
+  { label: "待我处理", note: "M5 提供" },
 ];
 
 function DisabledItem({ id, label, note }: { id: string; label: string; note: string }) {
