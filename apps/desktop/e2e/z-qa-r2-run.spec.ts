@@ -259,7 +259,7 @@ test("RUN-PRE-005 前置依赖任务未完成：按钮禁用，提示依赖任�
   ).toBeVisible();
 });
 
-test("RUN-PRE-006 引用文件在工作区中不存在：标签「文件不存在」，按钮禁用，提示含路径", async ({
+test("RUN-PRE-006 引用文件在工作区中不存在：标签「文件已被移动或删除」，按钮禁用，提示含路径", async ({
   page,
 }) => {
   writeFile(plain, "docs/r2-missing.md", "# 将被删除\n");
@@ -268,7 +268,7 @@ test("RUN-PRE-006 引用文件在工作区中不存在：标签「文件不存�
   await openTask(page, task);
   const chip = page.locator(".file-chip--missing", { hasText: "docs/r2-missing.md" });
   await expect(chip).toBeVisible();
-  await expect(chip).toContainText("文件不存在");
+  await expect(chip).toContainText("文件已被移动或删除");
   const start = page.getByRole("button", { name: "开始执行" });
   await expect(start).toBeDisabled();
   await expect(start).toHaveAttribute("title", /引用的文件在工作区中不存在：docs\/r2-missing\.md/);

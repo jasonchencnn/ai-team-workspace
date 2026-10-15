@@ -536,14 +536,12 @@ test("UI-ACT-004 时间本地化且不泄露凭据：团队空间与工作台都
 // 导航
 // ==========================================================================
 
-test("UI-NAV-002 M3/M5 未交付项不可点击：保持禁用态、不跳转不报错", async ({ page }) => {
+test("UI-NAV-002 未交付项不可点击：保持禁用态、不跳转不报错", async ({ page }) => {
   await page.goto(`/#/teams/${teamA}/tasks`);
   await expect(page.getByRole("heading", { name: "任务面板" })).toBeVisible();
 
-  for (const item of [
-    { name: "共享文件", note: "M3 提供" },
-    { name: "待我处理", note: "M5 提供" },
-  ]) {
+  // 「共享文件」自 M3-05 起已交付并变为可点入口，这里只验证仍未交付的「待我处理」。
+  for (const item of [{ name: "待我处理", note: "M5 提供" }]) {
     const entry = page.getByRole("link", { name: item.name });
     await expect(entry).toHaveAttribute("aria-disabled", "true");
     await expect(entry).toHaveClass(/nav-item--disabled/);
