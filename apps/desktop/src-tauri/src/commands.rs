@@ -164,6 +164,14 @@ pub fn get_task(ts: State<'_, Teamspace>, task_id: &str) -> Result<TaskDetail, E
     ts.get_task(task_id)
 }
 
+#[tauri::command]
+pub fn check_task_dependencies(
+    ts: State<'_, Teamspace>,
+    input: CheckTaskDependenciesInput,
+) -> Result<TaskDependencyCheck, Error> {
+    ts.check_task_dependencies(input)
+}
+
 #[tauri::command(async)]
 pub fn create_task(ts: State<'_, Teamspace>, input: CreateTaskInput) -> Result<TaskDetail, Error> {
     ts.create_task(input)

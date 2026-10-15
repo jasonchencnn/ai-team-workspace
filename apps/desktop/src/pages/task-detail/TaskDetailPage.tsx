@@ -25,6 +25,7 @@ import {
 import type { TaskStatus } from "../../bindings/TaskStatus.js";
 import type { TaskSummary } from "../../bindings/TaskSummary.js";
 import { RunExecutionArea } from "./run/RunExecutionArea.js";
+import { TaskDependencies } from "./TaskDependencies.js";
 import { isRunActive } from "./run/useRunEvents.js";
 import { useTaskRuns } from "./run/useTaskRuns.js";
 import { isMarkdownRef } from "../files/filesUi.js";
@@ -272,6 +273,10 @@ export function TaskDetailPage() {
             <span className="task-detail__dot" aria-hidden="true" />
             {statusLabel(task.status)} / {task.key}
           </p>
+
+          <section className="task-detail__section">
+            <TaskDependencies detail={detail.data} statusLabel={statusLabel} />
+          </section>
 
           <section className="task-detail__section">
             <h2>任务说明</h2>

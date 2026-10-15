@@ -10,9 +10,9 @@ use super::event::{self, NewEvent};
 use super::{MAX_LONG_TEXT, MAX_REASON, MAX_TITLE, role, team, text};
 use crate::error::{Error, Result};
 use crate::model::{
-    BoardColumn, ChangeTaskStatusInput, CreateTaskInput, EventKind, FileRef, FileRefView,
-    FileTaskRef, RoleRef, StatusCount, Task, TaskBoard, TaskBoardQuery, TaskDetail, TaskStatus,
-    TaskSummary, UpdateTaskInput,
+    BoardColumn, ChangeTaskStatusInput, CheckTaskDependenciesInput, CreateTaskInput, EventKind,
+    FileRef, FileRefView, FileTaskRef, RoleRef, StatusCount, Task, TaskBoard, TaskBoardQuery,
+    TaskDependencyCheck, TaskDetail, TaskStatus, TaskSummary, UpdateTaskInput,
 };
 use crate::store::{enum_col, enum_str, new_id, non_blank, now};
 
@@ -20,6 +20,7 @@ use crate::store::{enum_col, enum_str, new_id, non_blank, now};
 pub(crate) const MAX_FILE_REFS: usize = 50;
 /// 每个任务的依赖上限。
 pub(crate) const MAX_DEPENDENCIES: usize = 20;
+const DEPENDENCY_NOTICE: &str = "前置完成后会自动变为 READY；须同时满足其他就绪条件：负责岗位有效，填写的引用文件存在（文件引用可选）。";
 
 // ---------------------------------------------------------------- 读取
 
@@ -350,6 +351,8 @@ fn build_detail(
         events: event::for_task(conn, id)?,
         latest_run,
         run_problems,
+        dependency_notice: (task.status == TaskStatus::Todo && !task.depends_on.is_empty())
+            .then(|| DEPENDENCY_NOTICE.to_owned()),
         task,
     })
 }
@@ -452,6 +455,47 @@ fn validate_deps(
     task_id: Option<&str>,
     deps: Vec<String>,
 ) -> Result<Vec<String>> {
+    let (deps, cycle) = inspect_deps(conn, team_id, task_id, deps)?;
+    if !cycle.is_empty() {
+        let message = format!("依赖形成环路：{}", cycle.join(" → "));
+        return Err(if cycle.len() == 2 {
+            Error::invalid(message)
+        } else {
+            Error::conflict(message)
+        });
+    }
+    Ok(deps)
+}
+
+pub(crate) fn check_dependencies(
+    conn: &Connection,
+    input: CheckTaskDependenciesInput,
+) -> Result<TaskDependencyCheck> {
+    team::get_active(conn, &input.team_id)?;
+    if let Some(task_id) = &input.task_id {
+        let task = get(conn, task_id)?;
+        if task.team_id != input.team_id {
+            return Err(Error::not_found("任务不存在或不属于该团队"));
+        }
+    }
+    let (_, cycle) = inspect_deps(
+        conn,
+        &input.team_id,
+        input.task_id.as_deref(),
+        input.depends_on,
+    )?;
+    Ok(TaskDependencyCheck {
+        cycle,
+        readiness_notice: DEPENDENCY_NOTICE.to_owned(),
+    })
+}
+
+fn inspect_deps(
+    conn: &Connection,
+    team_id: &str,
+    task_id: Option<&str>,
+    deps: Vec<String>,
+) -> Result<(Vec<String>, Vec<String>)> {
     if deps.len() > MAX_DEPENDENCIES {
         return Err(Error::invalid(format!(
             "依赖任务最多 {MAX_DEPENDENCIES} 个"
@@ -462,13 +506,6 @@ fn validate_deps(
     for dep in deps {
         if !seen.insert(dep.clone()) {
             continue;
-        }
-        if Some(dep.as_str()) == task_id {
-            let key: String =
-                conn.query_row("SELECT key FROM tasks WHERE id = ?1", params![dep], |row| {
-                    row.get(0)
-                })?;
-            return Err(Error::invalid(format!("依赖形成环路：{key} → {key}")));
         }
         let same_team: bool = conn.query_row(
             "SELECT EXISTS (SELECT 1 FROM tasks WHERE id = ?1 AND team_id = ?2)",
@@ -509,13 +546,10 @@ fn validate_deps(
                     })
                 })
                 .collect::<rusqlite::Result<Vec<_>>>()?;
-            return Err(Error::conflict(format!(
-                "依赖形成环路：{}",
-                keys.join(" → ")
-            )));
+            return Ok((out, keys));
         }
     }
-    Ok(out)
+    Ok((out, vec![]))
 }
 
 /// 从 `start` 出发沿依赖边查找可达环路；返回首尾相同的完整环路。

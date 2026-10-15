@@ -311,9 +311,10 @@ test("让任务依赖形成环时显示后端的环路错误", async ({ page }) 
     .locator("label.task-form__option", { hasText: "依赖未完成的任务" })
     .locator("input")
     .click();
-  await page.getByRole("button", { name: "保存", exact: true }).click();
+  // 选择依赖后表单先向后端预检（M3-07）：显示环路并禁用保存。
   const banner = page.getByRole("alert");
   await expect(banner).toContainText(/依赖形成环路：.*→.*/);
+  await expect(page.getByRole("button", { name: "保存", exact: true })).toBeDisabled();
   await shot(page, "dependency-cycle-error", banner);
 });
 

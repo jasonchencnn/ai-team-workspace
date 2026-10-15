@@ -259,6 +259,7 @@ fn dispatch(ts: &Teamspace, cmd: &str, args: &Value) -> CmdResult {
         "get_task" => out(ts.get_task(&arg::<String>(args, "taskId")?)),
         "create_task" => out(ts.create_task(arg(args, "input")?)),
         "update_task" => out(ts.update_task(arg(args, "input")?)),
+        "check_task_dependencies" => out(ts.check_task_dependencies(arg(args, "input")?)),
         "change_task_status" => out(ts.change_task_status(arg(args, "input")?)),
         "search_workspace_files" => out(ts.search_workspace_files(arg(args, "input")?)),
         "list_workspace_markdown" => out(ts.list_workspace_markdown(arg(args, "input")?)),

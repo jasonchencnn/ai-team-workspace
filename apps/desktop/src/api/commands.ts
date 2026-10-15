@@ -8,6 +8,8 @@ import type { AcpPresetInfo } from "../bindings/AcpPresetInfo.js";
 import type { ApproveReviewInput } from "../bindings/ApproveReviewInput.js";
 import type { ApproveReviewResult } from "../bindings/ApproveReviewResult.js";
 import type { ChangeTaskStatusInput } from "../bindings/ChangeTaskStatusInput.js";
+import type { CheckTaskDependenciesInput } from "../bindings/CheckTaskDependenciesInput.js";
+import type { TaskDependencyCheck } from "../bindings/TaskDependencyCheck.js";
 import type { CreateHarnessInput } from "../bindings/CreateHarnessInput.js";
 import type { CreateRoleInput } from "../bindings/CreateRoleInput.js";
 import type { CreateTaskInput } from "../bindings/CreateTaskInput.js";
@@ -172,6 +174,9 @@ export const createTask = (input: CreateTaskInput) => invoke<TaskDetail>("create
 
 /** 编辑任务内容（不改状态）。 */
 export const updateTask = (input: UpdateTaskInput) => invoke<TaskDetail>("update_task", { input });
+
+export const checkTaskDependencies = (input: CheckTaskDependenciesInput) =>
+  invoke<TaskDependencyCheck>("check_task_dependencies", { input });
 
 /** 变更任务状态；进入 blocked 需提供原因。 */
 export const changeTaskStatus = (input: ChangeTaskStatusInput) =>
