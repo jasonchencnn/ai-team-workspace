@@ -597,6 +597,7 @@ fn k_har_004_check_sends_only_initialize() {
             team_id: e.team.id.clone(),
             cursor: None,
             limit: Some(1),
+            ..Default::default()
         })
         .unwrap()
         .events
@@ -657,6 +658,7 @@ fn k_har_008_env_profile_secret_is_injected_but_never_stored() {
             team_id: e.team.id.clone(),
             cursor: None,
             limit: Some(200),
+            ..Default::default()
         })
         .unwrap()
         .events;
@@ -727,6 +729,7 @@ fn k_har_009_secret_in_args_does_not_leak_into_stored_text() {
             team_id: e.team.id.clone(),
             cursor: None,
             limit: Some(200),
+            ..Default::default()
         })
         .unwrap()
         .events;

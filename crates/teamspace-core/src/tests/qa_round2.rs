@@ -44,6 +44,7 @@ fn events(f: &Fixture, team_id: &str) -> Vec<Event> {
         team_id: team_id.into(),
         cursor: None,
         limit: Some(200),
+        ..Default::default()
     })
     .unwrap()
     .events
@@ -2109,6 +2110,7 @@ fn k_evt_004_harness_and_resume_activities() {
             team_id: team.id.clone(),
             cursor: None,
             limit: Some(50),
+            ..Default::default()
         })
         .unwrap()
         .events
@@ -2133,6 +2135,7 @@ fn k_evt_004_harness_and_resume_activities() {
             team_id: team.id.clone(),
             cursor: None,
             limit: Some(1),
+            ..Default::default()
         })
         .unwrap()
         .events
@@ -2161,6 +2164,7 @@ fn k_evt_004_rerun_of_interrupted_run_leaves_an_activity_for_the_old_run() {
             team_id: team.id.clone(),
             cursor: None,
             limit: Some(200),
+            ..Default::default()
         })
         .unwrap()
         .events

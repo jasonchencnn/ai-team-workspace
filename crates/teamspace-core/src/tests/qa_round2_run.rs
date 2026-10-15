@@ -28,6 +28,7 @@ fn events_of(ts: &Teamspace, team_id: &str) -> Vec<Event> {
         team_id: team_id.into(),
         cursor: None,
         limit: Some(200),
+        ..Default::default()
     })
     .unwrap()
     .events

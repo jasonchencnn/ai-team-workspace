@@ -12,7 +12,7 @@ use time::OffsetDateTime;
 use crate::error::{Error, Result};
 
 /// 当前 schema 版本。
-pub(crate) const SCHEMA_VERSION: i64 = 8;
+pub(crate) const SCHEMA_VERSION: i64 = 9;
 
 const SCHEMA_V1: &str = r#"
 CREATE TABLE teams (
@@ -300,8 +300,16 @@ const SCHEMA_V8: &str = r#"
 ALTER TABLE runs ADD COLUMN change_incomplete INTEGER NOT NULL DEFAULT 0;
 "#;
 
+/// v9：活动记录按岗位筛选（活动与审计页的筛选条件之一）。
+/// 任务筛选已由 v2 的 `events_task (task_id, seq)` 覆盖，时间范围走 `events_team` 的区间扫描，
+/// 只有「团队 + 岗位 + 倒序」这一组合缺少索引。
+const SCHEMA_V9: &str = r#"
+CREATE INDEX events_role ON events (team_id, role_id, seq);
+"#;
+
 const MIGRATIONS: &[&str] = &[
     SCHEMA_V1, SCHEMA_V2, SCHEMA_V3, SCHEMA_V4, SCHEMA_V5, SCHEMA_V6, SCHEMA_V7, SCHEMA_V8,
+    SCHEMA_V9,
 ];
 
 /// 打开数据库：WAL 日志、synchronous=NORMAL、开启外键，并迁移到当前版本。
