@@ -37,6 +37,8 @@
 //! - `[mock:appendjournal]`：经 `fs/read_text_file` 读出工作日志（路径取自任务说明包「本岗位工作日志 `…`」），
 //!   申请编辑权限（diff 的 `oldText` 为现有内容、`newText` 为其后追加一条进展），随后把追加后的全文经
 //!   `fs/write_text_file` 写回（D14 的纯追加）；
+//! - `[mock:outsideread=<文件>]`：申请一次 `read` 类权限（`rawInput.file_path` 为该文件，相对路径按工作目录
+//!   解析），不论决定如何都随后经 `fs/read_text_file` 读取它，结果（`ok:<首行>` 或错误）写进总结（D18）；
 //! - `[mock:fsprobe=<范围外文件>]`：不申请权限，直接依次：`fs/read_text_file` 读取范围外文件，
 //!   `fs/write_text_file` 写岗位过程文件夹内的 `fsprobe-ok.md`、写范围外文件、写 `工作日志.md`；省略参数时范围外
 //!   文件为工作目录上一级的 `fsprobe-outside.txt`；每一步的结果写进总结；
@@ -426,6 +428,63 @@ impl Mock<'_> {
         Ok(Probe::Done(result))
     }
 
+    /// `[mock:outsideread=…]`：申请读取权限，随后读取文件；成功时返回首行。
+    fn outside_read(
+        &mut self,
+        session: &str,
+        path: &Path,
+        cancelled: &mut bool,
+    ) -> std::io::Result<Probe<String>> {
+        let shown = path.display().to_string();
+        self.update(session, json!({
+            "sessionUpdate": "tool_call", "toolCallId": "mock-outsideread", "title": "读取外部文件",
+            "kind": "read", "status": "pending", "rawInput": { "file_path": shown }
+        }))?;
+        let reply = self.request(
+            "session/request_permission",
+            json!({ "sessionId": session, "toolCall": { "toolCallId": "mock-outsideread" }, "options": options() }),
+            cancelled,
+        )?;
+        match reply {
+            Reply::Eof => return Ok(Probe::Eof),
+            Reply::Result(r)
+                if r.pointer("/outcome/outcome").and_then(Value::as_str) == Some("cancelled") =>
+            {
+                *cancelled = true;
+            }
+            _ => {}
+        }
+        if *cancelled {
+            return Ok(Probe::Cancelled);
+        }
+        let result = match self.request(
+            "fs/read_text_file",
+            json!({ "sessionId": session, "path": shown }),
+            cancelled,
+        )? {
+            Reply::Eof => return Ok(Probe::Eof),
+            Reply::Result(r) => Ok(r
+                .get("content")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .lines()
+                .next()
+                .unwrap_or_default()
+                .to_owned()),
+            Reply::Error(message) => Err(message),
+        };
+        let status = if result.is_ok() {
+            "completed"
+        } else {
+            "failed"
+        };
+        self.tool(
+            session,
+            json!({ "toolCallId": "mock-outsideread", "status": status }),
+        )?;
+        Ok(Probe::Done(result))
+    }
+
     /// `[mock:appendjournal]`：读出工作日志，申请编辑权限（diff 为纯追加），再写回追加后的全文。
     fn append_journal(
         &mut self,
@@ -680,6 +739,17 @@ impl Mock<'_> {
                 Probe::Done(result) => notes.push(note("appendjournal", &result)),
             }
         }
+        if let Some(arg) = marker_arg(task, "outsideread") {
+            let target = cwd.join(arg);
+            match self.outside_read(&session, &target, &mut cancelled)? {
+                Probe::Eof => return Ok(()),
+                Probe::Cancelled => return self.finish(id, "cancelled"),
+                Probe::Done(result) => notes.push(match result {
+                    Ok(first) => format!(" [outsideread:ok:{first}]"),
+                    Err(message) => note("outsideread", &Err(message)),
+                }),
+            }
+        }
         if has("fsprobe") || marker_arg(task, "fsprobe").is_some() {
             let outside = marker_arg(task, "fsprobe").map_or_else(
                 || cwd.parent().unwrap_or(&cwd).join("fsprobe-outside.txt"),
@@ -801,13 +871,13 @@ impl Mock<'_> {
 }
 
 /// [`Mock::probe_write`] 的结果。
-enum Probe {
+enum Probe<T = ()> {
     /// 输入已结束。
     Eof,
     /// 权限请求或之后被取消。
     Cancelled,
     /// 写入的结果：`Err` 为 Client 拒绝时返回的消息。
-    Done(Result<(), String>),
+    Done(Result<T, String>),
 }
 
 /// 总结里一个场景的结果，如「 [outside:ok]」「 [outside:err:Teamspace 未允许这次写入：…]」（错误消息取前 30 字）。

@@ -1,6 +1,8 @@
-//! 执行时的权限规则（D15），纯函数，不访问数据库。
+//! 执行时的权限规则（D15、D18），纯函数，不访问数据库。
 //!
-//! - 工具调用类型为读取（read）、搜索（search）→ 自动允许；
+//! - 工具调用类型为读取（read）、搜索（search）：涉及的路径（请求的 locations 与 rawInput 中能取到的
+//!   路径）按真实路径都在执行目录、工作空间或本岗位文件夹内 → 自动允许；没有路径（如在当前目录里
+//!   搜索）→ 自动允许；任意一个越界（含 `..` 穿越、指向外部的符号链接）→ 转交 Human（D18）；
 //! - 编辑（edit）且所有路径都可写 → 自动允许；可写范围：
 //!   - 本岗位文件夹（工作空间中的 `Teamspace/<岗位>/`）；
 //!   - 任务引用的文件（引用的是目录时含其中的文件）；
@@ -30,6 +32,7 @@ pub struct Scope {
     refs: Vec<PathBuf>,
     protected: Vec<PathBuf>,
     journals: Vec<PathBuf>,
+    workspace: PathBuf,
 }
 
 /// 写入目标的分类（[`Scope::write_target`]）。
@@ -102,6 +105,7 @@ impl Scope {
             role_folders,
             protected,
             journals,
+            workspace,
         }
     }
 
@@ -109,17 +113,35 @@ impl Scope {
         &self.exec_dir
     }
 
-    /// 可否读取：执行目录、岗位文件夹或引用文件之内。返回规范化后的路径或中文原因。
+    /// 可否不经确认读取：执行目录、工作空间、岗位文件夹或引用文件之内（D18）。
+    /// 返回规范化后的路径或中文原因（工作空间之外须先发起读取权限请求并经 Human 允许）。
     pub fn can_read(&self, path: &str) -> Result<PathBuf, String> {
         let real = resolve(Path::new(path), &self.exec_dir)?;
-        if real.starts_with(&self.exec_dir)
-            || self.role_folders.iter().any(|d| real.starts_with(d))
-            || self.refs.iter().any(|r| real.starts_with(r))
-        {
+        if self.readable(&real) {
             Ok(real)
         } else {
-            Err(format!("读取执行目录与岗位文件夹之外的文件：{path}"))
+            Err(format!(
+                "读取工作空间之外的文件需要先发起读取权限请求并经 Human 允许：{path}"
+            ))
         }
+    }
+
+    fn readable(&self, real: &Path) -> bool {
+        real.starts_with(&self.exec_dir)
+            || real.starts_with(&self.workspace)
+            || self.role_folders.iter().any(|d| real.starts_with(d))
+            || self.refs.iter().any(|r| real.starts_with(r))
+    }
+
+    /// 读取、搜索请求涉及的路径中第一个越出可读范围的（无法解析的，如含 `..`，也算越界）。
+    fn first_unreadable<'a>(&self, paths: &'a [String]) -> Option<&'a str> {
+        paths
+            .iter()
+            .find(|p| {
+                !resolve(Path::new(p.as_str()), &self.exec_dir)
+                    .is_ok_and(|real| self.readable(&real))
+            })
+            .map(String::as_str)
     }
 
     /// 可否不看内容直接自动写入（见模块说明）。工作日志只允许追加，因此这里也返回 `Err`；
@@ -184,8 +206,13 @@ impl Scope {
         edits: &[EditPreview],
     ) -> Verdict {
         match kind {
-            Some("read") => Verdict::Allow("读取文件，自动允许".to_owned()),
-            Some("search") => Verdict::Allow("搜索，自动允许".to_owned()),
+            Some(kind @ ("read" | "search")) => match self.first_unreadable(paths) {
+                Some(path) => Verdict::Ask(format!("读取工作空间之外的文件需要确认：{path}")),
+                None if kind == "read" => {
+                    Verdict::Allow("读取工作空间内的文件，自动允许".to_owned())
+                }
+                None => Verdict::Allow("在工作空间内搜索，自动允许".to_owned()),
+            },
             Some("edit") => {
                 if paths.is_empty() {
                     return Verdict::Ask("编辑操作没有给出文件路径，需要确认".to_owned());
@@ -359,15 +386,69 @@ mod tests {
     }
 
     #[test]
-    fn read_and_search_are_always_allowed() {
+    fn read_and_search_inside_the_workspace_are_allowed_outside_ask() {
+        // D18：工作空间内（含岗位文件夹、相对路径）与没有路径的读取、搜索自动允许。
         let e = env();
         let scope = in_place(&e);
         for kind in ["read", "search"] {
-            assert!(matches!(
-                scope.decide(Some(kind), &[s(&e.outside.join("x"))]),
-                Verdict::Allow(_)
-            ));
+            for paths in [
+                vec![s(&e.ws.join("docs/other.md"))],
+                vec![s(&e.role.join("工作日志.md")), "docs".to_owned()],
+                vec![".".to_owned()],
+                vec![s(&e.ws.join("不存在/新文件.md"))],
+                vec![],
+            ] {
+                assert!(
+                    matches!(scope.decide(Some(kind), &paths), Verdict::Allow(_)),
+                    "{kind} {paths:?}"
+                );
+            }
         }
+        // 越界、`..` 穿越、指向外部的符号链接：转交 Human，原因带上路径。
+        symlink(&e.outside, e.ws.join("外链")).unwrap();
+        for kind in ["read", "search"] {
+            for bad in [
+                s(&e.outside.join("x")),
+                "/etc/hosts".to_owned(),
+                "docs/../../outside/x".to_owned(),
+                s(&e.ws.join("外链/secret.txt")),
+            ] {
+                let paths = vec![s(&e.ws.join("docs/spec.md")), bad.clone()];
+                let Verdict::Ask(reason) = scope.decide(Some(kind), &paths) else {
+                    panic!("{kind} {bad} should need confirmation");
+                };
+                assert_eq!(reason, format!("读取工作空间之外的文件需要确认：{bad}"));
+            }
+        }
+        // fs/read_text_file：工作空间外的文件提示先发起读取权限请求。
+        let err = scope.can_read(&s(&e.outside.join("x"))).unwrap_err();
+        assert!(err.contains("需要先发起读取权限请求"), "{err}");
+        assert!(scope.can_read(&s(&e.ws.join("外链/secret.txt"))).is_err());
+    }
+
+    #[test]
+    fn worktree_reads_cover_the_workspace_too() {
+        let e = env();
+        let wt = e.outside.join("wt");
+        fs::create_dir_all(&wt).unwrap();
+        let scope = Scope::with_workspace(
+            &wt,
+            &e.ws,
+            RunIsolation::Worktree,
+            std::slice::from_ref(&e.role),
+            &[],
+        );
+        assert!(scope.can_read(&s(&e.ws.join("docs/other.md"))).is_ok());
+        assert!(matches!(
+            scope.decide(Some("read"), &[s(&e.ws.join("docs/other.md"))]),
+            Verdict::Allow(_)
+        ));
+        assert!(matches!(
+            scope.decide(Some("search"), &[s(&e.outside.join("elsewhere"))]),
+            Verdict::Ask(_)
+        ));
+        // 读取范围扩大到工作空间，不影响写入范围。
+        assert!(scope.can_write(&s(&e.ws.join("docs/other.md"))).is_err());
     }
 
     #[test]

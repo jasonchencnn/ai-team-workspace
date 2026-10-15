@@ -553,6 +553,8 @@ struct ToolState {
     diffs: Vec<DiffStat>,
     /// diff 原文，用于判断对工作日志的编辑是否纯追加。
     edits: Vec<EditPreview>,
+    /// rawInput 中能取到的路径（[`raw_input_paths`]），读取、搜索请求按它们与 locations 判断（D18）。
+    raw_paths: Vec<String>,
 }
 
 impl ToolState {
@@ -1194,6 +1196,7 @@ impl Driver {
                                 command: command.clone(),
                                 diffs: diffs.clone(),
                                 edits: Vec::new(),
+                                raw_paths: Vec::new(),
                             },
                         );
                     }
@@ -1470,6 +1473,10 @@ impl Driver {
             }
         }
         let command = update.get("rawInput").and_then(command_of);
+        let raw_paths = update
+            .get("rawInput")
+            .map(raw_input_paths)
+            .unwrap_or_default();
         let existed = self.tools.contains_key(&id);
         let state = self.tools.entry(id.clone()).or_insert_with(|| ToolState {
             update_id: String::new(),
@@ -1480,6 +1487,7 @@ impl Driver {
             command: None,
             diffs: Vec::new(),
             edits: Vec::new(),
+            raw_paths: Vec::new(),
         });
         if let Some(title) = str_field("title") {
             state.title = title;
@@ -1500,6 +1508,9 @@ impl Driver {
             && !diffs.is_empty()
         {
             state.diffs = diffs;
+        }
+        if !raw_paths.is_empty() {
+            state.raw_paths = raw_paths;
         }
         if !edits.is_empty() {
             state.edits = edits;
@@ -1602,6 +1613,17 @@ impl Driver {
             ),
             None => ("工具调用".to_owned(), None, Vec::new(), None, Vec::new()),
         };
+        // 读取、搜索请求：rawInput 里的路径（如 Grep 的搜索目录）一并判断，也展示给 Human（D18）。
+        let mut paths = paths;
+        if matches!(kind.as_deref(), Some("read" | "search"))
+            && let Some(s) = &state
+        {
+            for raw in &s.raw_paths {
+                if !paths.contains(raw) {
+                    paths.push(raw.clone());
+                }
+            }
+        }
         let options: Vec<PermissionOption> = params
             .get("options")
             .and_then(Value::as_array)
@@ -1719,6 +1741,20 @@ impl Driver {
         if option.kind.starts_with("allow") && p.prompt.tool_kind.as_deref() == Some("edit") {
             self.grant(&p.prompt, option.kind == "allow_always");
         }
+        // Human 允许读取、搜索工作空间之外的路径：之后的 fs/read_text_file 可以读取（D18），不能写入。
+        if option.kind.starts_with("allow")
+            && matches!(p.prompt.tool_kind.as_deref(), Some("read" | "search"))
+        {
+            let base = self.scope().exec_dir().to_path_buf();
+            let real: Vec<PathBuf> = p
+                .prompt
+                .paths
+                .iter()
+                .filter_map(|path| policy::resolve(Path::new(path), &base).ok())
+                .collect();
+            self.granted
+                .add_read(&p.prompt.tool_call_id, real, option.kind == "allow_always");
+        }
         // Human 明确允许过对这些路径的编辑、删除或移动：快照发现的同路径改动不算「未经确认」。
         if option.kind.starts_with("allow")
             && matches!(
@@ -1764,7 +1800,15 @@ impl Driver {
             .get("path")
             .and_then(Value::as_str)
             .unwrap_or_default();
-        let result = self.scope().can_read(path).and_then(|real| {
+        let base = self.scope().exec_dir().to_path_buf();
+        // 工作空间之外：须有 Human 允许的读取授权（D18），允许一次只读一次；写入授权不放行读取。
+        let allowed = self.scope().can_read(path).or_else(|reason| {
+            match policy::resolve(Path::new(path), &base) {
+                Ok(real) if self.granted.take_read(&real).is_some() => Ok(real),
+                _ => Err(reason),
+            }
+        });
+        let result = allowed.and_then(|real| {
             std::fs::read_to_string(&real).map_err(|err| format!("无法读取 {path}：{err}"))
         });
         match result {
@@ -2328,6 +2372,27 @@ fn command_of(raw: &Value) -> Option<String> {
         }
         _ => None,
     }
+}
+
+/// rawInput 中常见的路径字段（`path`、`file_path`、`filePath`、`abs_path`、`absPath`、`paths` 数组）。
+fn raw_input_paths(raw: &Value) -> Vec<String> {
+    let mut out = Vec::new();
+    for key in ["path", "file_path", "filePath", "abs_path", "absPath"] {
+        if let Some(p) = raw.get(key).and_then(Value::as_str)
+            && !p.is_empty()
+        {
+            out.push(p.to_owned());
+        }
+    }
+    if let Some(list) = raw.get("paths").and_then(Value::as_array) {
+        out.extend(
+            list.iter()
+                .filter_map(Value::as_str)
+                .filter(|p| !p.is_empty())
+                .map(str::to_owned),
+        );
+    }
+    out
 }
 
 /// ACP diff 内容的行数统计（按行的多重集合差计算）。

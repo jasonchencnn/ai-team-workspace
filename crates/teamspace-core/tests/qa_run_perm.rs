@@ -103,10 +103,10 @@ fn k_perm_006_agent_fs_calls_follow_the_same_scope() {
     let run = e.wait_end(&run.id);
     assert_eq!(run.status, RunStatus::Succeeded, "{run:#?}");
 
-    // 1) 读取范围外文件：JSON-RPC 错误，Agent 收到「读取执行目录与岗位文件夹之外的文件」。
+    // 1) 未经读取权限请求读取工作空间外文件：JSON-RPC 错误，提示先发起读取权限请求（D18）。
     let text = summary(&run);
     assert!(
-        text.contains("[fsprobe-read:err:读取执行目录与岗位文件夹之外的文件"),
+        text.contains("[fsprobe-read:err:读取工作空间之外的文件需要先发起读取权限请求"),
         "{text}"
     );
     // 2) 岗位文件夹内：成功并记 FileWrite allowed=true，changedFiles 含该文件。
@@ -169,7 +169,8 @@ enum Target {
     GitPointer,
 }
 
-/// K-PERM-008：read/search 请求被规则自动允许后，对同一路径的 `fs/write_text_file` 仍不得放行。
+/// K-PERM-008：read/search 请求被允许后，对同一路径的 `fs/write_text_file` 仍不得放行。
+/// 工作空间内的路径由规则自动允许；工作空间外的路径（D18）转交 Human，这里由 Human 允许一次。
 fn readgrant_case(git_repo: bool, kind: &str, target: Target) {
     let e = env(git_repo);
     let outside = e.dir.path().join("outside.txt");
@@ -182,6 +183,20 @@ fn readgrant_case(git_repo: bool, kind: &str, target: Target) {
     let brief_before = hash(&e.role_file("岗位说明.md"));
     let task = e.task(&format!("授权 [mock:readgrant={kind}|{param}]"));
     let run = e.ts.start_run(&task.id).unwrap();
+    let outside_target = matches!(target, Target::Outside);
+    if outside_target {
+        let waiting = e.wait(&run.id, "waiting_permission", |r| {
+            r.status == RunStatus::WaitingPermission
+        });
+        let prompt = waiting.pending_permission.unwrap();
+        assert_eq!(prompt.tool_kind.as_deref(), Some(kind));
+        assert!(
+            prompt.reason.contains("读取工作空间之外的文件需要确认"),
+            "{}",
+            prompt.reason
+        );
+        e.respond(&run, &prompt, "allow");
+    }
     let run = e.wait_end(&run.id);
     assert_eq!(run.status, RunStatus::Succeeded, "{run:#?}");
     let exec = PathBuf::from(&run.exec_dir);
@@ -194,7 +209,7 @@ fn readgrant_case(git_repo: bool, kind: &str, target: Target) {
     if matches!(target, Target::GitPointer) {
         assert!(p.is_file(), "worktree 的 .git 应是指针文件");
     }
-    // 1) 请求被规则自动允许。
+    // 1) 请求被允许：工作空间内由规则，工作空间外由 Human（D18）。
     let updates = e.updates(&run.id);
     let auto = updates.iter().find_map(|u| match &u.body {
         RunUpdateBody::Permission {
@@ -204,10 +219,11 @@ fn readgrant_case(git_repo: bool, kind: &str, target: Target) {
         } if tool_call_id == "mock-readgrant" => Some(d.clone()),
         _ => None,
     });
+    let expected_by = if outside_target { "human" } else { "rule" };
     assert_eq!(
         auto.map(|d| d.by),
-        Some("rule".to_owned()),
-        "read/search 应由规则自动允许"
+        Some(expected_by.to_owned()),
+        "read/search 的允许来源"
     );
 
     // 2) 写入被拒：JSON-RPC 错误「Teamspace 未允许这次写入」，进度含 FileWrite allowed=false。

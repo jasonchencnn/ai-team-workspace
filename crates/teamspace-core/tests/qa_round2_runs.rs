@@ -165,6 +165,22 @@ def prompt(mid, params):
         log("write_error=" + error_text(w))
         say(session, "结束")
         return finish(mid, "end_turn")
+    if MODE == "outsideread":
+        path = ARGS["path"]
+        r = call("session/request_permission", {
+            "sessionId": session,
+            "toolCall": {"toolCallId": "o1", "title": "读取外部文件", "kind": "read", "status": "pending",
+                         "rawInput": {"file_path": path}},
+            "options": ALWAYS,
+        })
+        log("perm_outcome=" + json.dumps(r.get("result")))
+        for label in ("r1", "r2"):
+            rr = call("fs/read_text_file", {"sessionId": session, "path": path})
+            log(label + "=" + (error_text(rr) if "error" in rr else "ok:" + rr["result"]["content"].strip()))
+        w = call("fs/write_text_file", {"sessionId": session, "path": path, "content": "written"})
+        log("w=" + error_text(w))
+        say(session, "结束")
+        return finish(mid, "end_turn")
     if MODE == "editgrant":
         path, extra = ARGS["path"], ARGS["extra"]
         opts = ALWAYS if ARGS.get("option") == "always" else ALLOW
@@ -182,6 +198,8 @@ def prompt(mid, params):
         note(session, {"sessionUpdate": "tool_call_update", "toolCallId": "e1", "status": "completed"})
         w = call("fs/write_text_file", {"sessionId": session, "path": path, "content": "written-w3\n"})
         log("w3=" + error_text(w))
+        rr = call("fs/read_text_file", {"sessionId": session, "path": path})
+        log("r=" + (error_text(rr) if "error" in rr else "ok"))
         say(session, "结束")
         return finish(mid, "end_turn")
     if MODE == "write":
@@ -1334,7 +1352,7 @@ fn k_run_016_failure_cancel_and_takeover_journal_lines() {
 
 // ---------------------------------------------------------------- K-PERM
 
-/// K-PERM-004（规则层）：其他类型的权限请求一律转 Human，读取与搜索自动允许。
+/// K-PERM-004（规则层）：其他类型的权限请求一律转 Human；读取与搜索在工作空间内自动允许（D18）。
 #[test]
 fn k_perm_004_other_kinds_ask_and_read_search_allow() {
     let dir = tempfile::tempdir().unwrap();
@@ -1366,11 +1384,21 @@ fn k_perm_004_other_kinds_ask_and_read_search_allow() {
             other => panic!("{kind:?} 应转 Human，实际 {other:?}"),
         }
     }
+    // D18：工作空间内的读取与搜索自动允许，工作空间外的转交 Human。
     for kind in ["read", "search"] {
         assert!(matches!(
-            scope.decide(Some(kind), &["/etc/hosts".to_owned()]),
+            scope.decide(Some(kind), std::slice::from_ref(&inside)),
             teamspace_core::run::policy::Verdict::Allow(_)
         ));
+        match scope.decide(Some(kind), &["/etc/hosts".to_owned()]) {
+            teamspace_core::run::policy::Verdict::Ask(reason) => {
+                assert!(
+                    reason.contains("读取工作空间之外的文件需要确认"),
+                    "{reason}"
+                )
+            }
+            other => panic!("{kind} /etc/hosts 应转 Human，实际 {other:?}"),
+        }
     }
 }
 
@@ -1520,6 +1548,89 @@ fn journal_overwrite_is_allowed_once_even_with_allow_always() {
     assert!(w2.contains("请重新读取工作日志后再追加"), "{w2}");
     let text = std::fs::read_to_string(&journal).unwrap();
     assert!(text.starts_with("written-w1\n"), "{text}");
+}
+
+/// D18：Agent 发起越界读取请求，Human 选 `choose`；返回假 Agent 日志与权限请求。
+fn outside_read(e: &Env, path: &Path, choose: &str) -> (Vec<String>, PermissionPrompt) {
+    let log = e.path(&format!("outside-{choose}.log"));
+    e.fake(
+        &format!("outsideread-{choose}"),
+        &[
+            "mode=outsideread".into(),
+            format!("path={}", path.display()),
+            format!("log={}", log.display()),
+        ],
+    );
+    let task = e.task(&format!("越界读取 {choose}"));
+    let run = e.ts.start_run(&task.id).unwrap();
+    let waiting = e.wait(&run.id, "waiting_permission", |r| {
+        r.status == RunStatus::WaitingPermission
+    });
+    let request = waiting.pending_permission.unwrap();
+    e.ts.respond_permission(RespondPermissionInput {
+        run_id: run.id.clone(),
+        request_id: request.request_id.clone(),
+        option_id: choose.into(),
+    })
+    .unwrap();
+    let run = e.wait_end(&run.id);
+    assert_eq!(run.status, RunStatus::Succeeded, "{run:#?}");
+    (log_lines(&log), request)
+}
+
+/// D18：越界读取经 Human 允许：「允许一次」只读一次，「总是允许」可多次读；读取授权不能写入。
+#[test]
+fn outside_reads_need_human_and_grants_are_scoped() {
+    let e = env(Kind::Plain);
+    let secret = e.path("outside-secret.txt");
+    std::fs::write(&secret, "外部内容\n").unwrap();
+
+    let (log, request) = outside_read(&e, &secret, "allow");
+    assert_eq!(request.tool_kind.as_deref(), Some("read"));
+    assert!(
+        request.reason.contains("读取工作空间之外的文件需要确认"),
+        "{}",
+        request.reason
+    );
+    // rawInput 里的路径也展示给 Human。
+    assert!(
+        request
+            .paths
+            .iter()
+            .any(|p| p == &secret.display().to_string()),
+        "{:?}",
+        request.paths
+    );
+    assert!(log.contains(&"r1=ok:外部内容".to_owned()), "{log:?}");
+    let r2 = log.iter().find(|l| l.starts_with("r2=")).unwrap();
+    assert!(
+        r2.contains("需要先发起读取权限请求"),
+        "允许一次只读一次: {log:?}"
+    );
+    let w = log.iter().find(|l| l.starts_with("w=")).unwrap();
+    assert!(
+        w.contains("Teamspace 未允许这次写入"),
+        "读取授权不能写: {log:?}"
+    );
+
+    let (log, _) = outside_read(&e, &secret, "always");
+    assert!(log.contains(&"r1=ok:外部内容".to_owned()), "{log:?}");
+    assert!(log.contains(&"r2=ok:外部内容".to_owned()), "{log:?}");
+    let w = log.iter().find(|l| l.starts_with("w=")).unwrap();
+    assert!(w.contains("Teamspace 未允许这次写入"), "{log:?}");
+    assert_eq!(std::fs::read_to_string(&secret).unwrap(), "外部内容\n");
+}
+
+/// D18：写入授权不能给读取放行——Human 总是允许编辑工作空间外的文件后，读取同一文件仍被拒绝。
+#[test]
+fn write_grants_do_not_allow_outside_reads() {
+    let e = env(Kind::Plain);
+    let target = e.path("outside-edit.md");
+    let extra = e.ws.join("bundled.md");
+    let log = editgrant(&e, &target, &extra, "always");
+    assert!(wrote(&log, "w1"), "{log:?}");
+    let r = log.iter().find(|l| l.starts_with("r=")).unwrap();
+    assert!(r.contains("需要先发起读取权限请求"), "{log:?}");
 }
 
 /// K-PERM-007：未知请求 ID、选项不属于请求、多个并发请求依次处理、执行结束后回应。
