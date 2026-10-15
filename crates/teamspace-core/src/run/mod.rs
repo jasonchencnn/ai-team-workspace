@@ -33,6 +33,7 @@ pub mod env_profile;
 pub mod git_review;
 mod grants;
 pub mod policy;
+pub(crate) mod review_seam;
 mod session_mode;
 pub mod snapshot;
 pub mod worktree;
@@ -227,6 +228,10 @@ impl ActiveRun {
 pub(crate) enum Mode {
     Start,
     Resume,
+    /// 验收退回后续接（M3-01）：执行记录的 `revision_of` 指向被退回的执行，沿用它的执行目录与会话；
+    /// Agent 支持 `session/load` 时续接原会话并发送退回意见，否则在同一目录新开会话、发送完整任务说明
+    /// 加上次摘要与退回意见。不新建 worktree。
+    Revise,
 }
 
 /// 中断时写入的原因。
@@ -658,6 +663,8 @@ struct Context {
     role_folder: Option<String>,
     env_profile: Option<String>,
     dependencies: Vec<brief::BriefDependency>,
+    /// 退回续接时：被退回执行的（退回意见，摘要）。
+    revision: Option<(String, Option<String>)>,
 }
 
 struct Driver {
@@ -817,6 +824,14 @@ impl Driver {
                 status_label: d.status.label().to_owned(),
             });
         }
+        let revision = match &self.run.revision_of {
+            Some(prev) => {
+                let prev = store_run::get(&conn, prev)?;
+                let comment = prev.review.and_then(|r| r.comment).unwrap_or_default();
+                Some((comment, prev.summary))
+            }
+            None => None,
+        };
         Ok(Context {
             role,
             role_folder,
@@ -824,6 +839,7 @@ impl Driver {
             workspace,
             env_profile,
             dependencies,
+            revision,
         })
     }
 
@@ -856,10 +872,19 @@ impl Driver {
             let wt = worktree::create(&ctx.workspace, &target, &branch, Some(&path_env))
                 .map_err(|err| failed(FailureKind::Launch, format!("无法创建执行目录：{err}")))?;
             let exec = wt.exec_dir.display().to_string();
+            let base_branch = self.core.review_git().base_branch(&wt);
             let id = self.run.id.clone();
             self.db(|tx| {
-                store_run::set_exec(tx, &id, &exec, Some(&wt.branch), Some(&wt.base_commit))
+                store_run::set_exec(
+                    tx,
+                    &id,
+                    &exec,
+                    Some(&wt.branch),
+                    Some(&wt.base_commit),
+                    base_branch.as_deref(),
+                )
             });
+            self.run.base_branch = base_branch;
             self.run.exec_dir = exec;
             self.run.branch = Some(wt.branch);
             self.run.base_commit = Some(wt.base_commit);
@@ -966,8 +991,14 @@ impl Driver {
 
         // 5. 会话
         let mcp: Vec<Value> = Vec::new();
-        match mode {
-            Mode::Start => {
+        // 退回续接：会话已建立且 Agent 支持 session/load 时续接原会话，否则在同一目录新开会话。
+        let load = match mode {
+            Mode::Start => false,
+            Mode::Resume => true,
+            Mode::Revise => self.run.session_id.is_some() && caps.load_session,
+        };
+        match load {
+            false => {
                 let result = self.call(
                     "session/new",
                     json!({ "cwd": self.run.exec_dir, "mcpServers": mcp }),
@@ -988,7 +1019,7 @@ impl Driver {
                 self.run.session_id = Some(session.clone());
                 self.enforce_permission_mode(&session, &result)?;
             }
-            Mode::Resume => {
+            true => {
                 let session = self.run.session_id.clone().unwrap_or_default();
                 let result = self.call(
                     "session/load",
@@ -1003,19 +1034,32 @@ impl Driver {
         }
 
         // 6. 任务说明
-        let text = match mode {
-            Mode::Start => brief::render(&self.brief_input(&ctx, &exec_dir)),
-            Mode::Resume => brief::resume_text(
+        let folder = ctx
+            .role_folder
+            .clone()
+            .unwrap_or_else(|| format!("{}/{}", role_folder::ROOT_DIR, ctx.role.name));
+        let (comment, previous) = ctx.revision.clone().unwrap_or_default();
+        let text = match (mode, load) {
+            (Mode::Resume, _) => {
+                brief::resume_text(&self.run.task_key, &folder, journal_path(&ctx).as_deref())
+            }
+            (Mode::Revise, true) => brief::revise_text(
                 &self.run.task_key,
-                &ctx.role_folder
-                    .clone()
-                    .unwrap_or_else(|| format!("{}/{}", role_folder::ROOT_DIR, ctx.role.name)),
+                &folder,
                 journal_path(&ctx).as_deref(),
+                &comment,
             ),
+            (Mode::Revise, false) => format!(
+                "{}\n\n{}",
+                brief::render(&self.brief_input(&ctx, &exec_dir)).trim_end(),
+                brief::revise_section(previous.as_deref(), &comment)
+            ),
+            (Mode::Start, _) => brief::render(&self.brief_input(&ctx, &exec_dir)),
         };
-        let refs: Vec<brief::BriefRef> = match mode {
-            Mode::Start => self.brief_refs(&ctx, &exec_dir),
-            Mode::Resume => Vec::new(),
+        let refs: Vec<brief::BriefRef> = if load {
+            Vec::new()
+        } else {
+            self.brief_refs(&ctx, &exec_dir)
         };
         // 不可用的引用（不存在、越出工作空间）不附上内容，在执行记录里留一条说明（06a #2）。
         for r in refs.iter().filter(|r| r.unavailable.is_some()) {
@@ -2182,6 +2226,26 @@ impl Driver {
         }
     }
 
+    /// 把 worktree 里的改动提交到执行分支（英文提交信息，含任务编号与执行序号）；返回失败说明。
+    fn commit_run_changes(&self) -> Option<String> {
+        let path_env = self.core.probe.command_path_env();
+        let message = format!(
+            "teamspace: {} attempt {}",
+            self.run.task_key, self.run.attempt
+        );
+        match self.core.review_git().commit_all(
+            Path::new(&self.run.exec_dir),
+            &message,
+            Some(&path_env),
+        ) {
+            Ok(_) => None,
+            Err(err) => Some(format!(
+                "无法把改动提交到执行分支（{}）：{err}；验收通过时会再试一次",
+                self.run.branch.as_deref().unwrap_or("?")
+            )),
+        }
+    }
+
     fn finish(&mut self, end: End) {
         if let Some(process) = &self.process {
             process.kill();
@@ -2191,7 +2255,21 @@ impl Driver {
             return;
         }
         let summary = brief::summarize(&self.last_agent_text);
-        let audit = self.audit_changes();
+        // Git 执行成功：转待验收之前把执行目录里的改动提交到执行分支（验收的 diff 与合并都基于分支）。
+        // 提交失败时任务照常转待验收，问题写进执行记录（验收通过时还会再提交一次）。
+        let commit_problem = match &end {
+            End::Succeeded(_) if self.run.isolation == RunIsolation::Worktree => {
+                self.commit_run_changes()
+            }
+            _ => None,
+        };
+        let mut audit = self.audit_changes();
+        if let Some(problem) = &commit_problem {
+            audit.note = Some(match audit.note.take() {
+                Some(n) => format!("{n}；{problem}"),
+                None => problem.clone(),
+            });
+        }
         let mut ending = Ending {
             summary,
             changed_files: audit.files.clone(),
@@ -2300,6 +2378,17 @@ impl Driver {
                 return Ok(None);
             }
             let mut updates = Vec::new();
+            if let Some(problem) = &commit_problem {
+                updates.push(store_run::insert_update(
+                    tx,
+                    &run.id,
+                    None,
+                    &RunUpdateBody::Warning {
+                        text: problem.clone(),
+                        files: Vec::new(),
+                    },
+                )?);
+            }
             if !out_of_scope.is_empty() {
                 // 执行记录里醒目地标出范围外改动（所有结局都标，不止成功的）。
                 updates.push(store_run::insert_update(

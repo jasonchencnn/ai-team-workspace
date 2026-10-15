@@ -18,8 +18,8 @@ use super::{harness, role};
 use crate::error::{Error, Result};
 use crate::model::{
     AcpCapabilities, Actor, ChangedFile, EventKind, FailureKind, HandshakeStatus, HarnessSnapshot,
-    PermissionPrompt, Run, RunIsolation, RunJournal, RunStatus, RunUpdate, RunUpdateBody,
-    RunUpdatePage, RunUpdateQuery, Task, TaskStatus,
+    PermissionPrompt, Run, RunIsolation, RunJournal, RunReview, RunStatus, RunUpdate,
+    RunUpdateBody, RunUpdatePage, RunUpdateQuery, Task, TaskStatus,
 };
 use crate::store::{enum_col, enum_str, new_id, now};
 
@@ -33,7 +33,8 @@ const COLS: &str = "r.id, r.team_id, r.task_id, r.role_id, r.harness_id, r.harne
     r.exec_dir, r.isolation, r.branch, r.base_commit, r.capabilities, r.started_at, r.ended_at, \
     r.stop_reason, r.failure, r.failure_kind, r.summary, r.changed_files, r.tool_call_count, \
     r.taken_over, r.pending_permission, t.key, r.workspace_path, r.out_of_scope, r.change_note, \
-    r.change_incomplete";
+    r.change_incomplete, r.base_branch, r.merged_commit, r.revision_of, r.review_outcome, \
+    r.review_comment, r.reviewed_at";
 
 fn json_opt<T: serde::de::DeserializeOwned>(
     row: &rusqlite::Row<'_>,
@@ -88,6 +89,17 @@ fn from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Run> {
         pending_permission: json_opt(row, 26)?,
         task_key: row.get(27)?,
         journal: RunJournal::default(),
+        base_branch: row.get(32)?,
+        merged_commit: row.get(33)?,
+        revision_of: row.get(34)?,
+        review: match row.get::<_, Option<String>>(35)? {
+            Some(_) => Some(RunReview {
+                outcome: enum_col(row, 35)?,
+                comment: row.get(36)?,
+                reviewed_at: row.get::<_, Option<String>>(37)?.unwrap_or_default(),
+            }),
+            None => None,
+        },
     })
 }
 
@@ -309,20 +321,21 @@ pub(crate) fn insert(conn: &Connection, new: NewRun<'_>) -> Result<Run> {
     get(conn, &id)
 }
 
-/// 记录执行目录（worktree 建立之后）。只对仍在活动中的执行生效（fencing），返回是否生效。
+/// 记录执行目录（worktree 建立之后）与基线分支。只对仍在活动中的执行生效（fencing），返回是否生效。
 pub(crate) fn set_exec(
     conn: &Connection,
     id: &str,
     exec_dir: &str,
     branch: Option<&str>,
     base_commit: Option<&str>,
+    base_branch: Option<&str>,
 ) -> Result<bool> {
     let changed = conn.execute(
         &format!(
-            "UPDATE runs SET exec_dir = ?2, branch = ?3, base_commit = ?4
+            "UPDATE runs SET exec_dir = ?2, branch = ?3, base_commit = ?4, base_branch = ?5
              WHERE id = ?1 AND status IN {ACTIVE_STATUSES}"
         ),
-        params![id, exec_dir, branch, base_commit],
+        params![id, exec_dir, branch, base_commit, base_branch],
     )?;
     fenced(conn, changed, id, "记录执行目录")
 }

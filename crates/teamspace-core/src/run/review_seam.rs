@@ -1,0 +1,299 @@
+//! 验收用到的 Git 操作的接缝（M3-01）：内核只通过 [`ReviewGit`] 调用 Git 层，真实实现在
+//! [`super::git_review`]（M3-02）。测试可以换成假的实现，验证合并成功、冲突、受阻、清理失败等分支下的
+//! 状态规则，而不依赖真实仓库。
+//!
+//! 这里的类型是内核自己的，与 Git 层的类型解耦：Git 层改动返回值细节时只需改 [`RealGit`] 的转换。
+
+use std::ffi::OsStr;
+use std::path::Path;
+
+use super::git_review;
+use super::worktree::{Worktree, git};
+use crate::model::FileChangeKind;
+
+/// 删除执行分支的方式。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Cleanup {
+    /// 合并之后：只安全删除（`git branch -d`）。
+    Merged,
+    /// 冲突后重新执行：未合并的分支也删除。
+    Force,
+}
+
+/// 执行分支相对基线的一个改动文件。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct DiffEntry {
+    pub path: String,
+    pub change: FileChangeKind,
+    pub binary: bool,
+    pub added: u32,
+    pub removed: u32,
+}
+
+/// 一个文件的补丁。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct PatchText {
+    pub binary: bool,
+    pub truncated: bool,
+    pub patch: String,
+}
+
+/// 合并的结果。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Merge {
+    /// 已合并，基线分支上的合并提交。
+    Merged { commit: String },
+    /// 有冲突，已中止合并、基线不变。
+    Conflict { files: Vec<String> },
+    /// 现在不能合并（基线分支有未提交改动等），什么也没做。
+    Blocked { reason: String },
+}
+
+/// 验收用到的 Git 操作。错误为中文说明。
+pub(crate) trait ReviewGit: Send + Sync {
+    /// 把执行目录（worktree）里的全部改动提交到执行分支；没有改动时返回 `None`。
+    fn commit_all(
+        &self,
+        dir: &Path,
+        message: &str,
+        path_env: Option<&OsStr>,
+    ) -> Result<Option<String>, String>;
+
+    /// `base_commit..head` 的改动文件。
+    fn diff_files(
+        &self,
+        repo_dir: &Path,
+        base_commit: &str,
+        head: &str,
+        path_env: Option<&OsStr>,
+    ) -> Result<Vec<DiffEntry>, String>;
+
+    /// `base_commit..head` 中一个文件的补丁；路径必须在 [`ReviewGit::diff_files`] 的结果中。
+    fn file_patch(
+        &self,
+        repo_dir: &Path,
+        base_commit: &str,
+        head: &str,
+        path: &str,
+        path_env: Option<&OsStr>,
+    ) -> Result<PatchText, String>;
+
+    /// 在工作空间仓库里以 `--no-ff` 把执行分支合并进基线分支。
+    fn merge_into_base(
+        &self,
+        repo_dir: &Path,
+        base_branch: &str,
+        run_branch: &str,
+        message: &str,
+        path_env: Option<&OsStr>,
+    ) -> Result<Merge, String>;
+
+    /// 删除执行的 worktree 与执行分支：`Merged` 只安全删除已合并的分支；`Force` 连同未合并的分支一起删除
+    ///（冲突后重新执行，调用方须先在活动里记下分支名与提交）。
+    fn remove_run_worktree(
+        &self,
+        repo_dir: &Path,
+        worktree_root: &Path,
+        branch: &str,
+        cleanup: Cleanup,
+        path_env: Option<&OsStr>,
+    ) -> Result<(), String>;
+
+    /// 执行分支是否已并入基线分支（`git merge-base --is-ancestor`）。分支不存在时为错误。
+    fn is_merged_into(
+        &self,
+        repo_dir: &Path,
+        run_branch: &str,
+        base_branch: &str,
+        path_env: Option<&OsStr>,
+    ) -> Result<bool, String>;
+
+    /// 分支当前指向的提交；分支不存在时为 `None`。
+    fn branch_head(
+        &self,
+        repo_dir: &Path,
+        branch: &str,
+        path_env: Option<&OsStr>,
+    ) -> Option<String>;
+
+    /// 新建 worktree 时工作空间所在的分支（处于分离 HEAD 时为 `None`）。
+    fn base_branch(&self, worktree: &Worktree) -> Option<String>;
+}
+
+/// 真实的 Git 层（M3-02 的 `run::git_review`）。验收用到的 Git 调用都集中在这里，Git 层签名变化时只改这里。
+pub(crate) struct RealGit;
+
+impl ReviewGit for RealGit {
+    fn commit_all(
+        &self,
+        dir: &Path,
+        message: &str,
+        path_env: Option<&OsStr>,
+    ) -> Result<Option<String>, String> {
+        git_review::commit_all(dir, message, path_env)
+    }
+
+    fn diff_files(
+        &self,
+        repo_dir: &Path,
+        base_commit: &str,
+        head: &str,
+        path_env: Option<&OsStr>,
+    ) -> Result<Vec<DiffEntry>, String> {
+        Ok(
+            git_review::diff_files(repo_dir, base_commit, head, path_env)?
+                .into_iter()
+                .map(|d| DiffEntry {
+                    path: d.path,
+                    change: d.change,
+                    binary: d.binary,
+                    added: d.added,
+                    removed: d.removed,
+                })
+                .collect(),
+        )
+    }
+
+    fn file_patch(
+        &self,
+        repo_dir: &Path,
+        base_commit: &str,
+        head: &str,
+        path: &str,
+        path_env: Option<&OsStr>,
+    ) -> Result<PatchText, String> {
+        let p = git_review::file_patch(repo_dir, base_commit, head, path, path_env)?;
+        Ok(PatchText {
+            binary: p.binary,
+            truncated: p.truncated,
+            patch: p.patch,
+        })
+    }
+
+    fn merge_into_base(
+        &self,
+        repo_dir: &Path,
+        base_branch: &str,
+        run_branch: &str,
+        message: &str,
+        path_env: Option<&OsStr>,
+    ) -> Result<Merge, String> {
+        Ok(
+            match git_review::merge_into_base(repo_dir, base_branch, run_branch, message, path_env)?
+            {
+                git_review::MergeOutcome::Merged { commit } => Merge::Merged { commit },
+                git_review::MergeOutcome::Conflict { files } => Merge::Conflict { files },
+                git_review::MergeOutcome::Blocked { reason } => Merge::Blocked { reason },
+            },
+        )
+    }
+
+    fn remove_run_worktree(
+        &self,
+        repo_dir: &Path,
+        worktree_root: &Path,
+        branch: &str,
+        cleanup: Cleanup,
+        path_env: Option<&OsStr>,
+    ) -> Result<(), String> {
+        let safe = git_review::remove_run_worktree(repo_dir, worktree_root, branch, path_env);
+        match (cleanup, safe) {
+            (_, Ok(())) => Ok(()),
+            (Cleanup::Merged, Err(err)) => Err(err),
+            // TODO(M3-03 的 BranchCleanup::Force 合入后改为直接调用)：安全删除失败（分支未合并）时强制删除。
+            (Cleanup::Force, Err(_)) => {
+                if worktree_root.exists() {
+                    git(
+                        repo_dir,
+                        &[
+                            "worktree",
+                            "remove",
+                            "--force",
+                            "--",
+                            &worktree_root.to_string_lossy(),
+                        ],
+                        path_env,
+                    )
+                    .map_err(|err| format!("删除执行 worktree 失败：{err}"))?;
+                }
+                let exists = git(
+                    repo_dir,
+                    &[
+                        "show-ref",
+                        "--verify",
+                        "--quiet",
+                        &format!("refs/heads/{branch}"),
+                    ],
+                    path_env,
+                )
+                .is_ok();
+                if exists {
+                    git(repo_dir, &["branch", "-D", "--", branch], path_env)
+                        .map_err(|err| format!("删除执行分支失败：{err}"))?;
+                }
+                Ok(())
+            }
+        }
+    }
+
+    fn is_merged_into(
+        &self,
+        repo_dir: &Path,
+        run_branch: &str,
+        base_branch: &str,
+        path_env: Option<&OsStr>,
+    ) -> Result<bool, String> {
+        // TODO(M3-03 的 git_review::is_merged_into 合入后改为调用它)。
+        let verify = |name: &str| {
+            git(
+                repo_dir,
+                &[
+                    "rev-parse",
+                    "--verify",
+                    "--quiet",
+                    &format!("refs/heads/{name}"),
+                ],
+                path_env,
+            )
+            .map_err(|_| format!("分支 {name} 不存在"))
+        };
+        verify(run_branch)?;
+        verify(base_branch)?;
+        Ok(git(
+            repo_dir,
+            &[
+                "merge-base",
+                "--is-ancestor",
+                &format!("refs/heads/{run_branch}"),
+                &format!("refs/heads/{base_branch}"),
+            ],
+            path_env,
+        )
+        .is_ok())
+    }
+
+    fn branch_head(
+        &self,
+        repo_dir: &Path,
+        branch: &str,
+        path_env: Option<&OsStr>,
+    ) -> Option<String> {
+        git(
+            repo_dir,
+            &[
+                "rev-parse",
+                "--verify",
+                "--quiet",
+                &format!("refs/heads/{branch}"),
+            ],
+            path_env,
+        )
+        .ok()
+        .map(|s| s.trim().to_owned())
+        .filter(|s| !s.is_empty())
+    }
+
+    fn base_branch(&self, worktree: &Worktree) -> Option<String> {
+        worktree.base_branch.clone()
+    }
+}

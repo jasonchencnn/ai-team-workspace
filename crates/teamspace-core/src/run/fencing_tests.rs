@@ -288,7 +288,9 @@ fn late_exec_capability_and_session_writes_are_fenced() {
         core.write(|tx| store_run::set_session(tx, id, "旧会话"))
     });
     assert_late_write_is_ignored("set_exec()", false, |core, id| {
-        core.write(|tx| store_run::set_exec(tx, id, "/elsewhere", Some("b"), Some("c")))
+        core.write(|tx| {
+            store_run::set_exec(tx, id, "/elsewhere", Some("b"), Some("c"), Some("main"))
+        })
     });
     assert_late_write_is_ignored("set_capabilities()", false, |core, id| {
         core.write(|tx| store_run::set_capabilities(tx, id, &AcpCapabilities::default()))
