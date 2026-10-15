@@ -1,7 +1,10 @@
 import { useQuery } from "@tanstack/react-query";
-import { useLocation, useParams } from "react-router";
+import { useLocation, useParams, useSearchParams } from "react-router";
 import { getTeamOverview, listRoles, listTeams } from "../api/commands.js";
 import { queryKeys } from "../api/queryKeys.js";
+
+/** 共享文件页：/teams/:teamId/files，面包屑里多出「共享文件」和当前文件。 */
+const FILES_PATH = /^\/teams\/[^/]+\/files\/?$/;
 
 /** 工作区是普通文件夹时，顶栏用文件夹名代替分支；完整路径放在 title 里。 */
 function folderName(path: string): string {
@@ -12,7 +15,10 @@ function folderName(path: string): string {
 export function TopBar() {
   const { teamId, roleId } = useParams();
   const location = useLocation();
+  const [search] = useSearchParams();
   const teams = useQuery({ queryKey: queryKeys.teams, queryFn: listTeams });
+  const onFiles = FILES_PATH.test(location.pathname);
+  const currentFile = onFiles ? (search.get("path") ?? "") : "";
   // 与团队空间共用同一份缓存；无当前团队时不请求。
   const overview = useQuery({
     queryKey: queryKeys.teamOverview(teamId ?? ""),
@@ -54,6 +60,18 @@ export function TopBar() {
           <>
             <span aria-hidden="true">/</span>
             <span aria-current="page">{roleName}</span>
+          </>
+        )}
+        {onFiles ? (
+          <>
+            <span aria-hidden="true">/</span>
+            <span aria-current={currentFile === "" ? "page" : undefined}>共享文件</span>
+          </>
+        ) : null}
+        {currentFile === "" ? null : (
+          <>
+            <span aria-hidden="true">/</span>
+            <span aria-current="page">{currentFile}</span>
           </>
         )}
       </div>

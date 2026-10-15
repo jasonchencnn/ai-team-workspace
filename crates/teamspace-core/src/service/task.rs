@@ -11,8 +11,8 @@ use super::{MAX_LONG_TEXT, MAX_REASON, MAX_TITLE, role, team, text};
 use crate::error::{Error, Result};
 use crate::model::{
     BoardColumn, ChangeTaskStatusInput, CreateTaskInput, EventKind, FileRef, FileRefView,
-    StatusCount, Task, TaskBoard, TaskBoardQuery, TaskDetail, TaskStatus, TaskSummary,
-    UpdateTaskInput,
+    FileTaskRef, RoleRef, StatusCount, Task, TaskBoard, TaskBoardQuery, TaskDetail, TaskStatus,
+    TaskSummary, UpdateTaskInput,
 };
 use crate::store::{enum_col, enum_str, new_id, non_blank, now};
 
@@ -82,6 +82,61 @@ SELECT t.id, t.key, t.title, t.status, t.blocked_reason, t.updated_at,
        COALESCE((SELECT x.change_incomplete FROM runs x WHERE x.task_id = t.id
                  ORDER BY x.attempt DESC LIMIT 1), 0)
 FROM tasks t JOIN roles r ON r.id = t.owner_role_id";
+
+/// 团队中引用了 `path` 的任务（共享文件页右侧），按状态顺序再按编号排序。
+///
+/// 一个任务引用同一文件多次只出现一次（锚点取第一条引用）。团队没有任务引用这个文件时返回空列表，
+/// 不报错——页面要显示的是「暂无任务引用」。
+pub(crate) fn referencing_file(
+    conn: &Connection,
+    team_id: &str,
+    path: &str,
+) -> Result<Vec<FileTaskRef>> {
+    if path.is_empty() {
+        return Err(Error::invalid("请选择文件"));
+    }
+    let mut stmt = conn.prepare_cached(
+        "SELECT t.id, t.key, t.title, t.status,
+                r.id, r.name, r.code, r.task_prefix, r.archived_at IS NOT NULL, t.updated_at,
+                (SELECT a.anchor FROM task_file_refs a
+                  WHERE a.task_id = t.id AND a.path = ?2 ORDER BY a.position LIMIT 1)
+         FROM tasks t JOIN roles r ON r.id = t.owner_role_id
+         WHERE t.team_id = ?1
+           AND t.team_id IN (SELECT id FROM teams WHERE archived_at IS NULL)
+           AND EXISTS (SELECT 1 FROM task_file_refs f WHERE f.task_id = t.id AND f.path = ?2)
+         ORDER BY t.key",
+    )?;
+    let mut refs: Vec<FileTaskRef> = stmt
+        .query_map(params![team_id, path], |row| {
+            Ok(FileTaskRef {
+                id: row.get(0)?,
+                key: row.get(1)?,
+                title: row.get(2)?,
+                status: enum_col(row, 3)?,
+                owner: RoleRef {
+                    id: row.get(4)?,
+                    name: row.get(5)?,
+                    code: row.get(6)?,
+                    task_prefix: row.get(7)?,
+                    archived: row.get(8)?,
+                },
+                updated_at: row.get(9)?,
+                anchor: row.get(10)?,
+            })
+        })?
+        .collect::<rusqlite::Result<_>>()?;
+    // 状态按标准顺序（待办 → 取消）而不是字母序，进行中的任务才排在前面。
+    refs.sort_by_key(|entry| {
+        (
+            TaskStatus::ALL
+                .iter()
+                .position(|status| *status == entry.status)
+                .unwrap_or(usize::MAX),
+            entry.key.clone(),
+        )
+    });
+    Ok(refs)
+}
 
 fn summaries(conn: &Connection, filter: &str, param: &str) -> Result<Vec<TaskSummary>> {
     let mut stmt = conn.prepare(&format!(

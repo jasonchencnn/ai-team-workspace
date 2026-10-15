@@ -1,6 +1,7 @@
 import { Route, Routes } from "react-router";
 import { AppShell } from "./shell/AppShell.js";
 import { ActivityPage } from "./pages/activity/ActivityPage.js";
+import { FilesPage } from "./pages/files/FilesPage.js";
 import { HarnessDetailPage } from "./pages/harness-detail/HarnessDetailPage.js";
 import { IndexRedirect } from "./pages/index/IndexRedirect.js";
 import { ReviewPage } from "./pages/review/ReviewPage.js";
@@ -24,6 +25,7 @@ export function AppRoutes() {
         <Route path="teams/:teamId/tasks/:taskId/edit" element={<TaskFormPage />} />
         <Route path="teams/:teamId/tasks/:taskId" element={<TaskDetailPage />} />
         <Route path="teams/:teamId/tasks/:taskId/review" element={<ReviewPage />} />
+        <Route path="teams/:teamId/files" element={<FilesPage />} />
         <Route path="teams/:teamId/roles" element={<RolesPage />} />
         <Route path="teams/:teamId/roles/:roleId/workbench" element={<RoleWorkbenchPage />} />
         <Route path="teams/:teamId/activity" element={<ActivityPage />} />

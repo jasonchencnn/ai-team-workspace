@@ -688,7 +688,7 @@ test("UI-DETAIL-002 任务说明与文件引用展示：锚点、失效引用、
   await page.getByRole("button", { name: "创建并分配" }).click();
   await expect(page.getByRole("heading", { level: 1, name: withRefs })).toBeVisible();
 
-  // 文件建好后被删掉：引用应显示「文件不存在」并用 missing 样式。
+  // 文件建好后被删掉：引用应显示「文件已被移动或删除」（画板 4:435）并用 missing 样式。
   unlinkSync(join(workspace, "gone.md"));
   await page.reload();
   await expect(page.getByRole("heading", { level: 1, name: withRefs })).toBeVisible();
@@ -702,7 +702,7 @@ test("UI-DETAIL-002 任务说明与文件引用展示：锚点、失效引用、
   await expect(chinese).not.toHaveText(/#/);
   const missing = files.locator("li", { hasText: "gone.md" });
   await expect(missing).toHaveClass(/file-chip--missing/);
-  await expect(missing).toContainText("文件不存在");
+  await expect(missing).toContainText("文件已被移动或删除");
   await expect(missing).not.toHaveText(/#/);
   await expect(page.getByText("引用三个文件，其中一个稍后被删除。")).toBeVisible();
   await shot(page, "detail-002-file-refs", files);

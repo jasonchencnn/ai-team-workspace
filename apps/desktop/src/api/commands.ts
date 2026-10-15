@@ -16,7 +16,13 @@ import type { ErrorPayload } from "../bindings/ErrorPayload.js";
 import type { EventPage } from "../bindings/EventPage.js";
 import type { EventQuery } from "../bindings/EventQuery.js";
 import type { FileSearchQuery } from "../bindings/FileSearchQuery.js";
+import type { FileTasksQuery } from "../bindings/FileTasksQuery.js";
+import type { FileTaskRef } from "../bindings/FileTaskRef.js";
 import type { HarnessInstance } from "../bindings/HarnessInstance.js";
+import type { MarkdownFile } from "../bindings/MarkdownFile.js";
+import type { MarkdownList } from "../bindings/MarkdownList.js";
+import type { MarkdownListQuery } from "../bindings/MarkdownListQuery.js";
+import type { MarkdownReadQuery } from "../bindings/MarkdownReadQuery.js";
 import type { RejectReviewInput } from "../bindings/RejectReviewInput.js";
 import type { RerunAfterConflictInput } from "../bindings/RerunAfterConflictInput.js";
 import type { ResolveMergeManuallyInput } from "../bindings/ResolveMergeManuallyInput.js";
@@ -174,6 +180,20 @@ export const changeTaskStatus = (input: ChangeTaskStatusInput) =>
 /** 在团队工作区中搜索文件，返回相对路径（最多 50 条）。 */
 export const searchWorkspaceFiles = (input: FileSearchQuery) =>
   invoke<string[]>("search_workspace_files", { input });
+
+// ---------------------------------------------------------------- 共享文件
+
+/** 列出工作空间内的全部 Markdown 文件（相对路径、已排序；truncated 表示可能还有更多）。 */
+export const listWorkspaceMarkdown = (input: MarkdownListQuery) =>
+  invoke<MarkdownList>("list_workspace_markdown", { input });
+
+/** 读取工作空间内的一个 Markdown 文件（只读；越界或非 .md 由内核拒绝）。 */
+export const readWorkspaceMarkdown = (input: MarkdownReadQuery) =>
+  invoke<MarkdownFile>("read_workspace_markdown", { input });
+
+/** 引用了某个文件的任务（编号、标题、状态、负责岗位）。 */
+export const listTasksReferencingFile = (input: FileTasksQuery) =>
+  invoke<FileTaskRef[]>("list_tasks_referencing_file", { input });
 
 // ---------------------------------------------------------------- 执行
 

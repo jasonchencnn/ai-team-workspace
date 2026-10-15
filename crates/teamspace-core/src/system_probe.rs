@@ -235,6 +235,34 @@ fn relative_path(root: &Path, path: &Path) -> String {
         .join("/")
 }
 
+/// 路径是不是值得列出来的 Markdown 文件：扩展名 `md`（不区分大小写），且路径里没有以 `.` 开头的
+/// 目录段（`.git`、`.github` 等）也没有 [`SKIPPED_DIRS`] 里的常见大目录。
+///
+/// 两套清单都过这道筛：Git 清单里 `node_modules` 只有被 `.gitignore` 忽略时才不出现，目录遍历则是
+/// 直接跳过——不统一的话，同一个目录换个 Git 跟踪状态就在共享文件页里冒出来了。
+fn is_listable_markdown(path: &str) -> bool {
+    let candidate = Path::new(path);
+    if !candidate
+        .extension()
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("md"))
+    {
+        return false;
+    }
+    candidate.components().all(|component| {
+        let name = component.as_os_str().to_string_lossy();
+        !name.starts_with('.') && !SKIPPED_DIRS.contains(&name.as_ref())
+    })
+}
+
+/// Markdown 文件是否真的在工作空间里：解析符号链接后仍位于 `root` 之下，且是普通文件。
+///
+/// 符号链接指向工作空间之外（或者指向一个已删除的目标）时为 false——共享文件页只显示工作空间里的
+/// 内容，不因为一个链接把别处的文件读进来。
+fn markdown_in_workspace(root: &Path, relative: &str) -> bool {
+    std::fs::canonicalize(root.join(relative))
+        .is_ok_and(|real| real.is_file() && real.starts_with(root))
+}
+
 /// 给 Git 子进程统一设置的环境变量。
 ///
 /// `GIT_TERMINAL_PROMPT=0` 不做交互式凭据提问，避免远程仓库查询把界面卡住；`GIT_CONFIG_NOSYSTEM=1`
@@ -309,6 +337,30 @@ impl SystemProbe for LocalProbe {
             None => collect_files(workspace, MAX_SCANNED_FILES),
         };
         Ok(select_files(paths, query, limit))
+    }
+
+    fn list_markdown_files(&self, workspace: &Path, limit: usize) -> Result<Vec<String>> {
+        ensure_workspace_dir(workspace)?;
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+
+        // 与搜索同一份清单：Git 目录问 Git，普通文件夹遍历目录树。
+        let paths = match self.git_list_files(workspace)? {
+            Some(paths) => paths,
+            None => collect_files(workspace, MAX_SCANNED_FILES),
+        };
+        // 工作空间自己可能就是经链接进来的（macOS 的 /tmp 指向 /private/tmp），两边都用真实路径比较。
+        let root = workspace
+            .canonicalize()
+            .map_err(|err| Error::internal(format!("无法访问工作空间目录：{err}")))?;
+        let mut files: Vec<String> = paths
+            .into_iter()
+            .filter(|path| is_listable_markdown(path) && markdown_in_workspace(&root, path))
+            .collect();
+        files.sort();
+        files.truncate(limit);
+        Ok(files)
     }
 
     fn locate_command(&self, command: &str) -> Option<String> {

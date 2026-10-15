@@ -41,6 +41,14 @@ impl SystemProbe for BridgeProbe {
         self.0.search_files(workspace, query, limit)
     }
 
+    fn list_markdown_files(
+        &self,
+        workspace: &Path,
+        limit: usize,
+    ) -> teamspace_core::Result<Vec<String>> {
+        self.0.list_markdown_files(workspace, limit)
+    }
+
     fn locate_command(&self, command: &str) -> Option<String> {
         self.0.locate_command(command)
     }
@@ -253,6 +261,9 @@ fn dispatch(ts: &Teamspace, cmd: &str, args: &Value) -> CmdResult {
         "update_task" => out(ts.update_task(arg(args, "input")?)),
         "change_task_status" => out(ts.change_task_status(arg(args, "input")?)),
         "search_workspace_files" => out(ts.search_workspace_files(arg(args, "input")?)),
+        "list_workspace_markdown" => out(ts.list_workspace_markdown(arg(args, "input")?)),
+        "read_workspace_markdown" => out(ts.read_workspace_markdown(arg(args, "input")?)),
+        "list_tasks_referencing_file" => out(ts.list_tasks_referencing_file(arg(args, "input")?)),
         "start_run" => out(ts.start_run(&arg::<String>(args, "taskId")?)),
         "cancel_run" => out(ts.cancel_run(&arg::<String>(args, "runId")?)),
         "resume_run" => out(ts.resume_run(&arg::<String>(args, "runId")?)),

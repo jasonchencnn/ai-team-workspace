@@ -26,6 +26,13 @@ export const queryKeys = {
   /** 某团队全部活动查询的前缀。 */
   teamEvents: (teamId: string) => ["teams", teamId, "events"] as const,
   events: (teamId: string, query: EventQuery) => ["teams", teamId, "events", query] as const,
+  /** 共享文件页的工作空间 Markdown 列表。挂在团队之下，随「刷新文件列表」重新取。 */
+  markdownFiles: (teamId: string) => ["teams", teamId, "markdown-files"] as const,
+  markdownFile: (teamId: string, path: string) =>
+    ["teams", teamId, "markdown-files", "doc", path] as const,
+  /** 引用了某个文件的任务，挂在该文件的查询之下。 */
+  fileTaskRefs: (teamId: string, path: string) =>
+    ["teams", teamId, "markdown-files", "doc", path, "task-refs"] as const,
   roleTemplates: ["role-templates"] as const,
   acpPresets: ["acp-presets"] as const,
   taskStatuses: ["task-statuses"] as const,

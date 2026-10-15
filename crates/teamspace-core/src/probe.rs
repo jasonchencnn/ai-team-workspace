@@ -17,6 +17,9 @@ pub const FILE_SEARCH_LIMIT: usize = 50;
 /// 普通文件夹（非 Git）文件搜索时最多扫描的文件数，超过后停止遍历。
 pub const MAX_SCANNED_FILES: usize = 20_000;
 
+/// 共享文件页一次最多列出多少个 Markdown 文件，超过后前端显示「已截断」。
+pub const MARKDOWN_FILE_LIMIT: usize = 5_000;
+
 pub trait SystemProbe: Send + Sync {
     /// 探测工作空间目录。`path` 由内核规范化为已存在目录的绝对路径后传入，内核会以它覆盖
     /// 返回值的 `path`（工作空间就是所选目录本身，不提升为仓库根）。
@@ -33,6 +36,16 @@ pub trait SystemProbe: Send + Sync {
     /// - 普通文件夹：遍历目录树，跳过隐藏文件与目录（以 `.` 开头）以及 `node_modules`、`target`、
     ///   `dist`、`build` 等常见大目录，扫描 [`MAX_SCANNED_FILES`] 个文件后停止。
     fn search_files(&self, workspace: &Path, query: &str, limit: usize) -> Result<Vec<String>>;
+
+    /// 列出工作空间里的全部 Markdown 文件（共享文件页用），返回相对工作空间目录、`/` 分隔的路径，
+    /// 按路径排序，最多 `limit` 个；列出 `limit` 个即视为可能还有更多（调用方据此标记截断）。
+    ///
+    /// 清单来源与 [`SystemProbe::search_files`] 相同：Git 目录问 `git ls-files`（已跟踪与未跟踪但未忽略），
+    /// 普通文件夹遍历目录树。之后两套清单都过同一道筛：只要 `.md`，路径里不含以 `.` 开头的目录段
+    /// （`.git` 等）也不含 `node_modules`、`target`、`dist`、`build`。
+    ///
+    /// **不跟随指向工作空间之外的符号链接**：链接解析后在工作空间外或读不到的一律不列。
+    fn list_markdown_files(&self, workspace: &Path, limit: usize) -> Result<Vec<String>>;
 
     /// 在补全后的 PATH（进程 PATH + 登录 shell 的 PATH + 常见安装目录）中查找命令，返回可执行文件的
     /// 绝对路径；`command` 含 `/` 时按路径判断是否可执行。不运行任何程序。

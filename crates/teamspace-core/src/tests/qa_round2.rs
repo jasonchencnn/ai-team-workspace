@@ -1085,6 +1085,9 @@ impl SystemProbe for ClaudeProbe {
     fn search_files(&self, workspace: &Path, query: &str, limit: usize) -> Result<Vec<String>> {
         FakeProbe.search_files(workspace, query, limit)
     }
+    fn list_markdown_files(&self, workspace: &Path, limit: usize) -> Result<Vec<String>> {
+        FakeProbe.list_markdown_files(workspace, limit)
+    }
     fn locate_command(&self, command: &str) -> Option<String> {
         match command {
             "claude-code-acp" => self

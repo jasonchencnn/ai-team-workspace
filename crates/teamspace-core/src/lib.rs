@@ -16,6 +16,7 @@ mod store;
 pub mod system_probe;
 #[cfg(test)]
 mod tests;
+pub mod workspace_file;
 
 pub use api::{AgentCommand, HostConfig, RUN_EVENT, Teamspace};
 pub use error::{Error, ErrorKind, ErrorPayload, Result};

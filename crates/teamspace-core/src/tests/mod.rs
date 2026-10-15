@@ -2,6 +2,7 @@
 
 mod dependencies;
 mod events;
+mod files;
 mod folders;
 mod harnesses;
 #[cfg(unix)]
@@ -74,29 +75,23 @@ impl SystemProbe for FakeProbe {
     }
 
     fn search_files(&self, workspace: &Path, query: &str, limit: usize) -> Result<Vec<String>> {
-        fn walk(root: &Path, dir: &Path, out: &mut Vec<String>) {
-            for entry in fs::read_dir(dir).unwrap() {
-                let path = entry.unwrap().path();
-                if path.file_name().unwrap().to_string_lossy().starts_with('.') {
-                    continue;
-                }
-                if path.is_dir() {
-                    walk(root, &path, out);
-                } else {
-                    let rel = path.strip_prefix(root).unwrap();
-                    out.push(rel.to_string_lossy().replace('\\', "/"));
-                }
-            }
-        }
-        let mut out = Vec::new();
-        walk(workspace, workspace, &mut out);
-        out.sort();
+        let out = walk_files(workspace);
         let query = query.to_lowercase();
         Ok(out
             .into_iter()
             .filter(|p| p.to_lowercase().contains(&query))
             .take(limit)
             .collect())
+    }
+
+    fn list_markdown_files(&self, workspace: &Path, limit: usize) -> Result<Vec<String>> {
+        let mut files: Vec<String> = walk_files(workspace)
+            .into_iter()
+            .filter(|path| path.ends_with(".md"))
+            .collect();
+        files.sort();
+        files.truncate(limit);
+        Ok(files)
     }
 
     fn locate_command(&self, command: &str) -> Option<String> {
@@ -141,6 +136,28 @@ impl SystemProbe for FakeProbe {
         OPENED.with(|opened| opened.borrow_mut().push(path.to_path_buf()));
         Ok(())
     }
+}
+
+/// 遍历工作空间里的文件（相对 `/` 分隔，跳过以 `.` 开头的条目），供假探测的搜索与列举共用。
+fn walk_files(root: &Path) -> Vec<String> {
+    fn walk(root: &Path, dir: &Path, out: &mut Vec<String>) {
+        for entry in fs::read_dir(dir).unwrap().flatten() {
+            let path = entry.path();
+            if path.file_name().unwrap().to_string_lossy().starts_with('.') {
+                continue;
+            }
+            if path.is_dir() {
+                walk(root, &path, out);
+            } else {
+                let rel = path.strip_prefix(root).unwrap();
+                out.push(rel.to_string_lossy().replace('\\', "/"));
+            }
+        }
+    }
+    let mut out = Vec::new();
+    walk(root, root, &mut out);
+    out.sort();
+    out
 }
 
 pub(crate) struct Fixture {

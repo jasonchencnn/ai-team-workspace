@@ -52,6 +52,14 @@ impl SystemProbe for Probe {
         self.inner.search_files(workspace, query, limit)
     }
 
+    fn list_markdown_files(
+        &self,
+        workspace: &Path,
+        limit: usize,
+    ) -> teamspace_core::Result<Vec<String>> {
+        self.inner.list_markdown_files(workspace, limit)
+    }
+
     fn locate_command(&self, command: &str) -> Option<String> {
         if self.nothing_installed || self.missing.contains(&command) {
             return None;

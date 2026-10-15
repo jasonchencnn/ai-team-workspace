@@ -9,6 +9,7 @@
 //! - TS 类型由 `pnpm run bindings` 生成到 `apps/desktop/src/bindings/`。
 
 mod event;
+mod file;
 mod harness;
 mod review;
 mod role;
@@ -18,6 +19,7 @@ mod task;
 mod team;
 
 pub use event::*;
+pub use file::*;
 pub use harness::*;
 pub use review::*;
 pub use role::*;
