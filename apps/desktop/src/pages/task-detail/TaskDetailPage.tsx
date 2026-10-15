@@ -2,7 +2,13 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { Link, useNavigate, useParams } from "react-router";
 
-import { changeTaskStatus, getTask, listRoles, listTaskStatuses } from "../../api/commands.js";
+import {
+  changeTaskStatus,
+  getReview,
+  getTask,
+  listRoles,
+  listTaskStatuses,
+} from "../../api/commands.js";
 import { errorMessage } from "../../api/errors.js";
 import { queryKeys } from "../../api/queryKeys.js";
 import {
@@ -48,6 +54,16 @@ export function TaskDetailPage() {
     enabled: teamId !== "",
   });
   const runApi = useTaskRuns(teamId, taskId);
+  // 「去验收」入口：待验收，或因合并冲突受阻（是否因冲突以验收数据的 conflict 为准）。
+  const taskStatus = detail.data?.task.status;
+  const reviewEntry = useQuery({
+    queryKey: queryKeys.review(teamId, taskId),
+    queryFn: () => getReview(taskId),
+    enabled:
+      teamId !== "" && taskId !== "" && (taskStatus === "review" || taskStatus === "blocked"),
+  });
+  const reviewVisible =
+    taskStatus === "review" || (taskStatus === "blocked" && reviewEntry.data?.conflict === true);
 
   const statusLabel = (status: TaskStatus) =>
     statuses.data?.find((info) => info.status === status)?.label ?? status;
@@ -199,6 +215,28 @@ export function TaskDetailPage() {
           </>
         }
       />
+
+      {reviewVisible ? (
+        <div className="task-detail__review-entry" role="region" aria-label="验收入口">
+          <div>
+            <strong>
+              {taskStatus === "review" ? "这个任务在等你验收" : "合并冲突，需要你处理"}
+            </strong>
+            <p>
+              {taskStatus === "review"
+                ? "查看摘要与改动，通过或退回。"
+                : "查看冲突说明，手动合并后标记完成，或重新执行。"}
+            </p>
+          </div>
+          <Button
+            onClick={() => {
+              void navigate(`${boardPath}/${task.id}/review`);
+            }}
+          >
+            去验收
+          </Button>
+        </div>
+      ) : null}
 
       {run === null && roleProblems.length === 0 ? (
         <p className="task-detail__hint">准备就绪后即可派给「{owner.name}」执行。</p>

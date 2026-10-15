@@ -54,6 +54,11 @@ impl SystemProbe for BridgeProbe {
         Ok(())
     }
 
+    fn open_path(&self, path: &Path) -> teamspace_core::Result<()> {
+        println!("open {}", path.display());
+        Ok(())
+    }
+
     fn command_path_env(&self) -> std::ffi::OsString {
         self.0.command_path_env()
     }
@@ -254,6 +259,10 @@ fn dispatch(ts: &Teamspace, cmd: &str, args: &Value) -> CmdResult {
         "mark_run_failed" => out(ts.mark_run_failed(&arg::<String>(args, "runId")?)),
         "takeover_run" => out(ts.takeover_run(&arg::<String>(args, "runId")?)),
         "open_run_dir" => out(ts.open_run_dir(&arg::<String>(args, "runId")?)),
+        "open_run_file" => out(ts.open_run_file(
+            &arg::<String>(args, "runId")?,
+            &arg::<String>(args, "path")?,
+        )),
         "get_run" => out(ts.get_run(&arg::<String>(args, "runId")?)),
         "list_runs" => out(ts.list_runs(&arg::<String>(args, "taskId")?)),
         "list_run_updates" => out(ts.list_run_updates(arg(args, "input")?)),

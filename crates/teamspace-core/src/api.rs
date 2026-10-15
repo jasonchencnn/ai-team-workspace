@@ -80,6 +80,7 @@ pub const COMMANDS: &[&str] = &[
     "mark_run_failed",
     "takeover_run",
     "open_run_dir",
+    "open_run_file",
     "get_run",
     "list_runs",
     "list_run_updates",
@@ -1040,6 +1041,32 @@ impl Teamspace {
             )));
         }
         self.probe.reveal_path(dir)
+    }
+
+    /// 用系统默认程序打开执行目录内的文件（验收页「打开文件」，D22）。`path` 是相对执行目录的路径
+    /// （即验收页改动文件的 `path`）：空、绝对路径、`..`、规范化后越出执行目录（含符号链接）一律 invalid；
+    /// 执行目录或文件不存在为 not_found；目录不是文件，invalid。
+    pub fn open_run_file(&self, run_id: &str, path: &str) -> Result<()> {
+        let run = run_svc::get(&self.lock(), run_id)?;
+        let dir = Path::new(&run.exec_dir);
+        if !dir.is_dir() {
+            return Err(Error::not_found(format!(
+                "执行目录不存在：{}",
+                run.exec_dir
+            )));
+        }
+        if path.trim().is_empty() {
+            return Err(Error::invalid("请指定要打开的文件"));
+        }
+        let target = role_folder::resolve_inside(dir, Some(path)).map_err(|err| match err {
+            Error::Invalid(_) => Error::invalid(format!("只能打开执行目录内的文件：{path}")),
+            Error::NotFound(_) => Error::not_found(format!("执行目录中没有「{path}」")),
+            other => other,
+        })?;
+        if target.is_dir() {
+            return Err(Error::invalid(format!("「{path}」是目录，不是文件")));
+        }
+        self.probe.open_path(&target)
     }
 
     /// 单个执行记录。

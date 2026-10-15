@@ -55,6 +55,7 @@ register_commands!(
     mark_run_failed,
     takeover_run,
     open_run_dir,
+    open_run_file,
     get_run,
     list_runs,
     list_run_updates,

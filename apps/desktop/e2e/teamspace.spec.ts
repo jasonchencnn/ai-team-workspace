@@ -273,11 +273,10 @@ test("任务 A：READY → 执行中 → 受阻 → 待验收 → 已完成，�
   await expect(page.getByText("状态 受阻 → 执行中")).toBeVisible();
   await shot(page, "task-a-done");
 
-  // B 的依赖已满足，现在可以转 READY
+  // B 的依赖已满足：M3-03 起前置任务完成后下游自动转 READY
   await gotoTeam(page, "/tasks");
   await card(page, /FE-002 接入注册接口/).click();
   await expect(page.getByText("进入 READY 前还需要")).toHaveCount(0);
-  await transition(page, "READY");
   await expect(statusLine(page)).toContainText("READY / FE-002");
   await shot(page, "task-b-ready");
 });

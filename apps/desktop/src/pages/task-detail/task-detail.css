@@ -182,3 +182,20 @@
   font-size: var(--font-size-caption);
   line-height: var(--line-height-caption);
 }
+
+.task-detail__review-entry {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-top: var(--space-section);
+  padding: 16px 24px;
+  border: 1px solid var(--color-brand);
+  border-radius: var(--radius-panel);
+  background: var(--color-info-surface);
+}
+
+.task-detail__review-entry p {
+  color: var(--color-muted);
+  font-size: var(--font-size-caption);
+}

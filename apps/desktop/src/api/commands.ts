@@ -204,6 +204,10 @@ export const takeoverRun = (runId: string) => invoke<Run>("takeover_run", { runI
 /** 在 Finder 中打开执行目录。 */
 export const openRunDir = (runId: string) => invoke<null>("open_run_dir", { runId });
 
+/** 用系统默认程序打开执行目录内的文件（path 相对执行目录，越界被拒绝）。 */
+export const openRunFile = (runId: string, path: string) =>
+  invoke<null>("open_run_file", { runId, path });
+
 /** 单个执行记录。 */
 export const getRun = (runId: string) => invoke<Run>("get_run", { runId });
 

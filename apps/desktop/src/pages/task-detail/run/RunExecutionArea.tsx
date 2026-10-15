@@ -88,11 +88,9 @@ export function RunExecutionArea({
   const ended = hasEnded(run);
   const status = runDisplayStatus(run);
 
+  // 「去验收」进入验收页（M3-06）；手动流转仍在任务详情的「状态操作」区。
   const goReview = () => {
-    const target = document.getElementById("task-status-actions");
-    if (target !== null) {
-      target.scrollIntoView({ behavior: "smooth", block: "start" });
-    }
+    void navigate(`/teams/${teamId}/tasks/${run.taskId}/review`);
   };
 
   return (

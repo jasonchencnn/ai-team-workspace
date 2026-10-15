@@ -188,3 +188,25 @@
 .task-table tbody tr:last-child td {
   border-bottom: 0;
 }
+
+.task-card-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.task-card__review {
+  align-self: flex-end;
+  padding: 4px 12px;
+  border-radius: var(--radius-pill);
+  background: var(--color-brand);
+  color: var(--color-surface);
+  font-size: var(--font-size-caption);
+  font-weight: 500;
+  text-decoration: none;
+}
+
+.task-card__review:focus-visible {
+  outline: 2px solid var(--color-brand);
+  outline-offset: 2px;
+}
