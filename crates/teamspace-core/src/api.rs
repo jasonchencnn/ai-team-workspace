@@ -1442,7 +1442,7 @@ impl Teamspace {
                     Ok(())
                 })?;
                 result.cleanup_problem =
-                    self.cleanup_run(run, &workspace, &branch, Cleanup::Merged);
+                    self.cleanup_run(run, &workspace, &branch, Cleanup::Merged(base.clone()));
             }
             review_seam::Merge::Conflict { files } => {
                 result.outcome = ApproveOutcome::Conflict;
@@ -1682,7 +1682,8 @@ impl Teamspace {
             task: task.clone(),
             run: run.clone(),
         };
-        result.cleanup_problem = self.cleanup_run(&run, &workspace, &branch, Cleanup::Merged);
+        result.cleanup_problem =
+            self.cleanup_run(&run, &workspace, &branch, Cleanup::Merged(base.clone()));
         self.sync_role_folders(&run.team_id);
         self.emit_run(&run.id);
         let conn = self.lock();
