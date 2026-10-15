@@ -12,7 +12,7 @@ use time::OffsetDateTime;
 use crate::error::{Error, Result};
 
 /// 当前 schema 版本。
-pub(crate) const SCHEMA_VERSION: i64 = 8;
+pub(crate) const SCHEMA_VERSION: i64 = 9;
 
 const SCHEMA_V1: &str = r#"
 CREATE TABLE teams (
@@ -300,8 +300,26 @@ const SCHEMA_V8: &str = r#"
 ALTER TABLE runs ADD COLUMN change_incomplete INTEGER NOT NULL DEFAULT 0;
 "#;
 
+/// v9：验收（M3-01，D20）。
+///
+/// - `base_branch`：worktree 执行开始时工作空间所在的分支（验收通过时合并进这个分支）；
+/// - `merged_commit`：验收通过、合并成功后基线分支上的合并提交；
+/// - `revision_of`：退回后续接的执行指向被退回的那次执行（同一执行目录、同一分支）；
+/// - `review_outcome` / `review_comment` / `reviewed_at`：这次执行的验收结果（approved / rejected /
+///   conflict）、退回意见与时间。
+const SCHEMA_V9: &str = r#"
+ALTER TABLE runs ADD COLUMN base_branch TEXT;
+ALTER TABLE runs ADD COLUMN merged_commit TEXT;
+ALTER TABLE runs ADD COLUMN revision_of TEXT REFERENCES runs (id);
+ALTER TABLE runs ADD COLUMN review_outcome TEXT
+    CHECK (review_outcome IS NULL OR review_outcome IN ('approved', 'rejected', 'conflict'));
+ALTER TABLE runs ADD COLUMN review_comment TEXT;
+ALTER TABLE runs ADD COLUMN reviewed_at TEXT;
+"#;
+
 const MIGRATIONS: &[&str] = &[
     SCHEMA_V1, SCHEMA_V2, SCHEMA_V3, SCHEMA_V4, SCHEMA_V5, SCHEMA_V6, SCHEMA_V7, SCHEMA_V8,
+    SCHEMA_V9,
 ];
 
 /// 打开数据库：WAL 日志、synchronous=NORMAL、开启外键，并迁移到当前版本。
@@ -743,6 +761,58 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn v8_runs_migrate_to_v9_with_review_columns() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("t.db");
+        {
+            let conn = Connection::open(&path).unwrap();
+            for sql in &MIGRATIONS[..8] {
+                conn.execute_batch(sql).unwrap();
+            }
+            conn.execute_batch(
+                "INSERT INTO teams VALUES ('t', 'T', '', '/w', 'a', 'a', NULL);
+                 INSERT INTO harnesses (id, team_id, name, preset, command, created_at, updated_at)
+                     VALUES ('h', 't', 'mock', 'mock', 'x', 'a', 'a');
+                 INSERT INTO roles (id, team_id, name, code, task_prefix, harness_id, created_at, updated_at)
+                     VALUES ('r', 't', '前端', 'role_fe', 'FE', 'h', 'a', 'a');
+                 INSERT INTO tasks (id, team_id, key, title, status, owner_role_id, created_at, updated_at)
+                     VALUES ('k', 't', 'FE-001', '页', 'review', 'r', 'a', 'a');
+                 INSERT INTO runs (id, team_id, task_id, role_id, harness_id, harness_name, harness_preset,
+                                   harness_command, attempt, status, workspace_path, exec_dir, isolation,
+                                   branch, base_commit, started_at)
+                     VALUES ('run', 't', 'k', 'r', 'h', 'mock', 'mock', 'x', 1, 'succeeded', '/w', '/x',
+                             'worktree', 'teamspace/FE-001-r1', 'abc', 'a');
+                 PRAGMA user_version = 8;",
+            )
+            .unwrap();
+        }
+        let conn = open(&path).unwrap();
+        let row: (
+            Option<String>,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+            String,
+        ) = conn
+            .query_row(
+                "SELECT base_branch, merged_commit, revision_of, review_outcome, branch FROM runs",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+            )
+            .unwrap();
+        assert_eq!(
+            row,
+            (None, None, None, None, "teamspace/FE-001-r1".to_owned())
+        );
+        assert!(
+            conn.execute("UPDATE runs SET review_outcome = 'maybe'", [])
+                .is_err()
+        );
+        conn.execute("UPDATE runs SET review_outcome = 'rejected'", [])
+            .unwrap();
     }
 
     #[test]

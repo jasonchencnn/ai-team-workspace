@@ -32,6 +32,19 @@ pub enum EventKind {
     RunInterrupted,
     /// 续接已中断的执行。
     RunResumed,
+    /// 验收通过（`data.runId`、`data.mergedCommit`；普通文件夹没有合并提交）。
+    ReviewApproved,
+    /// 验收退回（`data.runId`、`data.comment`、`data.revisionRunId`）。
+    ReviewRejected,
+    /// 验收通过时合并有冲突，已中止合并、基线不变，任务转为受阻（`data.conflictFiles`）。
+    ReviewConflict,
+    /// 验收通过时无法合并（如基线分支有未提交的改动），任务保持待验收（`data.reason`）。
+    ReviewMergeBlocked,
+    /// 合并成功后清理 worktree 或执行分支失败（不影响合并结果，`data.problem`）。
+    ReviewCleanupFailed,
+    /// 合并冲突后选择重新执行：任务回到 READY，旧执行分支与 worktree 已删除（`data.branch`、`data.commit`
+    /// 记下被删除分支的名称与提交，便于找回）。
+    ReviewRerun,
 }
 
 /// 操作者：Human，或 Teamspace 自己（执行引擎根据 Agent 的结果做的状态变化）。

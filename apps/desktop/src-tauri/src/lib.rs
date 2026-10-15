@@ -59,6 +59,12 @@ register_commands!(
     list_runs,
     list_run_updates,
     respond_permission,
+    get_review,
+    get_review_file_patch,
+    approve_review,
+    reject_review,
+    resolve_merge_manually,
+    rerun_after_conflict,
     list_events,
     pick_workspace_folder,
 );

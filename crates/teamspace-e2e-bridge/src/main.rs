@@ -258,6 +258,15 @@ fn dispatch(ts: &Teamspace, cmd: &str, args: &Value) -> CmdResult {
         "list_runs" => out(ts.list_runs(&arg::<String>(args, "taskId")?)),
         "list_run_updates" => out(ts.list_run_updates(arg(args, "input")?)),
         "respond_permission" => out(ts.respond_permission(arg(args, "input")?)),
+        "get_review" => out(ts.get_review(&arg::<String>(args, "taskId")?)),
+        "get_review_file_patch" => out(ts.get_review_file_patch(
+            &arg::<String>(args, "runId")?,
+            &arg::<String>(args, "path")?,
+        )),
+        "approve_review" => out(ts.approve_review(arg(args, "input")?)),
+        "reject_review" => out(ts.reject_review(arg(args, "input")?)),
+        "resolve_merge_manually" => out(ts.resolve_merge_manually(arg(args, "input")?)),
+        "rerun_after_conflict" => out(ts.rerun_after_conflict(arg(args, "input")?)),
         "__simulate_restart" => {
             ts.shutdown();
             Ok(Value::Null)
