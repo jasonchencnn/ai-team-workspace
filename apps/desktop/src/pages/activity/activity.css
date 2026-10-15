@@ -1,0 +1,77 @@
+.act-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 12px;
+  margin: var(--space-section) 0;
+}
+
+.act-state {
+  margin-top: var(--space-section);
+  color: var(--color-muted);
+}
+
+.act-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.act-event {
+  padding: 16px 20px;
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius-panel);
+  background: var(--color-surface);
+}
+
+.act-event__head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  font-size: var(--font-size-body);
+  font-weight: 600;
+}
+
+.act-event__time {
+  color: var(--color-ink);
+}
+
+.act-event__actor {
+  margin-top: 4px;
+  color: var(--color-muted);
+  font-size: var(--font-size-caption);
+}
+
+.act-event__summary {
+  margin-top: 4px;
+}
+
+.act-event__links {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+  color: var(--color-muted);
+  font-size: var(--font-size-caption);
+}
+
+.act-event__link {
+  color: var(--color-brand);
+  text-decoration: underline;
+}
+
+.act-more {
+  display: flex;
+  justify-content: center;
+  margin-top: var(--space-section);
+}
+
+.act-note {
+  color: var(--color-muted);
+  font-size: var(--font-size-caption);
+}
