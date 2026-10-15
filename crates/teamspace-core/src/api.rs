@@ -15,7 +15,6 @@
 //! 也会同步一次，从而为迁移前已有的岗位补建文件夹。文件写入失败不回滚已提交的数据，失败原因记入
 //! 岗位视图的 `folderProblem` 并记录一条 `role_folder_error` 活动。
 
-use std::collections::HashSet;
 use std::ops::Deref;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard, RwLock};
@@ -28,11 +27,11 @@ use crate::model::*;
 use crate::probe::FILE_SEARCH_LIMIT;
 use crate::probe::SystemProbe;
 use crate::role_folder;
-use crate::run::review_seam::{self, Cleanup, ReviewGit};
+use crate::run::review_seam::{self, ReviewGit};
 use crate::run::{Mode, Stop};
 use crate::service::run::{self as run_svc, Ending, NewRun};
 use crate::service::task::FileCheck;
-use crate::service::{event, folder, harness, review, role, task, team, workspace};
+use crate::service::{event, folder, harness, role, task, team, workspace};
 use crate::store;
 
 /// 只在 Tauri 层实现、不经过 [`Teamspace`] 的命令。
@@ -155,9 +154,9 @@ pub struct Core {
     /// 执行引擎状态。
     pub(crate) runs: crate::run::Runs,
     /// 验收用的 Git 层（测试可替换，见 [`review_seam`]）。
-    review_git: RwLock<Arc<dyn ReviewGit>>,
-    /// 正在处理验收（通过 / 退回）的任务：合并在数据库锁之外进行，同一任务的并发验收在这里拒绝。
-    reviewing: Mutex<HashSet<String>>,
+    pub(crate) review_git: RwLock<Arc<dyn ReviewGit>>,
+    /// 验收的并发控制：正在验收的任务、正在合并的仓库（见 [`crate::review_api`]）。
+    pub(crate) review_locks: crate::review_api::ReviewLocks,
 }
 
 impl Deref for Teamspace {
@@ -173,6 +172,13 @@ impl Teamspace {
     /// 仅测试用：取得内核共享状态的句柄，用于在 crate 内部构造 Driver 等对象。
     pub(crate) fn core_handle(&self) -> Arc<Core> {
         Arc::clone(&self.core)
+    }
+}
+
+impl Teamspace {
+    /// 内核共享状态的句柄（启动 driver 等需要 `Arc<Core>` 的场合）。
+    pub(crate) fn core_arc(&self) -> &Arc<Core> {
+        &self.core
     }
 }
 
@@ -208,9 +214,11 @@ impl Teamspace {
             data_dir,
             runs: crate::run::Runs::default(),
             review_git: RwLock::new(Arc::new(review_seam::RealGit)),
-            reviewing: Mutex::new(HashSet::new()),
+            review_locks: crate::review_api::ReviewLocks::default(),
         });
         core.recover_runs()?;
+        // 上次合并之后、落库之前退出的验收：按 Git 事实补记或清除「合并中」标记。
+        core.reconcile_merges();
         Ok(Self { core })
     }
 
@@ -231,58 +239,7 @@ impl Teamspace {
     }
 }
 
-/// 正在验收某任务的标记；drop 时释放。
-pub(crate) struct ReviewGuard<'a> {
-    set: &'a Mutex<HashSet<String>>,
-    task_id: String,
-}
-
-impl Drop for ReviewGuard<'_> {
-    fn drop(&mut self) {
-        self.set
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .remove(&self.task_id);
-    }
-}
-
 impl Core {
-    /// 验收用的 Git 层。
-    pub(crate) fn review_git(&self) -> Arc<dyn ReviewGit> {
-        Arc::clone(&self.review_git.read().unwrap_or_else(|p| p.into_inner()))
-    }
-
-    /// 仅测试用：替换验收用的 Git 层。
-    #[cfg(test)]
-    pub(crate) fn set_review_git(&self, git: Arc<dyn ReviewGit>) {
-        *self.review_git.write().unwrap_or_else(|p| p.into_inner()) = git;
-    }
-
-    /// 开始处理某任务的验收；同一任务已在处理时为 conflict。
-    fn begin_review(&self, task_id: &str, key: &str) -> Result<ReviewGuard<'_>> {
-        let mut set = self.reviewing.lock().unwrap_or_else(|p| p.into_inner());
-        if !set.insert(task_id.to_owned()) {
-            return Err(Error::conflict(format!(
-                "任务 {key} 正在处理验收，请稍候刷新"
-            )));
-        }
-        Ok(ReviewGuard {
-            set: &self.reviewing,
-            task_id: task_id.to_owned(),
-        })
-    }
-
-    /// worktree 根目录：执行目录在 `<数据目录>/worktrees/<团队>/<任务>-r<序号>[-n]/` 之下（工作空间是仓库
-    /// 子目录时执行目录是它的子目录）；不在这个结构下时就是执行目录本身。
-    fn worktree_root(&self, run: &Run) -> PathBuf {
-        let base = self.data_dir.join("worktrees").join(&run.team_id);
-        let exec = Path::new(&run.exec_dir);
-        exec.ancestors()
-            .find(|a| a.parent() == Some(base.as_path()))
-            .unwrap_or(exec)
-            .to_path_buf()
-    }
-
     pub(crate) fn lock(&self) -> MutexGuard<'_, Connection> {
         // 持锁线程 panic 时事务已回滚，连接仍可用。
         self.conn
@@ -721,6 +678,7 @@ impl Teamspace {
     /// 任务处于 ready 而修改后不再满足就绪条件时拒绝（conflict）；任务有活动执行（排队、运行、
     /// 等待授权）时整个编辑被拒绝（conflict）。
     pub fn update_task(&self, mut input: UpdateTaskInput) -> Result<TaskDetail> {
+        self.ensure_not_reviewing(&input.task_id)?;
         input.file_refs = task::normalize_refs(input.file_refs)?;
         let (workspace, _) = task::workspace_and_refs(&self.lock(), &input.task_id)?;
         let files = FileCheck::scan(Path::new(&workspace), &input.file_refs);
@@ -733,6 +691,7 @@ impl Teamspace {
     /// （负责岗位有效、文件引用可选，填写的引用须存在于工作区、所有依赖已完成）；进入 blocked 必须给出原因，
     /// 离开 blocked 清空原因。
     pub fn change_task_status(&self, input: ChangeTaskStatusInput) -> Result<TaskDetail> {
+        self.ensure_not_reviewing(&input.task_id)?;
         let (workspace, refs) = task::workspace_and_refs(&self.lock(), &input.task_id)?;
         let files = FileCheck::scan(Path::new(&workspace), &refs);
         let detail = self.write(|tx| task::change_status(tx, input, &files))?;
@@ -764,6 +723,7 @@ impl Teamspace {
     /// 普通文件夹原地）、启动 Agent、建立会话、发送任务说明，进度与状态通过执行事件推送
     /// （[`RUN_EVENT`]），也可用 `get_run` / `list_run_updates` 读取。
     pub fn start_run(&self, task_id: &str) -> Result<Run> {
+        self.ensure_not_reviewing(task_id)?;
         let (workspace, refs) = task::workspace_and_refs(&self.lock(), task_id)?;
         let files = FileCheck::scan(Path::new(&workspace), &refs);
         let info = self
@@ -892,6 +852,7 @@ impl Teamspace {
     /// 其他状态为 conflict。
     pub fn takeover_run(&self, run_id: &str) -> Result<Run> {
         let run = run_svc::get(&self.lock(), run_id)?;
+        self.ensure_not_reviewing(&run.task_id)?;
         if run.status.is_active() && self.stop_run(run_id, Stop::Takeover) {
             return run_svc::get(&self.lock(), run_id);
         }
@@ -906,6 +867,7 @@ impl Teamspace {
     /// 续接原会话，再发一条「继续」提示；任务须仍在执行中。不支持时为 conflict（请重新执行）。
     pub fn resume_run(&self, run_id: &str) -> Result<Run> {
         let run = run_svc::get(&self.lock(), run_id)?;
+        self.ensure_not_reviewing(&run.task_id)?;
         if run.status != RunStatus::Interrupted {
             return Err(Error::conflict(format!(
                 "只有已中断的执行可以续接（当前：{}）",
@@ -929,6 +891,7 @@ impl Teamspace {
                 run.exec_dir
             )));
         }
+        let _exec = self.runs.exec_lock();
         let mut registry = self.runs.registry();
         let reopened = self.write(|tx| {
             let task = task::get(tx, &run.task_id)?;
@@ -973,6 +936,7 @@ impl Teamspace {
     /// 把已中断的执行标记为失败：任务转为受阻（「执行失败：执行中断后由 Human 标记为失败」）。
     pub fn mark_run_failed(&self, run_id: &str) -> Result<Run> {
         let run = run_svc::get(&self.lock(), run_id)?;
+        self.ensure_not_reviewing(&run.task_id)?;
         if run.status != RunStatus::Interrupted {
             return Err(Error::conflict(format!(
                 "只有已中断的执行可以标记为失败（当前：{}）",
@@ -1058,6 +1022,12 @@ impl Teamspace {
         if path.trim().is_empty() {
             return Err(Error::invalid("请指定要打开的文件"));
         }
+        // 原地执行在工作空间之外的改动以绝对路径记录：不在执行目录内，不打开。
+        if Path::new(path).is_absolute() {
+            return Err(Error::invalid(format!(
+                "该文件不在执行目录内，无法打开：{path}"
+            )));
+        }
         let target = role_folder::resolve_inside(dir, Some(path)).map_err(|err| match err {
             Error::Invalid(_) => Error::invalid(format!("只能打开执行目录内的文件：{path}")),
             Error::NotFound(_) => Error::not_found(format!("执行目录中没有「{path}」")),
@@ -1065,6 +1035,10 @@ impl Teamspace {
         })?;
         if target.is_dir() {
             return Err(Error::invalid(format!("「{path}」是目录，不是文件")));
+        }
+        // 用系统默认程序「打开」可执行文件或脚本、安装包等会被直接运行，改为在 Finder 中显示。
+        if runs_when_opened(&target) {
+            return self.probe.reveal_path(&target);
         }
         self.probe.open_path(&target)
     }
@@ -1091,703 +1065,74 @@ impl Teamspace {
         run_svc::get(&self.lock(), &input.run_id)
     }
 
-    // ---------------------------------------------------------------- 验收
-
-    /// 验收页数据（见 [`ReviewView`]）：任务、待验收的执行（任务处于 REVIEW 时最近一次执行）、摘要、
-    /// 改动文件（Git：执行分支相对基线提交的 diff；普通文件夹：执行记录里的改动文件，多轮退回合在一起）、
-    /// 能否通过 / 退回及原因、历次退回意见。任务不在待验收时 `run` 为 `null`、不能通过也不能退回。
-    pub fn get_review(&self, task_id: &str) -> Result<ReviewView> {
-        let (task, run, rejections, workspace, files_in_place, instance, conflict) = {
-            let conn = self.lock();
-            let task = task::get(&conn, task_id)?;
-            let conflicted = review::conflict_run(&conn, &task)?;
-            let run = match &conflicted {
-                Some(r) => Some(r.clone()),
-                None => review::pending_run(&conn, &task)?,
-            };
-            let rejections = review::rejections(&conn, task_id)?;
-            let workspace = team::get_active(&conn, &task.team_id)?.workspace_path;
-            let files = match &run {
-                Some(r) if r.isolation == RunIsolation::InPlace => {
-                    Some(review::chain_files(&conn, r)?)
-                }
-                _ => None,
-            };
-            let instance = match &run {
-                Some(r) => harness::get_any(&conn, &r.harness.harness_id)?,
-                None => None,
-            };
-            let conflict = conflicted.is_some();
-            (task, run, rejections, workspace, files, instance, conflict)
-        };
-        let mut problems = Vec::new();
-        let mut approve_problems = Vec::new();
-        let mut reject_problems = Vec::new();
-        let mut files = Vec::new();
-        let mut files_problem = None;
-        if conflict {
-            problems.push(
-                "合并有冲突，任务已受阻：请在仓库中手动合并后「已手动合并，标记完成」，或「重新执行」".to_owned(),
-            );
-        } else if task.status != TaskStatus::Review {
-            problems.push(format!("任务当前是「{}」，不在待验收", task.status.label()));
-        }
-        match &run {
-            None if task.status == TaskStatus::Review => problems.push(
-                "任务没有可验收的执行记录（手动提交的验收），请用状态流转直接完成或退回 READY"
-                    .to_owned(),
-            ),
-            None => {}
-            Some(run) => {
-                match run.isolation {
-                    RunIsolation::InPlace => {
-                        files = files_in_place
-                            .unwrap_or_default()
-                            .into_iter()
-                            .map(|f| ReviewFile {
-                                path: f.path,
-                                change: f.change,
-                                binary: false,
-                                added: None,
-                                removed: None,
-                                has_patch: false,
-                            })
-                            .collect();
-                    }
-                    RunIsolation::Worktree => match (&run.base_commit, &run.branch) {
-                        (Some(base), Some(branch)) => {
-                            let path_env = self.probe.command_path_env();
-                            match self.review_git().diff_files(
-                                Path::new(&workspace),
-                                base,
-                                branch,
-                                Some(&path_env),
-                            ) {
-                                Ok(list) => {
-                                    files = list
-                                        .into_iter()
-                                        .map(|d| ReviewFile {
-                                            path: d.path,
-                                            change: d.change,
-                                            has_patch: !d.binary,
-                                            added: (!d.binary).then_some(d.added),
-                                            removed: (!d.binary).then_some(d.removed),
-                                            binary: d.binary,
-                                        })
-                                        .collect();
-                                }
-                                Err(err) => {
-                                    // 读不到分支 diff 时退回执行记录里的改动文件（没有 diff）。
-                                    files_problem = Some(format!("无法读取执行分支的改动：{err}"));
-                                    files = run
-                                        .changed_files
-                                        .iter()
-                                        .map(|f| ReviewFile {
-                                            path: f.path.clone(),
-                                            change: f.change,
-                                            binary: false,
-                                            added: None,
-                                            removed: None,
-                                            has_patch: false,
-                                        })
-                                        .collect();
-                                }
-                            }
-                        }
-                        _ => {
-                            approve_problems.push("执行没有记录分支或基线提交，无法合并".to_owned())
-                        }
-                    },
-                }
-                if !Path::new(&run.exec_dir).is_dir() {
-                    reject_problems.push(format!(
-                        "执行目录已不存在：{}，无法在原目录续接；请把任务退回 READY 后重新执行",
-                        run.exec_dir
-                    ));
-                }
-                match &instance {
-                    Some(h) if h.archived_at.is_none() => {}
-                    Some(h) => reject_problems.push(format!(
-                        "Harness「{}」已归档，无法续接；请把任务退回 READY 后重新执行",
-                        h.name
-                    )),
-                    None => reject_problems.push("这次执行的 Harness 不存在，无法续接".to_owned()),
-                }
-            }
-        }
-        let rerun_blockers = if conflict {
-            self.rerun_readiness(&task)?
-        } else {
-            Vec::new()
-        };
-        problems.extend(
-            rerun_blockers
-                .iter()
-                .map(|p| format!("重新执行前需要：{p}")),
-        );
-        let can_approve =
-            !conflict && problems.is_empty() && approve_problems.is_empty() && run.is_some();
-        let can_reject =
-            !conflict && problems.is_empty() && reject_problems.is_empty() && run.is_some();
-        problems.extend(approve_problems);
-        problems.extend(reject_problems);
-        Ok(ReviewView {
-            summary: run.as_ref().and_then(|r| r.summary.clone()),
-            isolation: run.as_ref().map(|r| r.isolation),
-            base_branch: run.as_ref().and_then(|r| r.base_branch.clone()),
-            branch: run.as_ref().and_then(|r| r.branch.clone()),
-            approve_action: run.as_ref().map(|r| match r.isolation {
-                RunIsolation::Worktree => ApproveAction::Merge,
-                RunIsolation::InPlace => ApproveAction::Complete,
-            }),
-            files,
-            files_problem,
-            can_approve,
-            can_reject,
-            problems,
-            rejections,
-            conflict,
-            can_resolve_manually: conflict,
-            can_rerun: conflict && rerun_blockers.is_empty(),
-            task,
-            run,
-        })
-    }
-
-    /// 一个改动文件的补丁（执行分支相对基线提交）。只对 Git 工作空间的执行提供（D20）：普通文件夹的执行
-    /// 为 invalid；路径不在改动文件中、或 Git 读取失败为 conflict。
-    pub fn get_review_file_patch(&self, run_id: &str, path: &str) -> Result<ReviewFilePatch> {
-        let (run, workspace) = {
-            let conn = self.lock();
-            (
-                run_svc::get(&conn, run_id)?,
-                run_svc::workspace_of(&conn, run_id)?,
-            )
-        };
-        if run.isolation == RunIsolation::InPlace {
-            return Err(Error::invalid(
-                "普通文件夹的执行没有逐文件 diff（改动已在原地发生），请直接查看文件",
-            ));
-        }
-        let (Some(base), Some(branch)) = (&run.base_commit, &run.branch) else {
-            return Err(Error::conflict("执行没有记录分支或基线提交，无法读取 diff"));
-        };
-        let path_env = self.probe.command_path_env();
-        let patch = self
-            .review_git()
-            .file_patch(Path::new(&workspace), base, branch, path, Some(&path_env))
-            .map_err(|err| Error::conflict(format!("无法读取 {path} 的 diff：{err}")))?;
-        Ok(ReviewFilePatch {
-            run_id: run.id,
-            path: path.to_owned(),
-            binary: patch.binary,
-            truncated: patch.truncated,
-            patch: patch.patch,
-        })
-    }
-
-    /// 通过验收（D20）。只接受任务当前待验收的执行（任务处于 REVIEW、是它的最近一次执行），否则为
-    /// conflict；同一任务的验收同时只处理一个。
-    ///
-    /// - 普通文件夹：任务直接完成（DONE）。
-    /// - Git：先把执行目录里尚未提交的改动提交到执行分支，再以 `--no-ff` 合并进基线分支（不推送）。
-    ///   合并成功 → 记录合并提交、任务完成，然后删除 worktree 与执行分支（清理失败不回滚，记一条活动，
-    ///   结果里给出 `cleanupProblem`）；有冲突 → 合并已中止、基线不变，任务转为受阻（原因写明冲突文件），
-    ///   执行分支与 worktree 保留；现在不能合并（基线分支有未提交改动等）→ 任务保持待验收，结果给出原因。
-    ///
-    /// 每种结果都写活动（进而写入岗位工作日志）。任务完成时在同一事务里调用依赖推进钩子
-    /// （`service::task::on_task_done`）。
-    pub fn approve_review(&self, input: ApproveReviewInput) -> Result<ApproveReviewResult> {
-        let (first, _) = review::check_pending(&self.lock(), &input.run_id)?;
-        let _guard = self.begin_review(&first.id, &first.key)?;
-        // 取得标记后重新校验（另一个验收可能刚刚处理完）。
-        let (task, run) = review::check_pending(&self.lock(), &input.run_id)?;
-        let mut result = ApproveReviewResult {
-            outcome: ApproveOutcome::Completed,
-            merged_commit: None,
-            conflict_files: Vec::new(),
-            reason: None,
-            cleanup_problem: None,
-            task: task.clone(),
-            run: run.clone(),
-        };
-        match run.isolation {
-            RunIsolation::InPlace => {
-                self.write(|tx| {
-                    let (task, run) = review::check_pending(tx, &run.id)?;
-                    review::set_outcome(tx, &run.id, ReviewOutcome::Approved, None, None)?;
-                    run_svc::move_task(
-                        tx,
-                        &task.id,
-                        TaskStatus::Done,
-                        None,
-                        Actor::Human,
-                        "验收通过",
-                    )?;
-                    run_svc::record_event(
-                        tx,
-                        &run,
-                        Actor::Human,
-                        EventKind::ReviewApproved,
-                        format!(
-                            "{} 第 {} 次执行验收通过（普通文件夹，改动已在原地）",
-                            run.task_key, run.attempt
-                        ),
-                        serde_json::json!({ "runId": run.id, "attempt": run.attempt }),
-                    )?;
-                    task::on_task_done(tx, &task.id)
-                })?;
-            }
-            RunIsolation::Worktree => self.approve_merge(&task, &run, &mut result)?,
-        }
-        self.sync_role_folders(&run.team_id);
-        self.emit_run(&run.id);
-        let conn = self.lock();
-        result.task = task::get(&conn, &task.id)?;
-        result.run = run_svc::get(&conn, &run.id)?;
-        Ok(result)
-    }
-
-    /// Git 工作空间的「通过」：提交、合并、记录结果、清理（见 [`Teamspace::approve_review`]）。
-    fn approve_merge(
-        &self,
-        task: &Task,
-        run: &Run,
-        result: &mut ApproveReviewResult,
-    ) -> Result<()> {
-        let git = self.review_git();
-        let path_env = self.probe.command_path_env();
-        let workspace = run_svc::workspace_of(&self.lock(), &run.id)?;
-        let Some(branch) = run.branch.clone() else {
-            return Err(Error::conflict("执行没有记录分支，无法合并"));
-        };
-        // 基线分支：执行开始时记下的；M3 之前的执行没有记录，退回到工作空间当前所在的分支。
-        let base_branch = run.base_branch.clone().or_else(|| {
-            self.inspect(&workspace)
-                .ok()
-                .and_then(|info| info.git)
-                .and_then(|git| git.branch)
-        });
-        let outcome = match &base_branch {
-            None => review_seam::Merge::Blocked {
-                reason: "没有记录基线分支，工作空间也不在任何分支上，无法确定合并到哪里".to_owned(),
-            },
-            Some(base) => {
-                let exec = Path::new(&run.exec_dir);
-                let committed = if exec.is_dir() {
-                    git.commit_all(
-                        exec,
-                        &format!(
-                            "teamspace: {} attempt {} (review)",
-                            run.task_key, run.attempt
-                        ),
-                        Some(&path_env),
-                    )
-                    .map(|_| ())
-                } else {
-                    Ok(())
-                };
-                match committed {
-                    Err(err) => review_seam::Merge::Blocked {
-                        reason: format!("无法提交执行目录里的改动：{err}"),
-                    },
-                    Ok(()) => git
-                        .merge_into_base(
-                            Path::new(&workspace),
-                            base,
-                            &branch,
-                            &format!("merge: {} {}", task.key, task.title),
-                            Some(&path_env),
-                        )
-                        .unwrap_or_else(|err| review_seam::Merge::Blocked {
-                            reason: format!("合并失败：{err}"),
-                        }),
-                }
-            }
-        };
-        let base = base_branch.unwrap_or_default();
-        match outcome {
-            review_seam::Merge::Merged { commit } => {
-                result.outcome = ApproveOutcome::Merged;
-                result.merged_commit = Some(commit.clone());
-                self.write(|tx| {
-                    // 合并已经发生：结果总要记在执行上；任务只在仍待验收时转为完成。
-                    review::set_outcome(tx, &run.id, ReviewOutcome::Approved, None, Some(&commit))?;
-                    run_svc::record_event(
-                        tx,
-                        run,
-                        Actor::Human,
-                        EventKind::ReviewApproved,
-                        format!(
-                            "{} 第 {} 次执行验收通过，已把 {branch} 合并进 {base}（{}）",
-                            run.task_key,
-                            run.attempt,
-                            &commit[..commit.len().min(7)]
-                        ),
-                        serde_json::json!({ "runId": run.id, "attempt": run.attempt,
-                                            "mergedCommit": commit, "branch": branch,
-                                            "baseBranch": base }),
-                    )?;
-                    if task::get(tx, &task.id)?.status == TaskStatus::Review {
-                        run_svc::move_task(
-                            tx,
-                            &task.id,
-                            TaskStatus::Done,
-                            None,
-                            Actor::Human,
-                            "验收通过并合并",
-                        )?;
-                        task::on_task_done(tx, &task.id)?;
-                    }
-                    Ok(())
-                })?;
-                result.cleanup_problem =
-                    self.cleanup_run(run, &workspace, &branch, Cleanup::Merged(base.clone()));
-            }
-            review_seam::Merge::Conflict { files } => {
-                result.outcome = ApproveOutcome::Conflict;
-                result.conflict_files = files.clone();
-                let list = files.join("、");
-                let reason: String = format!(
-                    "合并冲突：{list}。已中止合并，基线分支 {base} 未改变；请在仓库中手动合并 {branch} 后再处理"
-                )
-                .chars()
-                .take(crate::service::MAX_REASON)
-                .collect();
-                self.write(|tx| {
-                    review::set_outcome(tx, &run.id, ReviewOutcome::Conflict, Some(&reason), None)?;
-                    run_svc::move_task(
-                        tx,
-                        &task.id,
-                        TaskStatus::Blocked,
-                        Some(reason.clone()),
-                        Actor::Human,
-                        "验收合并冲突",
-                    )?;
-                    run_svc::record_event(
-                        tx,
-                        run,
-                        Actor::Human,
-                        EventKind::ReviewConflict,
-                        format!(
-                            "{} 第 {} 次执行验收通过但合并冲突：{list}",
-                            run.task_key, run.attempt
-                        ),
-                        serde_json::json!({ "runId": run.id, "attempt": run.attempt,
-                                            "conflictFiles": files, "branch": branch,
-                                            "baseBranch": base }),
-                    )
-                })?;
-            }
-            review_seam::Merge::Blocked { reason } => {
-                result.outcome = ApproveOutcome::Blocked;
-                result.reason = Some(reason.clone());
-                self.write(|tx| {
-                    run_svc::record_event(
-                        tx,
-                        run,
-                        Actor::Human,
-                        EventKind::ReviewMergeBlocked,
-                        format!(
-                            "{} 第 {} 次执行验收通过但现在不能合并：{reason}",
-                            run.task_key, run.attempt
-                        ),
-                        serde_json::json!({ "runId": run.id, "attempt": run.attempt,
-                                            "reason": reason }),
-                    )
-                })?;
-            }
-        }
-        Ok(())
-    }
-
-    /// 退回验收：意见必填（去掉首尾空白后不能为空，最多 2000 字）；只接受任务当前待验收的执行（否则
-    /// conflict）。被退回的执行记下意见，任务回到执行中，新建一次执行（`revisionOf` 指向被退回的执行）
-    /// 在**同一执行目录**续接：Agent 支持 `session/load` 时续接原会话、把意见作为新提示发送；不支持时在同一
-    /// 目录新开会话，提示带上完整任务说明、上次摘要与意见。不新建 worktree。返回状态为 queued 的新执行。
-    pub fn reject_review(&self, input: RejectReviewInput) -> Result<Run> {
-        let comment = crate::service::text("退回意见", &input.comment, review::MAX_COMMENT, true)?;
-        let (task, run) = review::check_pending(&self.lock(), &input.run_id)?;
-        let _guard = self.begin_review(&task.id, &task.key)?;
-        if !Path::new(&run.exec_dir).is_dir() {
-            return Err(Error::conflict(format!(
-                "执行目录已不存在：{}，无法在原目录续接；请把任务退回 READY 后重新执行",
-                run.exec_dir
-            )));
-        }
-        let mut registry = self.runs.registry();
-        let revision = self.write(|tx| {
-            let (task, run) = review::check_pending(tx, &input.run_id)?;
-            let instance = match harness::get_any(tx, &run.harness.harness_id)? {
-                Some(h) if h.archived_at.is_none() => h,
-                Some(h) => {
-                    return Err(Error::conflict(format!(
-                        "Harness「{}」已归档，无法续接；请把任务退回 READY 后重新执行",
-                        h.name
-                    )));
-                }
-                None => return Err(Error::conflict("这次执行的 Harness 不存在，无法续接")),
-            };
-            let workspace = run_svc::workspace_of(tx, &run.id)?;
-            if run.isolation == RunIsolation::InPlace
-                && let Some(busy) = run_svc::active_in_place(tx, &workspace)?
-            {
-                return Err(Error::conflict(format!(
-                    "工作空间（普通文件夹）正在执行 {}：同一文件夹同时只能运行一个执行",
-                    busy.task_key
-                )));
-            }
-            review::set_outcome(tx, &run.id, ReviewOutcome::Rejected, Some(&comment), None)?;
-            run_svc::move_task(
-                tx,
-                &task.id,
-                TaskStatus::Doing,
-                None,
-                Actor::Human,
-                "验收退回",
-            )?;
-            let revision = review::insert_revision(
-                tx,
-                &task,
-                &run,
-                HarnessSnapshot {
-                    harness_id: instance.id.clone(),
-                    name: instance.name.clone(),
-                    preset: instance.preset,
-                    command: instance.command.clone(),
-                    args: instance.args.clone(),
-                },
-                &workspace,
-            )?;
-            run_svc::record_event(
-                tx,
-                &run,
-                Actor::Human,
-                EventKind::ReviewRejected,
-                format!(
-                    "{} 第 {} 次执行验收退回，意见：{comment}",
-                    run.task_key, run.attempt
-                ),
-                serde_json::json!({ "runId": run.id, "attempt": run.attempt,
-                                    "comment": comment, "revisionRunId": revision.id }),
-            )?;
-            run_svc::record_event(
-                tx,
-                &revision,
-                Actor::Human,
-                EventKind::RunStarted,
-                format!(
-                    "{} 按退回意见开始第 {} 次执行（Harness「{}」，续接第 {} 次执行的执行目录）",
-                    revision.task_key, revision.attempt, revision.harness.name, run.attempt
-                ),
-                serde_json::json!({ "runId": revision.id, "attempt": revision.attempt,
-                                    "isolation": revision.isolation, "revisionOf": run.id }),
-            )?;
-            run_svc::status_update(
-                tx,
-                &revision.id,
-                RunStatus::Queued,
-                Some(format!("按退回意见续接第 {} 次执行", run.attempt)),
-            )?;
-            run_svc::get(tx, &revision.id)
-        })?;
-        self.core
-            .spawn_driver(&mut registry, revision.clone(), Mode::Revise);
-        drop(registry);
-        self.sync_role_folders(&revision.team_id);
-        self.emit_run(&revision.id);
-        Ok(revision)
-    }
-
-    /// 回到 READY 的就绪问题（为空表示满足）。
-    fn rerun_readiness(&self, task: &Task) -> Result<Vec<String>> {
-        let (workspace, refs) = task::workspace_and_refs(&self.lock(), &task.id)?;
-        let files = FileCheck::scan(Path::new(&workspace), &refs);
-        task::readiness(
-            &self.lock(),
-            &task.owner_role_id,
-            &task.file_refs,
-            &task.depends_on,
-            &files,
-        )
-    }
-
-    /// 合并冲突后「已手动合并，标记完成」（D22）：只接受任务最近一次执行，且任务因这次执行的合并冲突而
-    /// 受阻（否则 conflict）。校验执行分支已并入基线分支（`git merge-base --is-ancestor`），未并入时拒绝；
-    /// 通过后任务完成（同一事务里调用依赖推进钩子），再删除 worktree 与执行分支（清理失败不回滚，结果里
-    /// 给出 `cleanupProblem` 并记活动）。写活动与岗位工作日志。
-    pub fn resolve_merge_manually(
-        &self,
-        input: ResolveMergeManuallyInput,
-    ) -> Result<ApproveReviewResult> {
-        let (first, _) = review::check_conflicted(&self.lock(), &input.run_id)?;
-        let _guard = self.begin_review(&first.id, &first.key)?;
-        let (task, run) = review::check_conflicted(&self.lock(), &input.run_id)?;
-        let workspace = run_svc::workspace_of(&self.lock(), &run.id)?;
-        let Some(branch) = run.branch.clone() else {
-            return Err(Error::conflict("执行没有记录分支，无法校验是否已合并"));
-        };
-        let base = run
-            .base_branch
-            .clone()
-            .or_else(|| {
-                self.inspect(&workspace)
-                    .ok()
-                    .and_then(|i| i.git)
-                    .and_then(|g| g.branch)
-            })
-            .ok_or_else(|| Error::conflict("没有记录基线分支，无法校验是否已合并"))?;
-        let git = self.review_git();
-        let path_env = self.probe.command_path_env();
-        let merged = git
-            .is_merged_into(Path::new(&workspace), &branch, &base, Some(&path_env))
-            .map_err(|err| Error::conflict(format!("无法校验执行分支是否已合并：{err}")))?;
-        if !merged {
-            return Err(Error::conflict(format!(
-                "执行分支 {branch} 还没有并入 {base}：请先在仓库中完成合并并提交，再标记完成"
-            )));
-        }
-        let head = git.branch_head(Path::new(&workspace), &base, Some(&path_env));
-        self.write(|tx| {
-            let (task, run) = review::check_conflicted(tx, &run.id)?;
-            review::set_outcome(tx, &run.id, ReviewOutcome::Approved, None, head.as_deref())?;
-            run_svc::move_task(
-                tx,
-                &task.id,
-                TaskStatus::Done,
-                None,
-                Actor::Human,
-                "已手动合并",
-            )?;
-            run_svc::record_event(
-                tx,
-                &run,
-                Actor::Human,
-                EventKind::ReviewApproved,
-                format!(
-                    "{} 第 {} 次执行的合并冲突已手动解决：{branch} 已并入 {base}，标记完成",
-                    run.task_key, run.attempt
-                ),
-                serde_json::json!({ "runId": run.id, "attempt": run.attempt, "manual": true,
-                                    "mergedCommit": head, "branch": branch, "baseBranch": base }),
-            )?;
-            task::on_task_done(tx, &task.id)
-        })?;
-        let mut result = ApproveReviewResult {
-            outcome: ApproveOutcome::Merged,
-            merged_commit: head,
-            conflict_files: Vec::new(),
-            reason: None,
-            cleanup_problem: None,
-            task: task.clone(),
-            run: run.clone(),
-        };
-        result.cleanup_problem =
-            self.cleanup_run(&run, &workspace, &branch, Cleanup::Merged(base.clone()));
-        self.sync_role_folders(&run.team_id);
-        self.emit_run(&run.id);
-        let conn = self.lock();
-        result.task = task::get(&conn, &task.id)?;
-        result.run = run_svc::get(&conn, &run.id)?;
-        Ok(result)
-    }
-
-    /// 合并冲突后「重新执行」（D22）：fencing 同 `resolve_merge_manually`；须满足就绪条件（否则 conflict）。
-    /// 先在活动里记下旧执行分支的名称与提交，再强制删除旧 worktree 与执行分支（未合并的也删除），任务回到
-    /// READY；之后由「开始执行」基于最新基线新建执行。清理失败不阻止回到 READY，另记一条活动。
-    pub fn rerun_after_conflict(&self, input: RerunAfterConflictInput) -> Result<TaskDetail> {
-        let (first, _) = review::check_conflicted(&self.lock(), &input.run_id)?;
-        let _guard = self.begin_review(&first.id, &first.key)?;
-        let (task, run) = review::check_conflicted(&self.lock(), &input.run_id)?;
-        let problems = self.rerun_readiness(&task)?;
-        if !problems.is_empty() {
-            return Err(Error::conflict(format!(
-                "不能重新执行：{}",
-                problems.join("；")
-            )));
-        }
-        let workspace = run_svc::workspace_of(&self.lock(), &run.id)?;
-        let path_env = self.probe.command_path_env();
-        let branch = run.branch.clone();
-        let commit = branch.as_deref().and_then(|b| {
-            self.review_git()
-                .branch_head(Path::new(&workspace), b, Some(&path_env))
-        });
-        // 先记下要删除的分支与提交，再删除。
-        self.write(|tx| {
-            let (task, run) = review::check_conflicted(tx, &run.id)?;
-            run_svc::record_event(
-                tx,
-                &run,
-                Actor::Human,
-                EventKind::ReviewRerun,
-                format!(
-                    "{} 第 {} 次执行合并冲突后重新执行：删除执行分支 {}（提交 {}）及其 worktree，任务回到 READY",
-                    run.task_key,
-                    run.attempt,
-                    branch.as_deref().unwrap_or("（无）"),
-                    commit.as_deref().unwrap_or("（未知）")
-                ),
-                serde_json::json!({ "runId": run.id, "attempt": run.attempt,
-                                    "branch": branch, "commit": commit }),
-            )?;
-            run_svc::move_task(
-                tx,
-                &task.id,
-                TaskStatus::Ready,
-                None,
-                Actor::Human,
-                "合并冲突后重新执行",
-            )
-        })?;
-        if let Some(branch) = &branch {
-            self.cleanup_run(&run, &workspace, branch, Cleanup::Force);
-        }
-        self.sync_role_folders(&run.team_id);
-        self.emit_run(&run.id);
-        self.get_task(&task.id)
-    }
-
-    /// 删除执行的 worktree 与分支；失败时记一条活动并返回说明。
-    fn cleanup_run(
-        &self,
-        run: &Run,
-        workspace: &str,
-        branch: &str,
-        cleanup: Cleanup,
-    ) -> Option<String> {
-        let path_env = self.probe.command_path_env();
-        let root = self.worktree_root(run);
-        let err = self
-            .review_git()
-            .remove_run_worktree(
-                Path::new(workspace),
-                &root,
-                branch,
-                cleanup,
-                Some(&path_env),
-            )
-            .err()?;
-        let problem = format!("清理 worktree 或执行分支 {branch} 失败：{err}；可在仓库中手动删除");
-        let _ = self.write(|tx| {
-            run_svc::record_event(
-                tx,
-                run,
-                Actor::System,
-                EventKind::ReviewCleanupFailed,
-                format!("{} {problem}", run.task_key),
-                serde_json::json!({ "runId": run.id, "problem": problem }),
-            )
-        });
-        Some(problem)
-    }
-
     // ---------------------------------------------------------------- 活动
 
     /// 按团队分页列出活动，时间倒序；每页默认 50 条、最多 200 条。
     pub fn list_events(&self, input: EventQuery) -> Result<EventPage> {
         event::page(&self.lock(), &input)
     }
+}
+
+/// 用系统默认程序打开时会被直接运行（或安装、挂载）的扩展名。
+const RUNNABLE_EXTENSIONS: &[&str] = &[
+    "app",
+    "command",
+    "tool",
+    "sh",
+    "bash",
+    "zsh",
+    "csh",
+    "ksh",
+    "fish",
+    "pkg",
+    "mpkg",
+    "dmg",
+    "scpt",
+    "scptd",
+    "applescript",
+    "workflow",
+    "action",
+    "terminal",
+    "jar",
+    "webloc",
+    "inetloc",
+    "fileloc",
+    "url",
+    "prefpane",
+    "saver",
+    "osax",
+    "kext",
+    "plugin",
+    "bundle",
+    "exe",
+    "bat",
+    "cmd",
+    "com",
+    "msi",
+    "ps1",
+    "vbs",
+    "py",
+    "pl",
+    "rb",
+];
+
+/// 文件用系统默认程序打开时会不会被直接运行：有可执行位，或扩展名属于 [`RUNNABLE_EXTENSIONS`]。
+pub(crate) fn runs_when_opened(path: &Path) -> bool {
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(str::to_ascii_lowercase);
+    if ext.is_some_and(|e| RUNNABLE_EXTENSIONS.contains(&e.as_str())) {
+        return true;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if std::fs::metadata(path).is_ok_and(|m| m.permissions().mode() & 0o111 != 0) {
+            return true;
+        }
+    }
+    false
 }
 
 #[cfg(test)]

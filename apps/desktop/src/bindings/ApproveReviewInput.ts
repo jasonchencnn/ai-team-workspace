@@ -7,4 +7,9 @@ export type ApproveReviewInput = {
 /**
  * 待验收的执行（任务最近一次执行）；不是时拒绝（conflict），防止对旧页面上的旧执行操作。
  */
-runId: string, };
+runId: string, 
+/**
+ * Git：验收页显示的 `ReviewView.headCommit`；与执行分支当前 head 不一致时拒绝（conflict，「改动已变化，
+ * 请刷新验收页」），保证合并的就是看过的内容。Git 执行必填；普通文件夹忽略。
+ */
+expectedHead?: string | null, };

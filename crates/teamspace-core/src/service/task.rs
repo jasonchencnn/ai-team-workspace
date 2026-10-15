@@ -761,8 +761,9 @@ pub(crate) fn review_needs_merge(conn: &Connection, task: &Task) -> Result<bool>
     if task.status != TaskStatus::Review {
         return Ok(false);
     }
+    // 只有尚未验收的 Git 执行需要合并；已有验收结果的旧执行（任务重新打开后手动提交验收）不拦。
     Ok(super::run::latest_for_task(conn, &task.id)?
-        .is_some_and(|r| r.isolation == crate::model::RunIsolation::Worktree))
+        .is_some_and(|r| r.isolation == crate::model::RunIsolation::Worktree && r.review.is_none()))
 }
 
 /// 任务转为 DONE 之后的依赖推进钩子：前置任务完成后，满足就绪条件的下游任务自动转为 READY
@@ -773,8 +774,8 @@ pub(crate) fn review_needs_merge(conn: &Connection, task: &Task) -> Result<bool>
 /// 「下游就绪」一起提交或一起回滚，不会出现上游已完成、下游仍停在 TODO 的中间状态；钩子返回错误时整个
 /// 事务回滚，任务也不会变成 DONE。钩子只做数据库内的工作（不做文件或进程 I/O，岗位文件夹由调用方在
 /// 事务提交后同步）。
-pub(crate) fn on_task_done(conn: &Connection, task_id: &str) -> Result<()> {
-    super::dependency::advance_dependents(conn, task_id).map(|_| ())
+pub(crate) fn on_task_done(conn: &Connection, task_id: &str) -> Result<Vec<String>> {
+    super::dependency::advance_dependents(conn, task_id)
 }
 
 #[cfg(test)]

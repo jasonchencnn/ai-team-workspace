@@ -105,6 +105,9 @@ pub type RunListener = Arc<dyn Fn(&RunEvent) + Send + Sync>;
 #[derive(Default)]
 pub struct Runs {
     active: Mutex<HashMap<String, Arc<ActiveRun>>>,
+    /// 执行锁：执行结束时「确认仍是当前执行 → 提交到执行分支」与中断、续接互斥，旧 driver 的提交不会
+    /// 落在已被中断或续接的执行上。
+    exec_lock: Mutex<()>,
     settings: RwLock<RunSettings>,
     listener: RwLock<Option<RunListener>>,
 }
@@ -131,6 +134,11 @@ impl Runs {
 
     fn get(&self, run_id: &str) -> Option<Arc<ActiveRun>> {
         self.registry().get(run_id).cloned()
+    }
+
+    /// 取得执行锁（见 `exec_lock`）。
+    pub(crate) fn exec_lock(&self) -> std::sync::MutexGuard<'_, ()> {
+        self.exec_lock.lock().unwrap_or_else(|p| p.into_inner())
     }
 }
 
@@ -363,6 +371,7 @@ impl Core {
 
     /// 把活动执行标记为已中断，并用快照（或 Git）算出它已经改了哪些文件一并写入（G-6）。
     fn interrupt_run(&self, run_id: &str, reason: &str) {
+        let _exec = self.runs.exec_lock();
         // 先读出执行记录再统计：统计过程中还要读数据库，不能持着锁。
         let run = store_run::get(&self.lock(), run_id).ok();
         let changes = run
@@ -2227,21 +2236,24 @@ impl Driver {
     }
 
     /// 把 worktree 里的改动提交到执行分支（英文提交信息，含任务编号与执行序号）；返回失败说明。
+    ///
+    /// fencing：持执行锁，先确认本执行在数据库里仍是活动执行（没有被中断、接管或由别处结束）才提交；
+    /// 中断与续接也要取同一把锁，因此旧 driver 的提交不会晚于它们落到执行分支上。
     fn commit_run_changes(&self) -> Option<String> {
-        let path_env = self.core.probe.command_path_env();
+        let _exec = self.core.runs.exec_lock();
+        let current =
+            store_run::get(&self.core.lock(), &self.run.id).is_ok_and(|run| run.status.is_active());
+        if !current {
+            return None;
+        }
         let message = format!(
             "teamspace: {} attempt {}",
             self.run.task_key, self.run.attempt
         );
-        match self.core.review_git().commit_all(
-            Path::new(&self.run.exec_dir),
-            &message,
-            Some(&path_env),
-        ) {
+        match self.core.commit_run_dir(&self.run, &message) {
             Ok(_) => None,
             Err(err) => Some(format!(
-                "无法把改动提交到执行分支（{}）：{err}；验收通过时会再试一次",
-                self.run.branch.as_deref().unwrap_or("?")
+                "无法把改动提交到执行分支：{err}；打开验收页时会再试一次"
             )),
         }
     }

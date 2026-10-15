@@ -8,7 +8,7 @@ mod harnesses;
 mod qa_round2;
 #[cfg(unix)]
 mod qa_round2_run;
-mod reviews;
+pub(crate) mod reviews;
 mod roles;
 mod runs;
 mod tasks;
@@ -33,6 +33,8 @@ pub(crate) struct FakeProbe;
 thread_local! {
     /// [`FakeProbe::reveal_path`] 收到的路径（每个测试线程各一份）。
     pub(crate) static REVEALED: std::cell::RefCell<Vec<PathBuf>> = const { std::cell::RefCell::new(Vec::new()) };
+    /// [`FakeProbe::open_path`] 收到的路径。
+    pub(crate) static OPENED: std::cell::RefCell<Vec<PathBuf>> = const { std::cell::RefCell::new(Vec::new()) };
     /// [`FakeProbe::handshake`] 收到的启动信息。
     pub(crate) static LAUNCHED: std::cell::RefCell<Vec<AgentLaunch>> = const { std::cell::RefCell::new(Vec::new()) };
 }
@@ -132,6 +134,11 @@ impl SystemProbe for FakeProbe {
 
     fn reveal_path(&self, path: &Path) -> Result<()> {
         REVEALED.with(|revealed| revealed.borrow_mut().push(path.to_path_buf()));
+        Ok(())
+    }
+
+    fn open_path(&self, path: &Path) -> Result<()> {
+        OPENED.with(|opened| opened.borrow_mut().push(path.to_path_buf()));
         Ok(())
     }
 }

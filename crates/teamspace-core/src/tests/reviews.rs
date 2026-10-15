@@ -12,7 +12,7 @@ use crate::run::review_seam::{Cleanup, DiffEntry, Merge, PatchText, ReviewGit};
 
 /// 假 Git 层：按配置返回结果并记下调用。
 #[derive(Default)]
-struct FakeGit {
+pub(crate) struct FakeGit {
     merge: Mutex<Option<Merge>>,
     commit_err: Option<String>,
     remove_err: Option<String>,
@@ -20,6 +20,11 @@ struct FakeGit {
     /// `is_merged_into` 的结果（默认未合并）。
     merged_into: Option<bool>,
     merge_delay: Duration,
+    /// 设置时 `check_on_branch` 报告执行目录不在执行分支上。
+    wrong_branch: Option<String>,
+    /// 同时在合并中的数量与观察到的最大值（串行化测试）。
+    in_flight: std::sync::atomic::AtomicUsize,
+    max_in_flight: std::sync::atomic::AtomicUsize,
     calls: Mutex<Vec<String>>,
 }
 
@@ -31,7 +36,7 @@ impl FakeGit {
         }
     }
 
-    fn calls(&self) -> Vec<String> {
+    pub(crate) fn calls(&self) -> Vec<String> {
         self.calls.lock().unwrap().clone()
     }
 
@@ -110,8 +115,12 @@ impl ReviewGit for FakeGit {
         message: &str,
         _: Option<&std::ffi::OsStr>,
     ) -> std::result::Result<Merge, String> {
+        use std::sync::atomic::Ordering::SeqCst;
         self.log(format!("merge {branch} -> {base}: {message}"));
+        let now = self.in_flight.fetch_add(1, SeqCst) + 1;
+        self.max_in_flight.fetch_max(now, SeqCst);
         std::thread::sleep(self.merge_delay);
+        self.in_flight.fetch_sub(1, SeqCst);
         self.merge
             .lock()
             .unwrap()
@@ -151,6 +160,22 @@ impl ReviewGit for FakeGit {
 
     fn branch_head(&self, _: &Path, branch: &str, _: Option<&std::ffi::OsStr>) -> Option<String> {
         Some(format!("head-of-{branch}"))
+    }
+
+    fn check_on_branch(
+        &self,
+        _: &Path,
+        branch: &str,
+        _: Option<&std::ffi::OsStr>,
+    ) -> std::result::Result<(), String> {
+        match &self.wrong_branch {
+            Some(other) => Err(format!("执行目录不在执行分支 {branch} 上（当前：{other}）")),
+            None => Ok(()),
+        }
+    }
+
+    fn repo_root(&self, _: &Path, _: Option<&std::ffi::OsStr>) -> Option<PathBuf> {
+        None
     }
 
     fn base_branch(&self, _: &crate::run::worktree::Worktree) -> Option<String> {
@@ -256,8 +281,15 @@ fn fake(f: &Fixture, git: FakeGit) -> Arc<FakeGit> {
 }
 
 fn approve(f: &Fixture, run_id: &str) -> Result<ApproveReviewResult> {
+    // Git 执行按假 Git 层的 head 传回 expectedHead（验收页上看到的那个）。
+    let expected_head =
+        f.ts.get_run(run_id)
+            .ok()
+            .and_then(|r| r.branch)
+            .map(|b| format!("head-of-{b}"));
     f.ts.approve_review(ApproveReviewInput {
         run_id: run_id.into(),
+        expected_head,
     })
 }
 
@@ -445,6 +477,7 @@ fn reject_of_a_git_run_reuses_the_worktree_and_branch() {
 fn reject_refuses_when_the_exec_dir_is_gone() {
     let f = fixture();
     let s = seed(&f, true);
+    fake(&f, FakeGit::default());
     std::fs::remove_dir_all(&s.exec_dir).unwrap();
     let view = f.ts.get_review(&s.task.id).unwrap();
     assert!(view.can_approve);
@@ -500,7 +533,21 @@ fn git_review_lists_branch_diff_and_patches() {
         (Some(3), Some(1))
     );
     assert!(view.files[1].binary && !view.files[1].has_patch);
-    assert_eq!(git.calls(), ["diff abc123..teamspace/FE-001-r1"]);
+    // 读验收页时先把执行目录里未提交的改动提交到执行分支，预览即分支 head。
+    assert_eq!(
+        git.calls(),
+        [
+            format!(
+                "commit {} teamspace: FE-001 attempt 1 (review)",
+                s.exec_dir.display()
+            ),
+            "diff abc123..teamspace/FE-001-r1".to_owned()
+        ]
+    );
+    assert_eq!(
+        view.head_commit.as_deref(),
+        Some("head-of-teamspace/FE-001-r1")
+    );
 
     let patch = f.ts.get_review_file_patch(&s.run_id, "src/app.ts").unwrap();
     assert_eq!(patch.run_id, s.run_id);
@@ -559,10 +606,7 @@ fn git_approve_merges_completes_and_cleans_up() {
     assert_eq!(
         git.calls(),
         [
-            format!(
-                "commit {} teamspace: FE-001 attempt 1 (review)",
-                s.exec_dir.display()
-            ),
+            // 通过时不再提交（预览时已提交，expectedHead 保证合并的就是预览的内容）。
             "merge teamspace/FE-001-r1 -> main: merge: FE-001 登录页".to_owned(),
             format!("remove {} teamspace/FE-001-r1", root.display()),
         ]
@@ -641,17 +685,22 @@ fn blocked_merge_keeps_the_task_in_review() {
     assert!(result.run.review.is_none());
     assert!(kinds(&f, &s.task.id).contains(&EventKind::ReviewMergeBlocked));
 
-    // 提交执行目录失败、合并层报错，同样保持待验收。
+    // 执行目录不在执行分支上、合并层报错，同样保持待验收。
     let git = fake(
         &f,
         FakeGit {
-            commit_err: Some("索引被锁".into()),
+            wrong_branch: Some("main".into()),
             ..FakeGit::default()
         },
     );
     let result = approve(&f, &s.run_id).unwrap();
     assert_eq!(result.outcome, ApproveOutcome::Blocked);
-    assert!(result.reason.unwrap().contains("索引被锁"));
+    assert!(
+        result
+            .reason
+            .unwrap()
+            .contains("执行目录不在执行分支 teamspace/FE-001-r1 上")
+    );
     assert!(git.calls().iter().all(|c| !c.starts_with("merge")));
     fake(&f, FakeGit::default());
     let result = approve(&f, &s.run_id).unwrap();
@@ -758,7 +807,7 @@ fn manual_review_without_runs_cannot_be_approved_here() {
     let view = f.ts.get_review(&t.task.id).unwrap();
     assert!(view.run.is_none());
     assert!(!view.can_approve && !view.can_reject);
-    assert!(view.problems[0].contains("没有可验收的执行记录"));
+    assert!(view.problems[0].contains("没有待验收的执行"));
     // 仍可用状态流转完成。
     f.move_to(&t.task.id, TaskStatus::Done).unwrap();
 }
@@ -922,9 +971,9 @@ fn open_run_file_opens_files_inside_the_exec_dir_only() {
     std::fs::write(f.dir.path().join("secret.md"), "x").unwrap();
     std::os::unix::fs::symlink(f.dir.path().join("secret.md"), f.ws.join("link.md")).unwrap();
 
-    let before = REVEALED.with(|r| r.borrow().len());
+    let before = OPENED.with(|r| r.borrow().len());
     f.ts.open_run_file(&s.run_id, "docs/a.md").unwrap();
-    let opened = REVEALED.with(|r| r.borrow().last().cloned()).unwrap();
+    let opened = OPENED.with(|r| r.borrow().last().cloned()).unwrap();
     assert_eq!(
         opened.canonicalize().unwrap(),
         f.ws.join("docs/a.md").canonicalize().unwrap()
@@ -938,8 +987,518 @@ fn open_run_file_opens_files_inside_the_exec_dir_only() {
     );
     assert_kind(f.ts.open_run_file("nope", "docs/a.md"), ErrorKind::NotFound);
     assert_eq!(
-        REVEALED.with(|r| r.borrow().len()),
+        OPENED.with(|r| r.borrow().len()),
         before + 1,
         "被拒绝的路径不应打开"
+    );
+}
+
+#[test]
+fn open_run_file_reveals_runnable_files_instead_of_opening_them() {
+    use std::os::unix::fs::PermissionsExt;
+    let f = plain_fixture();
+    let s = seed(&f, false);
+    std::fs::write(f.ws.join("run.command"), "echo hi").unwrap();
+    std::fs::write(f.ws.join("Setup.PKG"), "x").unwrap();
+    std::fs::write(f.ws.join("tool"), "#!/bin/sh").unwrap();
+    std::fs::set_permissions(f.ws.join("tool"), std::fs::Permissions::from_mode(0o755)).unwrap();
+    std::fs::write(f.ws.join("notes.md"), "x").unwrap();
+    let opened_before = OPENED.with(|r| r.borrow().len());
+    for name in ["run.command", "Setup.PKG", "tool"] {
+        let before = REVEALED.with(|r| r.borrow().len());
+        f.ts.open_run_file(&s.run_id, name).unwrap();
+        let shown = REVEALED.with(|r| r.borrow().last().cloned()).unwrap();
+        assert_eq!(REVEALED.with(|r| r.borrow().len()), before + 1, "{name}");
+        assert!(shown.ends_with(name), "{name}: {shown:?}");
+    }
+    assert_eq!(OPENED.with(|r| r.borrow().len()), opened_before);
+    f.ts.open_run_file(&s.run_id, "notes.md").unwrap();
+    assert_eq!(OPENED.with(|r| r.borrow().len()), opened_before + 1);
+
+    // 原地执行里工作空间之外的改动以绝对路径记录，不能打开。
+    let outside = f.dir.path().join("outside.md");
+    std::fs::write(&outside, "x").unwrap();
+    let err = assert_kind(
+        f.ts.open_run_file(&s.run_id, &outside.display().to_string()),
+        ErrorKind::Invalid,
+    );
+    assert!(err.starts_with("该文件不在执行目录内，无法打开"), "{err}");
+}
+
+// ---------------------------------------------------------------- 修复轮（M3-08 交叉审查）
+
+fn set_marker(f: &Fixture, run_id: &str) {
+    f.raw_sql(&format!(
+        "UPDATE runs SET merge_base_branch = 'main', merge_head = 'h', merging_at = 'x'
+         WHERE id = '{run_id}'"
+    ));
+}
+
+/// #1：合并之后、落库之前中断（留下「合并中」标记）：分支已并入就按 Git 事实补记通过并推进下游。
+#[test]
+fn leftover_merge_marker_is_reconciled_as_approved_when_merged() {
+    let f = fixture();
+    let s = seed(&f, true);
+    let fe = f.role(&s.team.id, "role_frontend");
+    let downstream = f
+        .try_task(
+            &s.team.id,
+            &fe,
+            "下游",
+            TaskStatus::Todo,
+            vec!["docs/spec.md"],
+            vec![s.task.id.clone()],
+        )
+        .unwrap();
+    set_marker(&f, &s.run_id);
+    let git = fake(
+        &f,
+        FakeGit {
+            merged_into: Some(true),
+            ..FakeGit::default()
+        },
+    );
+    let view = f.ts.get_review(&s.task.id).unwrap();
+    assert!(view.run.is_none(), "已补记通过，没有待验收的执行");
+    assert_eq!(view.task.status, TaskStatus::Done);
+    let run = f.ts.get_run(&s.run_id).unwrap();
+    assert_eq!(run.review.unwrap().outcome, ReviewOutcome::Approved);
+    assert_eq!(run.merged_commit.as_deref(), Some("head-of-main"));
+    assert!(git.calls().iter().any(|c| c.starts_with("remove")));
+    assert_eq!(
+        f.ts.get_task(&downstream.task.id).unwrap().task.status,
+        TaskStatus::Ready
+    );
+    let events = f.ts.get_task(&s.task.id).unwrap().events;
+    assert!(
+        events
+            .iter()
+            .any(|e| e.kind == EventKind::ReviewApproved && e.summary.contains("按 Git 事实补记"))
+    );
+}
+
+/// #1：标记留下但分支没有并入：清除标记，回到待验收；Git 读不到结果时保留标记，不能退回。
+#[test]
+fn leftover_merge_marker_is_cleared_when_not_merged() {
+    let f = fixture();
+    let s = seed(&f, true);
+    set_marker(&f, &s.run_id);
+    fake(&f, FakeGit::default());
+    let view = f.ts.get_review(&s.task.id).unwrap();
+    assert!(!view.merging);
+    assert!(view.can_approve, "{:?}", view.problems);
+    assert_eq!(view.task.status, TaskStatus::Review);
+
+    set_marker(&f, &s.run_id);
+    // 模拟 Git 读不到合并结果：直接让 is_merged_into 失败。
+    f.ts.set_review_git(Arc::new(MergedErr(FakeGit::default())));
+    let view = f.ts.get_review(&s.task.id).unwrap();
+    assert!(view.merging);
+    assert!(!view.can_approve && !view.can_reject);
+    let err = assert_kind(reject(&f, &s.run_id, "再改"), ErrorKind::Conflict);
+    assert!(err.contains("无法确认上次合并的结果"), "{err}");
+}
+
+/// `is_merged_into` 总是失败的假 Git 层。
+struct MergedErr(FakeGit);
+
+impl ReviewGit for MergedErr {
+    fn commit_all(
+        &self,
+        d: &Path,
+        m: &str,
+        p: Option<&std::ffi::OsStr>,
+    ) -> std::result::Result<Option<String>, String> {
+        self.0.commit_all(d, m, p)
+    }
+    fn diff_files(
+        &self,
+        r: &Path,
+        b: &str,
+        h: &str,
+        p: Option<&std::ffi::OsStr>,
+    ) -> std::result::Result<Vec<DiffEntry>, String> {
+        self.0.diff_files(r, b, h, p)
+    }
+    fn file_patch(
+        &self,
+        r: &Path,
+        b: &str,
+        h: &str,
+        x: &str,
+        p: Option<&std::ffi::OsStr>,
+    ) -> std::result::Result<PatchText, String> {
+        self.0.file_patch(r, b, h, x, p)
+    }
+    fn merge_into_base(
+        &self,
+        r: &Path,
+        b: &str,
+        h: &str,
+        m: &str,
+        p: Option<&std::ffi::OsStr>,
+    ) -> std::result::Result<Merge, String> {
+        self.0.merge_into_base(r, b, h, m, p)
+    }
+    fn remove_run_worktree(
+        &self,
+        r: &Path,
+        w: &Path,
+        b: &str,
+        c: Cleanup,
+        p: Option<&std::ffi::OsStr>,
+    ) -> std::result::Result<(), String> {
+        self.0.remove_run_worktree(r, w, b, c, p)
+    }
+    fn is_merged_into(
+        &self,
+        _: &Path,
+        _: &str,
+        _: &str,
+        _: Option<&std::ffi::OsStr>,
+    ) -> std::result::Result<bool, String> {
+        Err("仓库被锁".into())
+    }
+    fn branch_head(&self, r: &Path, b: &str, p: Option<&std::ffi::OsStr>) -> Option<String> {
+        self.0.branch_head(r, b, p)
+    }
+    fn base_branch(&self, w: &crate::run::worktree::Worktree) -> Option<String> {
+        self.0.base_branch(w)
+    }
+    fn check_on_branch(
+        &self,
+        d: &Path,
+        b: &str,
+        p: Option<&std::ffi::OsStr>,
+    ) -> std::result::Result<(), String> {
+        self.0.check_on_branch(d, b, p)
+    }
+    fn repo_root(&self, d: &Path, p: Option<&std::ffi::OsStr>) -> Option<PathBuf> {
+        self.0.repo_root(d, p)
+    }
+}
+
+/// #1：启动时对账（真实 Git：执行分支早已是 main 的祖先，即「已并入」）。
+#[test]
+fn startup_reconciles_leftover_merges_with_real_git() {
+    let f = fixture();
+    let run_git = |args: &[&str]| {
+        let ok = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&f.ws)
+            .args(args)
+            .output()
+            .unwrap()
+            .status
+            .success();
+        assert!(ok, "git {args:?}");
+    };
+    std::fs::remove_dir_all(f.ws.join(".git")).unwrap();
+    run_git(&["init", "-q", "-b", "main"]);
+    run_git(&["config", "user.email", "t@example.com"]);
+    run_git(&["config", "user.name", "t"]);
+    run_git(&["config", "commit.gpgsign", "false"]);
+    std::fs::write(f.ws.join("a.txt"), "a").unwrap();
+    run_git(&["add", "a.txt"]);
+    run_git(&["commit", "-q", "-m", "init"]);
+    let s = seed(&f, true);
+    run_git(&["branch", "teamspace/FE-001-r1"]);
+    set_marker(&f, &s.run_id);
+
+    let reopened =
+        Teamspace::open_with(&f.db_path(), Box::new(FakeProbe), HostConfig::default()).unwrap();
+    assert_eq!(
+        reopened.get_task(&s.task.id).unwrap().task.status,
+        TaskStatus::Done
+    );
+    let run = reopened.get_run(&s.run_id).unwrap();
+    assert_eq!(run.review.unwrap().outcome, ReviewOutcome::Approved);
+    assert!(
+        crate::service::review::merging(&reopened.lock(), &s.run_id)
+            .unwrap()
+            .is_none()
+    );
+}
+
+/// #2：验收合并进行中，对该任务的其他入口一律拒绝；合并期间任务被改动时，结果不改任务状态。
+#[test]
+fn entries_are_refused_during_a_merge_and_results_respect_concurrent_changes() {
+    let f = fixture();
+    let s = seed(&f, true);
+    fake(
+        &f,
+        FakeGit {
+            merge_delay: Duration::from_millis(400),
+            ..FakeGit::with_merge(Merge::Conflict {
+                files: vec!["a.md".into()],
+            })
+        },
+    );
+    std::thread::scope(|scope| {
+        let handle = scope.spawn(|| approve(&f, &s.run_id));
+        std::thread::sleep(Duration::from_millis(150));
+        for err in [
+            f.move_to(&s.task.id, TaskStatus::Ready).map(|_| ()),
+            f.ts.start_run(&s.task.id).map(|_| ()),
+            reject(&f, &s.run_id, "改").map(|_| ()),
+            approve(&f, &s.run_id).map(|_| ()),
+        ] {
+            let msg = assert_kind(err, ErrorKind::Conflict);
+            assert_eq!(msg, "正在验收合并，请稍候");
+        }
+        // 别的途径（直接改库）在合并期间取消了任务。
+        f.raw_sql(&format!(
+            "UPDATE tasks SET status = 'cancelled' WHERE id = '{}'",
+            s.task.id
+        ));
+        let result = handle.join().unwrap().unwrap();
+        assert_eq!(result.outcome, ApproveOutcome::Conflict);
+        // 冲突结果不能把已取消的任务改回受阻。
+        assert_eq!(result.task.status, TaskStatus::Cancelled);
+        assert!(result.run.review.is_none());
+    });
+    let events = f.ts.get_task(&s.task.id).unwrap().events;
+    assert!(
+        events
+            .iter()
+            .any(|e| e.kind == EventKind::ReviewConflict && e.summary.contains("任务状态未变"))
+    );
+}
+
+/// #2：合并成功但合并期间任务被改动：记下合并事实，不改任务状态。
+#[test]
+fn merged_result_does_not_overwrite_a_task_changed_during_the_merge() {
+    let f = fixture();
+    let s = seed(&f, true);
+    fake(
+        &f,
+        FakeGit {
+            merge_delay: Duration::from_millis(300),
+            ..FakeGit::with_merge(Merge::Merged {
+                commit: "feed".into(),
+            })
+        },
+    );
+    std::thread::scope(|scope| {
+        let handle = scope.spawn(|| approve(&f, &s.run_id));
+        std::thread::sleep(Duration::from_millis(100));
+        f.raw_sql(&format!(
+            "UPDATE tasks SET status = 'ready' WHERE id = '{}'",
+            s.task.id
+        ));
+        let result = handle.join().unwrap().unwrap();
+        assert_eq!(result.outcome, ApproveOutcome::Merged);
+        assert_eq!(result.task.status, TaskStatus::Ready);
+        assert_eq!(result.run.merged_commit.as_deref(), Some("feed"));
+        assert!(result.advanced_tasks.is_empty());
+    });
+}
+
+/// #3：同一仓库里不同任务的合并串行进行。
+#[test]
+fn merges_in_the_same_repository_are_serialized() {
+    let f = fixture();
+    let s1 = seed(&f, true);
+    let fe = f.role(&s1.team.id, "role_frontend");
+    let t2 = f.readyable(&s1.team.id, &fe, "第二个").task;
+    let exec2 = f
+        .dir
+        .path()
+        .join("worktrees")
+        .join(&s1.team.id)
+        .join("FE-002-r1");
+    std::fs::create_dir_all(&exec2).unwrap();
+    let run2 = add_run(&f, &t2, &s1.harness, &exec2, true, "'[]'");
+    f.raw_sql(&format!(
+        "UPDATE tasks SET status = 'review' WHERE id = '{}';
+         UPDATE runs SET branch = 'teamspace/FE-002-r1' WHERE id = '{run2}';",
+        t2.id
+    ));
+    let git = fake(
+        &f,
+        FakeGit {
+            merge_delay: Duration::from_millis(200),
+            ..FakeGit::with_merge(Merge::Merged {
+                commit: "abcdef".into(),
+            })
+        },
+    );
+    let results: Vec<Result<ApproveReviewResult>> = std::thread::scope(|scope| {
+        let a = scope.spawn(|| approve(&f, &s1.run_id));
+        let b = scope.spawn(|| approve(&f, &run2));
+        vec![a.join().unwrap(), b.join().unwrap()]
+    });
+    for r in &results {
+        assert_eq!(r.as_ref().unwrap().outcome, ApproveOutcome::Merged, "{r:?}");
+    }
+    assert_eq!(
+        git.max_in_flight.load(std::sync::atomic::Ordering::SeqCst),
+        1
+    );
+}
+
+/// #4：执行目录不在执行分支上：验收页不提交并说明，不能通过。
+#[test]
+fn review_does_not_commit_when_the_exec_dir_left_the_run_branch() {
+    let f = fixture();
+    let s = seed(&f, true);
+    let git = fake(
+        &f,
+        FakeGit {
+            wrong_branch: Some("main".into()),
+            ..FakeGit::default()
+        },
+    );
+    let view = f.ts.get_review(&s.task.id).unwrap();
+    assert!(!view.can_approve);
+    assert!(
+        view.files_problem
+            .unwrap()
+            .contains("执行目录不在执行分支 teamspace/FE-001-r1 上"),
+    );
+    assert!(git.calls().iter().all(|c| !c.starts_with("commit")));
+}
+
+/// #6：expectedHead 与执行分支当前 head 不一致（或缺少）时拒绝。
+#[test]
+fn approve_requires_the_previewed_head() {
+    let f = fixture();
+    let s = seed(&f, true);
+    let git = fake(
+        &f,
+        FakeGit::with_merge(Merge::Merged { commit: "c".into() }),
+    );
+    let with = |head: Option<&str>| {
+        f.ts.approve_review(ApproveReviewInput {
+            run_id: s.run_id.clone(),
+            expected_head: head.map(str::to_owned),
+        })
+    };
+    let err = assert_kind(with(Some("stale")), ErrorKind::Conflict);
+    assert_eq!(err, "改动已变化，请刷新验收页");
+    assert_kind(with(None), ErrorKind::Invalid);
+    assert!(git.calls().iter().all(|c| !c.starts_with("merge")));
+    assert!(
+        crate::service::review::merging(&f.ts.lock(), &s.run_id)
+            .unwrap()
+            .is_none()
+    );
+    let ok = with(Some("head-of-teamspace/FE-001-r1")).unwrap();
+    assert_eq!(ok.outcome, ApproveOutcome::Merged);
+}
+
+/// #7：已通过的执行不会因为任务重新打开、未经新执行回到 REVIEW 而再次待验收。
+#[test]
+fn an_approved_run_is_not_pending_again_after_reopening() {
+    let f = plain_fixture();
+    let s = seed(&f, false);
+    approve(&f, &s.run_id).unwrap();
+    f.drive(
+        &s.task.id,
+        &[TaskStatus::Ready, TaskStatus::Doing, TaskStatus::Review],
+    );
+    let view = f.ts.get_review(&s.task.id).unwrap();
+    assert!(view.run.is_none());
+    assert!(!view.can_approve && !view.can_reject);
+    assert!(
+        view.problems[0].contains("没有待验收的执行"),
+        "{:?}",
+        view.problems
+    );
+    let err = assert_kind(approve(&f, &s.run_id), ErrorKind::Conflict);
+    assert!(err.contains("已有验收结果（已通过）"), "{err}");
+    assert_kind(reject(&f, &s.run_id, "改"), ErrorKind::Conflict);
+
+    // Git：已通过的执行不再拦手动完成。
+    let g = fixture();
+    let s = seed(&g, true);
+    fake(
+        &g,
+        FakeGit::with_merge(Merge::Merged { commit: "c".into() }),
+    );
+    approve(&g, &s.run_id).unwrap();
+    g.drive(
+        &s.task.id,
+        &[TaskStatus::Ready, TaskStatus::Doing, TaskStatus::Review],
+    );
+    g.move_to(&s.task.id, TaskStatus::Done).unwrap();
+}
+
+/// #8：没有记录基线分支的旧执行，首次通过时把实际使用的基线分支写回；之后的恢复命令只用它。
+#[test]
+fn legacy_runs_record_the_base_branch_used_on_first_approve() {
+    let f = fixture();
+    let s = seed(&f, true);
+    f.raw_sql(&format!(
+        "UPDATE runs SET base_branch = NULL WHERE id = '{}'",
+        s.run_id
+    ));
+    let view = f.ts.get_review(&s.task.id).unwrap();
+    assert!(view.base_branch.is_none());
+    fake(
+        &f,
+        FakeGit::with_merge(Merge::Conflict {
+            files: vec!["a.md".into(), "b.md".into()],
+        }),
+    );
+    let result = approve(&f, &s.run_id).unwrap();
+    assert_eq!(result.outcome, ApproveOutcome::Conflict);
+    // FakeProbe 报告工作空间在 main 上。
+    assert_eq!(result.run.base_branch.as_deref(), Some("main"));
+
+    // #9 / #10：冲突文件刷新后仍可列出；冲突说明不再重复出现在 problems 里。
+    let view = f.ts.get_review(&s.task.id).unwrap();
+    assert!(view.conflict);
+    assert_eq!(view.conflict_files, ["a.md", "b.md"]);
+    assert!(view.problems.is_empty(), "{:?}", view.problems);
+    assert!(view.can_resolve_manually);
+
+    // 基线分支仍未知的冲突执行：不能手动标记完成。
+    f.raw_sql(&format!(
+        "UPDATE runs SET base_branch = NULL WHERE id = '{}'",
+        s.run_id
+    ));
+    let view = f.ts.get_review(&s.task.id).unwrap();
+    assert!(!view.can_resolve_manually);
+    fake(
+        &f,
+        FakeGit {
+            merged_into: Some(true),
+            ..FakeGit::default()
+        },
+    );
+    let err = assert_kind(
+        f.ts.resolve_merge_manually(ResolveMergeManuallyInput {
+            run_id: s.run_id.clone(),
+        }),
+        ErrorKind::Conflict,
+    );
+    assert!(err.contains("没有记录基线分支"), "{err}");
+}
+
+/// 通过后返回自动就绪的下游任务。
+#[test]
+fn approve_reports_advanced_dependents() {
+    let f = plain_fixture();
+    let s = seed(&f, false);
+    let fe = f.role(&s.team.id, "role_frontend");
+    let downstream = f
+        .try_task(
+            &s.team.id,
+            &fe,
+            "下游页面",
+            TaskStatus::Todo,
+            vec!["docs/spec.md"],
+            vec![s.task.id.clone()],
+        )
+        .unwrap();
+    let result = approve(&f, &s.run_id).unwrap();
+    assert_eq!(
+        result.advanced_tasks,
+        [AdvancedTask {
+            id: downstream.task.id.clone(),
+            key: downstream.task.key.clone(),
+            title: "下游页面".into(),
+        }]
     );
 }

@@ -32,6 +32,15 @@ baseBranch: string | null,
  */
 branch: string | null, 
 /**
+ * Git：预览对应的执行分支 head（读取验收页时已把执行目录里未提交的改动提交到执行分支）；通过时原样
+ * 传回 `approve_review` 的 `expectedHead`。普通文件夹或读取失败时为 `null`。
+ */
+headCommit: string | null, 
+/**
+ * 这次执行有一次合并正在进行（或上次合并没有落库、尚未对账）：不能退回，稍后刷新。
+ */
+merging: boolean, 
+/**
  * 改动文件。Git：执行分支相对基线提交的 diff；普通文件夹：执行记录里的改动文件（退回续接的多轮执行
  * 合在一起），没有 diff。按路径排序。
  */
@@ -66,6 +75,10 @@ rejections: Array<ReviewRejection>,
  * 标记完成」（`resolve_merge_manually`）或「重新执行」（`rerun_after_conflict`）。
  */
 conflict: boolean, 
+/**
+ * 合并冲突的文件（`conflict` 时取自执行记录，刷新后仍可列出）；其他情况为空。
+ */
+conflictFiles: Array<string>, 
 /**
  * 现在能否「已手动合并，标记完成」（是否真的已并入基线在调用时校验）。
  */

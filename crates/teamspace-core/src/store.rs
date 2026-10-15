@@ -12,7 +12,7 @@ use time::OffsetDateTime;
 use crate::error::{Error, Result};
 
 /// 当前 schema 版本。
-pub(crate) const SCHEMA_VERSION: i64 = 10;
+pub(crate) const SCHEMA_VERSION: i64 = 11;
 
 const SCHEMA_V1: &str = r#"
 CREATE TABLE teams (
@@ -324,9 +324,20 @@ const SCHEMA_V10: &str = r#"
 CREATE INDEX events_role ON events (team_id, role_id, seq);
 "#;
 
+/// v11：验收合并的「合并中」标记（M3-01 修复轮）。在调用 Git 合并之前写入：目标基线分支、执行分支预期的
+/// head 与开始时间；合并结果落库时清除。应用在合并之后、落库之前退出（或落库失败）时标记会留下，
+/// 打开验收页、再次通过或重启时据此对账：执行分支已并入基线就补记通过，否则清除标记回到待验收。
+/// `conflict_files`：合并冲突时的冲突文件（JSON 数组），验收页刷新后据此列出。
+const SCHEMA_V11: &str = r#"
+ALTER TABLE runs ADD COLUMN merge_base_branch TEXT;
+ALTER TABLE runs ADD COLUMN merge_head TEXT;
+ALTER TABLE runs ADD COLUMN merging_at TEXT;
+ALTER TABLE runs ADD COLUMN conflict_files TEXT NOT NULL DEFAULT '[]';
+"#;
+
 const MIGRATIONS: &[&str] = &[
     SCHEMA_V1, SCHEMA_V2, SCHEMA_V3, SCHEMA_V4, SCHEMA_V5, SCHEMA_V6, SCHEMA_V7, SCHEMA_V8,
-    SCHEMA_V9, SCHEMA_V10,
+    SCHEMA_V9, SCHEMA_V10, SCHEMA_V11,
 ];
 
 /// 打开数据库：WAL 日志、synchronous=NORMAL、开启外键，并迁移到当前版本。
@@ -875,6 +886,35 @@ mod tests {
             .pragma_query_value(None, "user_version", |r| r.get(0))
             .unwrap();
         assert_eq!(v, SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn v10_runs_migrate_to_v11_with_merge_marker_columns() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("t.db");
+        {
+            let conn = Connection::open(&path).unwrap();
+            for sql in &MIGRATIONS[..10] {
+                conn.execute_batch(sql).unwrap();
+            }
+            conn.execute_batch("PRAGMA user_version = 10;").unwrap();
+        }
+        let conn = open(&path).unwrap();
+        for column in [
+            "merge_base_branch",
+            "merge_head",
+            "merging_at",
+            "conflict_files",
+        ] {
+            let n: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM pragma_table_info('runs') WHERE name = ?1",
+                    [column],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(n, 1, "{column}");
+        }
     }
 
     #[test]

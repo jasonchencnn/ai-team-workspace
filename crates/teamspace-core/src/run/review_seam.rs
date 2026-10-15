@@ -118,6 +118,17 @@ pub(crate) trait ReviewGit: Send + Sync {
 
     /// 新建 worktree 时工作空间所在的分支（处于分离 HEAD 时为 `None`）。
     fn base_branch(&self, worktree: &Worktree) -> Option<String>;
+
+    /// 执行目录当前检出的是不是 `refs/heads/<branch>`（`git symbolic-ref HEAD`）；不是时返回说明。
+    fn check_on_branch(
+        &self,
+        dir: &Path,
+        branch: &str,
+        path_env: Option<&OsStr>,
+    ) -> Result<(), String>;
+
+    /// `dir` 所在仓库的根目录（规范路径）；不是 Git 仓库时为 `None`。
+    fn repo_root(&self, dir: &Path, path_env: Option<&OsStr>) -> Option<std::path::PathBuf>;
 }
 
 /// 真实的 Git 层（M3-02 的 `run::git_review`）。验收用到的 Git 调用都集中在这里，Git 层签名变化时只改这里。
@@ -236,5 +247,32 @@ impl ReviewGit for RealGit {
 
     fn base_branch(&self, worktree: &Worktree) -> Option<String> {
         worktree.base_branch.clone()
+    }
+
+    fn check_on_branch(
+        &self,
+        dir: &Path,
+        branch: &str,
+        path_env: Option<&OsStr>,
+    ) -> Result<(), String> {
+        let head = git(dir, &["symbolic-ref", "--quiet", "HEAD"], path_env)
+            .map(|s| s.trim().to_owned())
+            .unwrap_or_default();
+        if head == format!("refs/heads/{branch}") {
+            return Ok(());
+        }
+        let current = match head.strip_prefix("refs/heads/") {
+            Some(name) => name.to_owned(),
+            None if head.is_empty() => "分离的 HEAD".to_owned(),
+            None => head,
+        };
+        Err(format!(
+            "执行目录不在执行分支 {branch} 上（当前：{current}）"
+        ))
+    }
+
+    fn repo_root(&self, dir: &Path, path_env: Option<&OsStr>) -> Option<std::path::PathBuf> {
+        let root = git(dir, &["rev-parse", "--show-toplevel"], path_env).ok()?;
+        Path::new(root.trim()).canonicalize().ok()
     }
 }
