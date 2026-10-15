@@ -102,6 +102,11 @@ pub struct ReviewView {
     pub base_branch: Option<String>,
     /// Git：执行分支；普通文件夹为 `null`。
     pub branch: Option<String>,
+    /// Git：预览对应的执行分支 head（读取验收页时已把执行目录里未提交的改动提交到执行分支）；通过时原样
+    /// 传回 `approve_review` 的 `expectedHead`。普通文件夹或读取失败时为 `null`。
+    pub head_commit: Option<String>,
+    /// 这次执行有一次合并正在进行（或上次合并没有落库、尚未对账）：不能退回，稍后刷新。
+    pub merging: bool,
     /// 改动文件。Git：执行分支相对基线提交的 diff；普通文件夹：执行记录里的改动文件（退回续接的多轮执行
     /// 合在一起），没有 diff。按路径排序。
     pub files: Vec<ReviewFile>,
@@ -121,6 +126,8 @@ pub struct ReviewView {
     /// `run` 是一次合并冲突的执行（任务因冲突转为受阻，D22）：此时不能通过或退回，可以「已手动合并，
     /// 标记完成」（`resolve_merge_manually`）或「重新执行」（`rerun_after_conflict`）。
     pub conflict: bool,
+    /// 合并冲突的文件（`conflict` 时取自执行记录，刷新后仍可列出）；其他情况为空。
+    pub conflict_files: Vec<String>,
     /// 现在能否「已手动合并，标记完成」（是否真的已并入基线在调用时校验）。
     pub can_resolve_manually: bool,
     /// 现在能否「重新执行」（需满足就绪条件）。
@@ -152,6 +159,20 @@ pub struct RerunAfterConflictInput {
 pub struct ApproveReviewInput {
     /// 待验收的执行（任务最近一次执行）；不是时拒绝（conflict），防止对旧页面上的旧执行操作。
     pub run_id: String,
+    /// Git：验收页显示的 `ReviewView.headCommit`；与执行分支当前 head 不一致时拒绝（conflict，「改动已变化，
+    /// 请刷新验收页」），保证合并的就是看过的内容。Git 执行必填；普通文件夹忽略。
+    #[ts(optional = nullable)]
+    pub expected_head: Option<String>,
+}
+
+/// 任务完成后自动转为 READY 的下游任务。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct AdvancedTask {
+    pub id: String,
+    pub key: String,
+    pub title: String,
 }
 
 /// 退回验收。
@@ -194,6 +215,8 @@ pub struct ApproveReviewResult {
     pub reason: Option<String>,
     /// 合并成功后清理 worktree 或执行分支失败的说明（不影响合并结果）；没有问题为 `null`。
     pub cleanup_problem: Option<String>,
+    /// 任务完成后自动转为 READY 的下游任务（验收页「合并成功 · 下游自动就绪」提示）。
+    pub advanced_tasks: Vec<AdvancedTask>,
     /// 最新的任务。
     pub task: Task,
     /// 最新的执行记录。

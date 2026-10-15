@@ -28,7 +28,95 @@ pub(crate) fn pending_run(conn: &Connection, task: &Task) -> Result<Option<Run>>
     if task.status != TaskStatus::Review {
         return Ok(None);
     }
-    Ok(run::latest_for_task(conn, &task.id)?.filter(|r| !r.status.is_active()))
+    // 已有验收结果（通过、退回、冲突）的执行不再待验收：任务重新打开后没有新执行就回到 REVIEW 时也一样。
+    Ok(run::latest_for_task(conn, &task.id)?
+        .filter(|r| !r.status.is_active() && r.review.is_none()))
+}
+
+/// 这次执行仍是任务当前待验收的执行：任务处于 REVIEW、它是最近一次执行、还没有验收结果。合并结果
+/// 落库时据此决定是否改动任务状态（合并期间任务被别处改动时，只记 Git 事实与活动）。
+pub(crate) fn is_current(conn: &Connection, run_id: &str) -> Result<bool> {
+    let run = run::get(conn, run_id)?;
+    let task = task::get(conn, &run.task_id)?;
+    Ok(task.status == TaskStatus::Review
+        && run.review.is_none()
+        && run::latest_for_task(conn, &task.id)?.is_some_and(|l| l.id == run.id))
+}
+
+/// 「合并中」标记（见 store v11）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Merging {
+    pub base_branch: String,
+    pub head: Option<String>,
+}
+
+/// 读取执行的「合并中」标记。
+pub(crate) fn merging(conn: &Connection, run_id: &str) -> Result<Option<Merging>> {
+    Ok(conn.query_row(
+        "SELECT merge_base_branch, merge_head, merging_at FROM runs WHERE id = ?1",
+        params![run_id],
+        |row| {
+            let at: Option<String> = row.get(2)?;
+            let base: Option<String> = row.get(0)?;
+            Ok(at.and(base).map(|base_branch| Merging {
+                base_branch,
+                head: row.get(1).ok().flatten(),
+            }))
+        },
+    )?)
+}
+
+/// 调用 Git 合并之前写下「合并中」标记；基线分支为空（M3 之前的执行）时一并写回实际使用的基线分支，
+/// 之后的合并与冲突恢复只用这个值。
+pub(crate) fn mark_merging(
+    conn: &Connection,
+    run_id: &str,
+    base_branch: &str,
+    head: &str,
+) -> Result<()> {
+    conn.execute(
+        "UPDATE runs SET base_branch = COALESCE(base_branch, ?2), merge_base_branch = ?2,
+                         merge_head = ?3, merging_at = ?4
+         WHERE id = ?1",
+        params![run_id, base_branch, head, now()],
+    )?;
+    Ok(())
+}
+
+/// 记下合并冲突的文件（验收页刷新后列出）。
+pub(crate) fn set_conflict_files(conn: &Connection, run_id: &str, files: &[String]) -> Result<()> {
+    conn.execute(
+        "UPDATE runs SET conflict_files = ?2 WHERE id = ?1",
+        params![run_id, serde_json::to_string(files)?],
+    )?;
+    Ok(())
+}
+
+/// 合并冲突的文件。
+pub(crate) fn conflict_files(conn: &Connection, run_id: &str) -> Result<Vec<String>> {
+    let raw: String = conn.query_row(
+        "SELECT conflict_files FROM runs WHERE id = ?1",
+        params![run_id],
+        |row| row.get(0),
+    )?;
+    Ok(serde_json::from_str(&raw).unwrap_or_default())
+}
+
+/// 清除「合并中」标记。
+pub(crate) fn clear_merging(conn: &Connection, run_id: &str) -> Result<()> {
+    conn.execute(
+        "UPDATE runs SET merge_base_branch = NULL, merge_head = NULL, merging_at = NULL
+         WHERE id = ?1",
+        params![run_id],
+    )?;
+    Ok(())
+}
+
+/// 留有「合并中」标记的执行（启动时对账）。
+pub(crate) fn merging_runs(conn: &Connection) -> Result<Vec<String>> {
+    let mut stmt = conn.prepare("SELECT id FROM runs WHERE merging_at IS NOT NULL")?;
+    let rows = stmt.query_map([], |row| row.get(0))?;
+    Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
 }
 
 /// fencing：`run_id` 必须是它所属任务当前待验收的执行。返回任务与执行。
@@ -52,6 +140,17 @@ pub(crate) fn check_pending(conn: &Connection, run_id: &str) -> Result<(Task, Ru
             )));
         }
         None => return Err(Error::not_found("执行记录不存在")),
+    }
+    if let Some(review) = &run.review {
+        let label = match review.outcome {
+            ReviewOutcome::Approved => "已通过",
+            ReviewOutcome::Rejected => "已退回",
+            ReviewOutcome::Conflict => "合并冲突",
+        };
+        return Err(Error::conflict(format!(
+            "任务 {} 的第 {} 次执行已有验收结果（{label}），没有待验收的执行；请刷新后再操作",
+            task.key, run.attempt
+        )));
     }
     if run.status.is_active() {
         return Err(Error::conflict(format!(

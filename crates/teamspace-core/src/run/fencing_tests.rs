@@ -440,3 +440,25 @@ fn stale_snapshots_are_discarded_by_status_and_age() {
     s.core.discard_stale_snapshots(Duration::from_secs(3600));
     assert!(!kept.exists() && !gap.exists(), "过期的快照要删除");
 }
+
+/// M3-08 #5：执行结束时先确认仍是当前执行（未被中断、接管）才把改动提交到执行分支；
+/// 迟到的旧 driver 不提交。
+#[test]
+fn late_finish_does_not_commit_to_the_run_branch() {
+    use crate::tests::reviews::FakeGit;
+    let s = seed(&["interrupted", "running"]);
+    s.f.raw_sql("UPDATE runs SET branch = 'teamspace/X-r1', base_commit = 'abc'");
+    let git = Arc::new(FakeGit::default());
+    s.core.set_review_git(git.clone());
+    let (interrupted, _) = &s.runs[0];
+    let (running, _) = &s.runs[1];
+    driver_for(&s.core, interrupted).finish(End::Succeeded("end_turn".into()));
+    assert!(git.calls().is_empty(), "{:?}", git.calls());
+    driver_for(&s.core, running).finish(End::Succeeded("end_turn".into()));
+    let calls = git.calls();
+    assert_eq!(calls.len(), 1, "{calls:?}");
+    assert!(
+        calls[0].starts_with("commit ") && calls[0].ends_with("teamspace: FE-002 attempt 1"),
+        "{calls:?}"
+    );
+}

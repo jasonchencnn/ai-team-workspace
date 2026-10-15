@@ -84,6 +84,7 @@ fn plain_folder_reject_resumes_the_session_then_approve_completes() {
     let err =
         e.ts.approve_review(ApproveReviewInput {
             run_id: first.id.clone(),
+            expected_head: None,
         })
         .unwrap_err();
     assert_eq!(err.kind(), teamspace_core::ErrorKind::Conflict);
@@ -91,6 +92,7 @@ fn plain_folder_reject_resumes_the_session_then_approve_completes() {
     let result =
         e.ts.approve_review(ApproveReviewInput {
             run_id: revision.id.clone(),
+            expected_head: None,
         })
         .unwrap();
     assert_eq!(result.outcome, ApproveOutcome::Completed);
@@ -149,8 +151,11 @@ fn branch_exists(e: &Env, branch: &str) -> bool {
 }
 
 fn approve(e: &Env, run: &Run) -> ApproveReviewResult {
+    // 先看验收页（会把执行目录里未提交的改动提交到执行分支），再按看到的 head 通过。
+    let view = e.ts.get_review(&run.task_id).unwrap();
     e.ts.approve_review(ApproveReviewInput {
         run_id: run.id.clone(),
+        expected_head: view.head_commit,
     })
     .unwrap()
 }
@@ -342,5 +347,52 @@ fn git_reject_continues_in_the_worktree_and_merges_both_rounds() {
         std::fs::read_to_string(e.ws.join("docs/spec.md"))
             .unwrap()
             .contains("written by shell")
+    );
+}
+
+/// #4 / #6：执行目录被切到别的分支时，验收页不提交、不能通过；在执行目录里改了文件但没提交时，验收页
+/// 先把它们提交到执行分支，预览与合并都包含它们。
+#[test]
+fn review_commits_pending_changes_and_checks_the_branch() {
+    let e = env(true);
+    let task = e.task("登录页");
+    let run = run_to_review(&e, &task);
+    let exec = Path::new(&run.exec_dir);
+    let before = git_out(&e.ws, &["rev-parse", run.branch.as_deref().unwrap()]);
+    std::fs::write(exec.join("docs/spec.md"), "# 人工补充\n").unwrap();
+    let view = e.ts.get_review(&task.id).unwrap();
+    let head = view.head_commit.clone().unwrap();
+    assert_ne!(head, before);
+    assert!(
+        view.files.iter().any(|f| f.path == "docs/spec.md"),
+        "{:?}",
+        view.files
+    );
+
+    git(exec, &["checkout", "-q", "-b", "elsewhere"]);
+    let view = e.ts.get_review(&task.id).unwrap();
+    assert!(!view.can_approve);
+    assert!(
+        view.files_problem
+            .as_deref()
+            .unwrap_or_default()
+            .contains("执行目录不在执行分支"),
+        "{view:#?}"
+    );
+    let result =
+        e.ts.approve_review(ApproveReviewInput {
+            run_id: run.id.clone(),
+            expected_head: Some(head.clone()),
+        })
+        .unwrap();
+    assert_eq!(result.outcome, ApproveOutcome::Blocked);
+    assert!(result.reason.unwrap().contains("执行目录不在执行分支"));
+
+    git(exec, &["checkout", "-q", run.branch.as_deref().unwrap()]);
+    let result = approve(&e, &run);
+    assert_eq!(result.outcome, ApproveOutcome::Merged, "{result:#?}");
+    assert_eq!(
+        std::fs::read_to_string(e.ws.join("docs/spec.md")).unwrap(),
+        "# 人工补充\n"
     );
 }

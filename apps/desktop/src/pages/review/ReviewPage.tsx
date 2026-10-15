@@ -79,7 +79,9 @@ export function ReviewPage() {
   };
 
   const approve = useMutation({
-    mutationFn: (runId: string) => approveReview({ runId }),
+    // expectedHead：验收页预览对应的执行分支 head，后端据此确认合并的就是看过的内容。
+    mutationFn: (runId: string) =>
+      approveReview({ runId, expectedHead: review.data?.headCommit ?? null }),
     onSuccess: async (data) => {
       setConfirm(null);
       setResult(data);
