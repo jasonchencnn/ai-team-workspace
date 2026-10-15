@@ -21,6 +21,7 @@ import type { TaskSummary } from "../../bindings/TaskSummary.js";
 import { RunExecutionArea } from "./run/RunExecutionArea.js";
 import { isRunActive } from "./run/useRunEvents.js";
 import { useTaskRuns } from "./run/useTaskRuns.js";
+import { isMarkdownRef } from "../files/filesUi.js";
 import { formatTime, statusTone } from "../tasks/taskUi.js";
 import "./task-detail.css";
 
@@ -243,9 +244,24 @@ export function TaskDetailPage() {
                     key={`${ref.path}#${ref.anchor ?? ""}`}
                     className={ref.exists ? "file-chip" : "file-chip file-chip--missing"}
                   >
-                    {ref.path}
-                    {ref.anchor === null ? "" : ` #${ref.anchor}`}
-                    {ref.exists ? null : <span className="file-chip__note">文件不存在</span>}
+                    {/* 存在的 .md 引用是去共享文件页看正文的入口；其余保持文字。 */}
+                    {ref.exists && isMarkdownRef(ref.path) ? (
+                      <Link
+                        className="file-chip__link"
+                        to={`/teams/${teamId}/files?path=${encodeURIComponent(ref.path)}`}
+                      >
+                        {ref.path}
+                        {ref.anchor === null ? "" : ` #${ref.anchor}`}
+                      </Link>
+                    ) : (
+                      <>
+                        {ref.path}
+                        {ref.anchor === null ? "" : ` #${ref.anchor}`}
+                      </>
+                    )}
+                    {ref.exists ? null : (
+                      <span className="file-chip__note">文件已被移动或删除</span>
+                    )}
                   </li>
                 ))}
               </ul>
