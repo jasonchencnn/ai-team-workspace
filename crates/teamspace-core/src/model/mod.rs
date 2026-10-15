@@ -10,6 +10,7 @@
 
 mod event;
 mod harness;
+mod review;
 mod role;
 mod run;
 mod system;
@@ -18,6 +19,7 @@ mod team;
 
 pub use event::*;
 pub use harness::*;
+pub use review::*;
 pub use role::*;
 pub use run::*;
 pub use system::*;

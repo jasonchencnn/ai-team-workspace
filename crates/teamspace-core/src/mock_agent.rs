@@ -5,8 +5,8 @@
 //! [`crate::api::HostConfig::mock_agent`] 得到启动它的命令。
 //!
 //! 支持的方法：
-//! - `initialize`：协议版本 1、`agentInfo.name = teamspace-mock-agent`、支持 `loadSession`，
-//!   无登录方式；
+//! - `initialize`：协议版本 1、`agentInfo.name = teamspace-mock-agent`、支持 `loadSession`（进程当前目录——
+//!   即执行目录——有 `.mock-noload` 文件时不支持，用来测试退回后新开会话的路径），无登录方式；
 //! - `authenticate`：直接成功；
 //! - `session/new`：记下 cwd，返回新的会话 ID；工作目录里有 `.mock-modes` 文件时，按其内容公布权限模式（见下）；
 //! - `session/load`：回放两条历史消息（`user_message_chunk`、`agent_message_chunk`）后返回（同样公布权限模式）；
@@ -48,6 +48,8 @@
 //! - `[mock:shellrm=<相对路径>]`：模拟 Agent 用 shell（`rm`）直接删除工作目录下的文件，不申请权限；
 //! - `[mock:rmgrant=<相对路径>]`：先申请一次 `delete` 类权限（Human 确认），允许才由 Mock 自己删除该文件；
 //! - `[mock:modes]`：在总结里报告会话当前的权限模式（`[modes:<取值>]`，没有公布模式时为 `[modes:none]`）；
+//! - 提示中有「## 退回意见」一节（验收退回后的提示）时，总结末尾加上 ` [revise:<意见第一行>]`；续接原会话时
+//!   提示里没有「## 任务」一节，意见里的标记（如 `[mock:shellwrite=…]`）同样生效；
 //! - `[mock:linger]`：与其他标记合用；其余步骤（含权限请求的结果）都完成后不立刻总结，发一条消息后等待
 //!   `session/cancel`（或 stdin 关闭），用来在界面上观察「权限处理之后仍在执行中」的状态；
 //! - `[mock:failafter]`：默认流程（含写入过程文件）都完成后，不总结，发一条消息并以 JSON-RPC 错误结束提示，
@@ -74,6 +76,9 @@ pub const MOCK_AGENT_FLAG: &str = "--teamspace-mock-agent";
 pub const AGENT_NAME: &str = "teamspace-mock-agent";
 /// Mock 发给 Client 的请求 id 起点（与 Client 的 id 区分开，便于测试预先写好响应）。
 pub const FIRST_REQUEST_ID: u64 = 1000;
+
+/// 进程当前目录里有这个文件时，`initialize` 声明不支持 `loadSession`。
+pub const NO_LOAD_FILE: &str = ".mock-noload";
 
 /// 在当前进程的 stdin / stdout 上运行 Mock Agent，直到 stdin 关闭。
 pub fn run_stdio() -> std::io::Result<()> {
@@ -155,7 +160,13 @@ impl Mock<'_> {
         };
         let params = message.get("params").cloned().unwrap_or(Value::Null);
         match method {
-            "initialize" => self.write(&ok(id, initialize_result())),
+            "initialize" => {
+                let mut result = initialize_result();
+                if Path::new(NO_LOAD_FILE).exists() {
+                    result["agentCapabilities"]["loadSession"] = json!(false);
+                }
+                self.write(&ok(id, result))
+            }
             "authenticate" => self.write(&ok(id, json!({}))),
             "session/new" => {
                 self.count += 1;
@@ -911,6 +922,9 @@ impl Mock<'_> {
                 .map_or("none", |p| p.current.as_str());
             notes.push(format!(" [modes:{current}]"));
         }
+        if let Some(first) = revise_comment(&text) {
+            notes.push(format!(" [revise:{first}]"));
+        }
         for n in &notes {
             summary.push_str(n);
         }
@@ -997,6 +1011,17 @@ fn initialize_result() -> Value {
 
 fn str_of<'a>(params: &'a Value, key: &str) -> &'a str {
     params.get(key).and_then(Value::as_str).unwrap_or_default()
+}
+
+/// 提示中「## 退回意见」一节的第一行非空内容。
+fn revise_comment(text: &str) -> Option<String> {
+    let start =
+        text.find(crate::run::brief::REVISE_HEADING)? + crate::run::brief::REVISE_HEADING.len();
+    text[start..]
+        .lines()
+        .map(str::trim)
+        .find(|l| !l.is_empty())
+        .map(str::to_owned)
 }
 
 /// 提示中所有文本块拼接起来的内容。

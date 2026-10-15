@@ -245,6 +245,15 @@ pub struct Run {
     pub can_resume: bool,
     /// 完成条目写入岗位工作日志的真实结果（成功面板据此显示）。
     pub journal: RunJournal,
+    /// worktree 执行开始时工作空间所在的分支（验收通过时合并进这个分支，D20）；原地执行、
+    /// 处于分离 HEAD 或 M3 之前的执行为 `null`。
+    pub base_branch: Option<String>,
+    /// 验收通过、合并成功后基线分支上的合并提交（完整哈希）；未合并为 `null`。
+    pub merged_commit: Option<String>,
+    /// 退回后续接的执行：被退回的那次执行的 ID（沿用它的执行目录与分支）；其他执行为 `null`。
+    pub revision_of: Option<String>,
+    /// 这次执行的验收结果；尚未验收为 `null`。
+    pub review: Option<super::RunReview>,
 }
 
 /// 消息的来源。

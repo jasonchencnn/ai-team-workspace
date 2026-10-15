@@ -5,6 +5,8 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 
 import type { AcpPresetInfo } from "../bindings/AcpPresetInfo.js";
+import type { ApproveReviewInput } from "../bindings/ApproveReviewInput.js";
+import type { ApproveReviewResult } from "../bindings/ApproveReviewResult.js";
 import type { ChangeTaskStatusInput } from "../bindings/ChangeTaskStatusInput.js";
 import type { CreateHarnessInput } from "../bindings/CreateHarnessInput.js";
 import type { CreateRoleInput } from "../bindings/CreateRoleInput.js";
@@ -15,7 +17,12 @@ import type { EventPage } from "../bindings/EventPage.js";
 import type { EventQuery } from "../bindings/EventQuery.js";
 import type { FileSearchQuery } from "../bindings/FileSearchQuery.js";
 import type { HarnessInstance } from "../bindings/HarnessInstance.js";
+import type { RejectReviewInput } from "../bindings/RejectReviewInput.js";
+import type { RerunAfterConflictInput } from "../bindings/RerunAfterConflictInput.js";
+import type { ResolveMergeManuallyInput } from "../bindings/ResolveMergeManuallyInput.js";
 import type { RespondPermissionInput } from "../bindings/RespondPermissionInput.js";
+import type { ReviewFilePatch } from "../bindings/ReviewFilePatch.js";
+import type { ReviewView } from "../bindings/ReviewView.js";
 import type { Role } from "../bindings/Role.js";
 import type { RoleFolder } from "../bindings/RoleFolder.js";
 import type { RoleTemplate } from "../bindings/RoleTemplate.js";
@@ -210,6 +217,30 @@ export const listRunUpdates = (input: RunUpdateQuery) =>
 /** 回应等待确认的权限请求。 */
 export const respondPermission = (input: RespondPermissionInput) =>
   invoke<Run>("respond_permission", { input });
+
+// ---------------------------------------------------------------- 验收
+
+/** 验收页数据：待验收的执行、摘要、改动文件、能否通过 / 退回及原因、历次退回意见。 */
+export const getReview = (taskId: string) => invoke<ReviewView>("get_review", { taskId });
+
+/** 一个改动文件的 diff（只有 Git 工作空间提供）。 */
+export const getReviewFilePatch = (runId: string, path: string) =>
+  invoke<ReviewFilePatch>("get_review_file_patch", { runId, path });
+
+/** 通过验收：Git 合并执行分支（结果可能是 merged / conflict / blocked），普通文件夹直接完成。 */
+export const approveReview = (input: ApproveReviewInput) =>
+  invoke<ApproveReviewResult>("approve_review", { input });
+
+/** 退回验收（意见必填），在同一执行目录续接执行；返回新的执行。 */
+export const rejectReview = (input: RejectReviewInput) => invoke<Run>("reject_review", { input });
+
+/** 合并冲突后「已手动合并，标记完成」：校验执行分支已并入基线，任务完成并清理执行分支。 */
+export const resolveMergeManually = (input: ResolveMergeManuallyInput) =>
+  invoke<ApproveReviewResult>("resolve_merge_manually", { input });
+
+/** 合并冲突后「重新执行」：删除旧执行分支与 worktree，任务回到 READY。 */
+export const rerunAfterConflict = (input: RerunAfterConflictInput) =>
+  invoke<TaskDetail>("rerun_after_conflict", { input });
 
 // ---------------------------------------------------------------- 活动
 

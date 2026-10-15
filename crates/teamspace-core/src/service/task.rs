@@ -254,6 +254,7 @@ fn build_detail(
 ) -> Result<TaskDetail> {
     let latest_run = super::run::latest_for_task(conn, &task.id)?;
     let running = latest_run.as_ref().is_some_and(|r| r.status.is_active());
+    let needs_merge = review_needs_merge(conn, &task)?;
     let allowed_transitions = if running {
         Vec::new()
     } else {
@@ -262,6 +263,7 @@ fn build_detail(
             .iter()
             .copied()
             .filter(|to| !needs_readiness(*to) || readiness.is_empty())
+            .filter(|to| *to != TaskStatus::Done || !needs_merge)
             .collect()
     };
     let run_problems = super::run::start_problems(conn, &task, files)?;
@@ -662,6 +664,12 @@ pub(crate) fn change_status(
         )));
     }
     let (from, to) = (task.status, input.to);
+    if from == TaskStatus::Review && to == TaskStatus::Done && review_needs_merge(conn, &task)? {
+        return Err(Error::conflict(format!(
+            "任务 {} 的改动在执行分支上，请在验收页「通过」，由 Teamspace 合并到基线分支（直接改为已完成会跳过合并）",
+            task.key
+        )));
+    }
     if !from.can_transition_to(to) {
         return Err(Error::conflict(format!(
             "任务 {} 不能从「{}」变为「{}」",
@@ -713,7 +721,34 @@ pub(crate) fn change_status(
             data: json!({ "from": from, "to": to, "reason": reason }),
         },
     )?;
+    if to == TaskStatus::Done {
+        on_task_done(conn, &task.id)?;
+    }
     build_detail(conn, get(conn, &task.id)?, problems, files)
+}
+
+/// 待验收的任务改动在 Git 执行分支上（最近一次执行是 worktree 执行）：只能经验收「通过」合并后完成，
+/// 不能用 `change_task_status` 直接改为 DONE（D20，避免跳过合并）。普通文件夹的执行改动已在原地，
+/// 直接改为 DONE 与验收通过的效果相同，保留原行为。
+pub(crate) fn review_needs_merge(conn: &Connection, task: &Task) -> Result<bool> {
+    if task.status != TaskStatus::Review {
+        return Ok(false);
+    }
+    Ok(super::run::latest_for_task(conn, &task.id)?
+        .is_some_and(|r| r.isolation == crate::model::RunIsolation::Worktree))
+}
+
+/// 任务转为 DONE 之后的依赖推进钩子：前置任务完成后，满足就绪条件的下游任务自动转为 READY（M3-03 填充，
+/// 目前什么也不做）。
+///
+/// 调用约定：在把任务置为 DONE 的**同一个事务**里、紧随状态更新（及其活动记录）之后调用——验收通过
+/// （[`crate::api`] 的 `approve_review`）与 `change_task_status` 置为 DONE 两处。这样「上游完成」与
+/// 「下游就绪」一起提交或一起回滚，不会出现上游已完成、下游仍停在 TODO 的中间状态；钩子返回错误时整个
+/// 事务回滚，任务也不会变成 DONE。钩子只做数据库内的工作（不做文件或进程 I/O，岗位文件夹由调用方在
+/// 事务提交后同步）。
+pub(crate) fn on_task_done(conn: &Connection, task_id: &str) -> Result<()> {
+    let _ = (conn, task_id);
+    Ok(())
 }
 
 #[cfg(test)]

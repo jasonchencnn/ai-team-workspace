@@ -321,6 +321,42 @@ pub fn resume_text(task_key: &str, role_folder: &str, journal: Option<&str>) -> 
     )
 }
 
+/// 退回意见一节的标题（Mock Agent 据此识别退回后的提示）。
+pub const REVISE_HEADING: &str = "## 退回意见";
+
+/// 退回后在同一执行目录**新开会话**时（Agent 不支持 `session/load`），附在完整任务说明包后面的一节：
+/// 上次执行的摘要与 Human 的退回意见。
+pub fn revise_section(previous_summary: Option<&str>, comment: &str) -> String {
+    let summary = previous_summary
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or("（没有摘要）");
+    format!(
+        "{REVISE_HEADING}\n\n{}\n\n这个任务之前已经执行过一次，Human 验收后退回了，意见见上。之前的改动仍在当前工作目录里，\
+         请在此基础上按意见修改，不要从头重做。上次执行的摘要：{summary}\n",
+        comment.trim()
+    )
+}
+
+/// 退回后**续接原会话**（`session/load` 之后）时发送的提示：退回意见、过程文件位置、工作日志追加规则与
+/// 总结要求。`journal` 为工作日志路径（`None` 时按 `role_folder` 给出相对路径）。
+pub fn revise_text(
+    task_key: &str,
+    role_folder: &str,
+    journal: Option<&str>,
+    comment: &str,
+) -> String {
+    let journal = journal.map_or_else(|| format!("{role_folder}/{JOURNAL_FILE}"), str::to_owned);
+    format!(
+        "Human 验收任务 {task_key} 后退回了这次执行，请按下面的意见修改。工作目录与之前相同，之前的改动仍在，\
+         请在此基础上修改，不要从头重做。过程文件仍放在 `{role_folder}/{PROCESS_DIR}/`（相对工作目录）。{}\
+         不要修改 `{role_folder}/{BRIEF_FILE}`；完成后用一段话总结：按意见做了什么、改了哪些文件。\n\n\
+         {REVISE_HEADING}\n\n{}\n",
+        journal_rule(&journal, task_key),
+        comment.trim()
+    )
+}
+
 /// 行首的开始标签名（`<name` 后紧跟空白、`>` 或 `/`）。标签名为小写字母开头，后接小写字母、数字和连字符。
 fn opening_tag_name(line: &str) -> Option<&str> {
     let rest = line.trim_start().strip_prefix('<')?;
@@ -642,5 +678,23 @@ mod tests {
     fn summary_strips_multiple_markup_blocks() {
         let raw = "第一段\n<deliver-assets>\n<media src=\"a.md\" />\n</deliver-assets>\n第二段\n\n\n<media type=\"file\" src=\"/b.md\" />\n<notes>\n内部备注\n</notes>\n结尾";
         assert_eq!(strip_display_markup(raw), "第一段\n第二段\n\n结尾");
+    }
+
+    #[test]
+    fn revise_prompts_carry_the_comment() {
+        let text = revise_text("FE-001", "Teamspace/前端", None, "  改成主色\n再补测试 ");
+        assert!(text.contains("任务 FE-001"));
+        assert!(text.contains("`Teamspace/前端/过程文件/`"), "{text}");
+        assert!(text.contains("`Teamspace/前端/工作日志.md`"), "{text}");
+        assert!(
+            text.ends_with(&format!("{REVISE_HEADING}\n\n改成主色\n再补测试\n")),
+            "{text}"
+        );
+        assert!(!text.contains("## 任务"));
+
+        let section = revise_section(Some(" 做了登录页 "), "改成主色");
+        assert!(section.starts_with(&format!("{REVISE_HEADING}\n\n改成主色\n")));
+        assert!(section.contains("上次执行的摘要：做了登录页"), "{section}");
+        assert!(revise_section(None, "x").contains("（没有摘要）"));
     }
 }

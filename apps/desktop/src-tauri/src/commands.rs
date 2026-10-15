@@ -251,6 +251,49 @@ pub fn respond_permission(
     ts.respond_permission(input)
 }
 
+#[tauri::command(async)]
+pub fn get_review(ts: State<'_, Teamspace>, task_id: &str) -> Result<ReviewView, Error> {
+    ts.get_review(task_id)
+}
+
+#[tauri::command(async)]
+pub fn get_review_file_patch(
+    ts: State<'_, Teamspace>,
+    run_id: &str,
+    path: &str,
+) -> Result<ReviewFilePatch, Error> {
+    ts.get_review_file_patch(run_id, path)
+}
+
+#[tauri::command(async)]
+pub fn approve_review(
+    ts: State<'_, Teamspace>,
+    input: ApproveReviewInput,
+) -> Result<ApproveReviewResult, Error> {
+    ts.approve_review(input)
+}
+
+#[tauri::command(async)]
+pub fn reject_review(ts: State<'_, Teamspace>, input: RejectReviewInput) -> Result<Run, Error> {
+    ts.reject_review(input)
+}
+
+#[tauri::command(async)]
+pub fn resolve_merge_manually(
+    ts: State<'_, Teamspace>,
+    input: ResolveMergeManuallyInput,
+) -> Result<ApproveReviewResult, Error> {
+    ts.resolve_merge_manually(input)
+}
+
+#[tauri::command(async)]
+pub fn rerun_after_conflict(
+    ts: State<'_, Teamspace>,
+    input: RerunAfterConflictInput,
+) -> Result<TaskDetail, Error> {
+    ts.rerun_after_conflict(input)
+}
+
 /// 打开系统文件夹对话框；取消返回 `None`，否则返回所选目录的工作区信息。
 #[tauri::command(async)]
 pub fn pick_workspace_folder(

@@ -7,6 +7,7 @@ mod harnesses;
 mod qa_round2;
 #[cfg(unix)]
 mod qa_round2_run;
+mod reviews;
 mod roles;
 mod runs;
 mod tasks;
