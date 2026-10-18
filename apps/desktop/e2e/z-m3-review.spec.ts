@@ -80,6 +80,7 @@ test.beforeAll(() => {
   put(gitWs, "README.md", "# 验收 Git 项目\n");
   put(gitWs, "brief.txt", "需求说明\n");
   put(gitWs, "notes/a.txt", "base\n");
+  put(gitWs, "notes/c.txt", "base\n");
   git(gitWs, "add", ".");
   git(gitWs, "commit", "-q", "-m", "docs: seed");
   plainWs = mkdtempSync(join(tmpdir(), "teamspace-e2e-m3r-plain-"));
@@ -317,6 +318,81 @@ test("Git：合并冲突 → 任务受阻 → 手动合并后「已手动合并�
   await page.goto(task.url);
   await expect(page.locator(".task-detail__status")).toContainText("已完成");
   expect(readFileSync(join(gitWs, "notes/a.txt"), "utf8")).toContain(OK_MARK);
+});
+
+test("Git：基线上同一文件被改动 → 冲突后刷新验收页，仍列出冲突文件", async ({ page }) => {
+  const task = await createTask(page, teamG, "冲突后刷新 [mock:shellwrite=notes/c.txt]", ROLE_G);
+  await runToReview(page);
+  put(gitWs, "notes/c.txt", "main side c\n");
+  git(gitWs, "add", "notes/c.txt");
+  git(gitWs, "commit", "-q", "-m", "docs: main side c");
+
+  await page
+    .getByRole("region", { name: "验收入口" })
+    .getByRole("button", { name: "去验收" })
+    .click();
+  await page.getByRole("button", { name: "通过并合并到 main" }).click();
+  await page.getByRole("dialog").getByRole("button", { name: "确认合并" }).click();
+  await expect(page.locator(".review-banner--warning")).toContainText("合并有冲突");
+  await expect(page.locator(".review__panel--warning")).toContainText("notes/c.txt");
+
+  // 后端：验收数据里冲突状态与冲突文件取自执行记录，刷新后仍在。
+  const view = await invoke<{ conflict: boolean; conflictFiles: string[] }>("get_review", {
+    taskId: task.id,
+  });
+  expect(view.conflict).toBe(true);
+  expect(view.conflictFiles).toEqual(["notes/c.txt"]);
+
+  // 界面：刷新页面后仍处于冲突状态（两个恢复按钮在，没有通过 / 退回）。
+  await page.reload();
+  const panel = page.locator(".review__panel--warning");
+  await expect(panel).toContainText("合并冲突");
+  await expect(panel).toContainText("notes/c.txt");
+  await expect(panel.getByRole("button", { name: "重新执行" })).toBeEnabled();
+  await expect(page.getByRole("button", { name: "通过并合并到 main" })).toHaveCount(0);
+  // 清理：手动合并并标记完成，不影响后面的用例。
+  git(gitWs, "merge", "--no-ff", "-X", "theirs", `teamspace/${task.key}-r1`, "-m", "chore: merge");
+  await page.getByRole("button", { name: "已手动合并，标记完成" }).click();
+  await page.getByRole("dialog").getByRole("button", { name: "确认标记完成" }).click();
+  await expect(page.locator(".review-banner--success")).toBeVisible();
+});
+
+test("Git：验收页打开后执行分支又有新提交 → 通过被拒并提示刷新 → 刷新后可通过", async ({
+  page,
+}) => {
+  const task = await createTask(page, teamG, "改动变化 [mock:shellwrite=docs/eh.txt]", ROLE_G);
+  await runToReview(page);
+  await page
+    .getByRole("region", { name: "验收入口" })
+    .getByRole("button", { name: "去验收" })
+    .click();
+  await expect(page.locator(".review-file", { hasText: "docs/eh.txt" })).toBeVisible();
+  const before = (await runsOf(task.id))[0];
+  expect(before?.branch).toBe(`teamspace/${task.key}-r1`);
+
+  // 验收页已读到旧的 head；此时执行分支上又多了一个提交（模拟有人在 worktree 里继续改）。
+  const execDir = (await invoke<{ execDir: string }[]>("list_runs", { taskId: task.id }))[0]
+    ?.execDir;
+  expect(execDir).toBeTruthy();
+  const headBefore = git(execDir ?? "", "rev-parse", "HEAD").trim();
+  put(execDir ?? "", "docs/eh-extra.txt", "late change\n");
+  git(execDir ?? "", "add", "docs/eh-extra.txt");
+  git(execDir ?? "", "commit", "-q", "-m", "docs: late change");
+  expect(git(execDir ?? "", "rev-parse", "HEAD").trim()).not.toBe(headBefore);
+
+  await page.getByRole("button", { name: "通过并合并到 main" }).click();
+  await page.getByRole("dialog").getByRole("button", { name: "确认合并" }).click();
+  await expect(page.locator(".review__error")).toContainText("改动已变化，请刷新验收页");
+  // 被拒后没有合并：基线分支上没有这个文件，任务仍待验收。
+  expect(existsSync(join(gitWs, "docs/eh.txt"))).toBe(false);
+
+  // 刷新后新的改动出现在列表里，再通过即成功。
+  await page.reload();
+  await expect(page.locator(".review-file", { hasText: "docs/eh-extra.txt" })).toBeVisible();
+  await page.getByRole("button", { name: "通过并合并到 main" }).click();
+  await page.getByRole("dialog").getByRole("button", { name: "确认合并" }).click();
+  await expect(page.locator(".review-banner--success")).toContainText("合并成功");
+  expect(existsSync(join(gitWs, "docs/eh-extra.txt"))).toBe(true);
 });
 
 test("普通文件夹：改动文件列表、打开文件、无 diff，通过后任务完成", async ({ page }) => {

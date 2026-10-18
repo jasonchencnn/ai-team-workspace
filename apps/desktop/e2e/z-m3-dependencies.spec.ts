@@ -28,7 +28,7 @@ let scenarioSeq = 0;
 
 async function scenario() {
   scenarioSeq += 1;
-  const team = await setupTeam(`依赖与冲突 ${scenarioSeq}`, workspace, [
+  const team = await setupTeam(`依赖与冲突 ${String(scenarioSeq)}`, workspace, [
     { name: "前端", prefix: "FE" },
   ]);
   const roleId = team.roleIds["前端"] ?? "";
