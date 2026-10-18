@@ -264,6 +264,14 @@ impl Core {
         Ok(value)
     }
 
+    pub(crate) fn dependent_file_checks(
+        &self,
+        task_id: &str,
+    ) -> Result<crate::service::dependency::FileChecks> {
+        let plan = crate::service::dependency::file_check_plan(&self.lock(), task_id)?;
+        Ok(plan.scan())
+    }
+
     /// 同步团队全部岗位的文件夹（见模块说明）。调用时不得持有数据库锁：读计划和写回结果各短暂
     /// 加锁一次，文件 I/O 在锁外进行。同步本身的失败只体现在 `folderProblem`，不让命令失败。
     pub(crate) fn sync_role_folders(&self, team_id: &str) {
@@ -709,7 +717,11 @@ impl Teamspace {
         self.ensure_not_reviewing(&input.task_id)?;
         let (workspace, refs) = task::workspace_and_refs(&self.lock(), &input.task_id)?;
         let files = FileCheck::scan(Path::new(&workspace), &refs);
-        let detail = self.write(|tx| task::change_status(tx, input, &files))?;
+        let dependent_files = (input.to == TaskStatus::Done)
+            .then(|| self.dependent_file_checks(&input.task_id))
+            .transpose()?;
+        let detail =
+            self.write(|tx| task::change_status(tx, input, &files, dependent_files.as_ref()))?;
         self.sync_role_folders(&detail.task.team_id);
         Ok(detail)
     }

@@ -279,6 +279,7 @@ impl Core {
         commit: &str,
         reconciled: bool,
     ) -> Result<Settled> {
+        let files = self.dependent_file_checks(&run.task_id)?;
         let advanced = self.write(|tx| {
             review::clear_merging(tx, &run.id)?;
             let current = review::is_current(tx, &run.id)?;
@@ -320,7 +321,7 @@ impl Core {
                 Actor::Human,
                 "验收通过并合并",
             )?;
-            task::on_task_done(tx, &run.task_id)
+            task::on_task_done(tx, &run.task_id, &files)
         })?;
         let cleanup_problem =
             self.cleanup_run(run, workspace, branch, Cleanup::Merged(base.to_owned()));
@@ -639,6 +640,7 @@ impl Teamspace {
         };
         match run.isolation {
             RunIsolation::InPlace => {
+                let files = self.dependent_file_checks(&task.id)?;
                 let advanced = self.write(|tx| {
                     let (task, run) = review::check_pending(tx, &run.id)?;
                     review::set_outcome(tx, &run.id, ReviewOutcome::Approved, None, None)?;
@@ -661,7 +663,7 @@ impl Teamspace {
                         ),
                         serde_json::json!({ "runId": run.id, "attempt": run.attempt }),
                     )?;
-                    task::on_task_done(tx, &task.id)
+                    task::on_task_done(tx, &task.id, &files)
                 })?;
                 result.advanced_tasks = self.advanced_tasks(&advanced);
                 self.sync_role_folders(&run.team_id);
@@ -959,6 +961,7 @@ impl Teamspace {
             )));
         }
         let head = git.branch_head(Path::new(&workspace), &base, Some(&path_env));
+        let files = self.dependent_file_checks(&task.id)?;
         let advanced = self.write(|tx| {
             let (task, run) = review::check_conflicted(tx, &run.id)?;
             review::set_outcome(tx, &run.id, ReviewOutcome::Approved, None, head.as_deref())?;
@@ -982,7 +985,7 @@ impl Teamspace {
                 serde_json::json!({ "runId": run.id, "attempt": run.attempt, "manual": true,
                                     "mergedCommit": head, "branch": branch, "baseBranch": base }),
             )?;
-            task::on_task_done(tx, &task.id)
+            task::on_task_done(tx, &task.id, &files)
         })?;
         let cleanup_problem = self.cleanup_run(&run, &workspace, &branch, Cleanup::Merged(base));
         self.sync_role_folders(&run.team_id);

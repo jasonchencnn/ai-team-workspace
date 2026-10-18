@@ -463,8 +463,11 @@ fn automatic_event_and_role_journal_record_the_trigger_once() {
         })
     );
     let conn = rusqlite::Connection::open(fixture.db_path()).unwrap();
+    let files = dependency::file_check_plan(&conn, &first.task.id)
+        .unwrap()
+        .scan();
     assert!(
-        dependency::advance_dependents(&conn, &first.task.id)
+        dependency::advance_dependents(&conn, &first.task.id, &files)
             .unwrap()
             .is_empty()
     );
@@ -485,8 +488,11 @@ fn advance_returns_only_changed_ids_and_is_inert_before_done() {
     let first = fixture.task(&team.id, &owner, "first");
     let waiting = dependent(&fixture, &team, &owner, "waiting", &[&first]);
     let mut conn = crate::store::open(&fixture.db_path()).unwrap();
+    let files = dependency::file_check_plan(&conn, &first.task.id)
+        .unwrap()
+        .scan();
     assert!(
-        dependency::advance_dependents(&conn, &first.task.id)
+        dependency::advance_dependents(&conn, &first.task.id, &files)
             .unwrap()
             .is_empty()
     );
@@ -497,13 +503,152 @@ fn advance_returns_only_changed_ids_and_is_inert_before_done() {
     )
     .unwrap();
     assert_eq!(
-        dependency::advance_dependents(&tx, &first.task.id).unwrap(),
+        dependency::advance_dependents(&tx, &first.task.id, &files).unwrap(),
         [waiting.task.id]
     );
     assert!(
-        dependency::advance_dependents(&tx, &first.task.id)
+        dependency::advance_dependents(&tx, &first.task.id, &files)
             .unwrap()
             .is_empty()
+    );
+}
+
+#[test]
+fn completion_uses_precomputed_file_checks_without_rescanning() {
+    let fixture = fixture();
+    let team = fixture.team("T");
+    let owner = fixture.role(&team.id, "role_frontend");
+    let first = fixture.task(&team.id, &owner, "first");
+    fixture.touch("spec.md");
+    let waiting = fixture
+        .try_task(
+            &team.id,
+            &owner,
+            "waiting",
+            Todo,
+            vec!["spec.md"],
+            vec![first.task.id.clone()],
+        )
+        .unwrap();
+    let files = fixture.ts.dependent_file_checks(&first.task.id).unwrap();
+    fs::remove_file(fixture.ws.join("spec.md")).unwrap();
+    let advanced = fixture
+        .ts
+        .write(|tx| {
+            tx.execute(
+                "UPDATE tasks SET status = 'done' WHERE id = ?1",
+                [&first.task.id],
+            )?;
+            crate::service::task::on_task_done(tx, &first.task.id, &files)
+        })
+        .unwrap();
+    assert_eq!(advanced.as_slice(), std::slice::from_ref(&waiting.task.id));
+    assert_eq!(
+        fixture.ts.get_task(&waiting.task.id).unwrap().task.status,
+        Ready
+    );
+}
+
+#[test]
+fn stale_dependent_snapshot_rolls_back_completion_and_any_advancement() {
+    for change in ["references", "candidate", "workspace"] {
+        let fixture = fixture();
+        let team = fixture.team("T");
+        let owner = fixture.role(&team.id, "role_frontend");
+        let first = fixture.task(&team.id, &owner, "first");
+        let earlier = dependent(&fixture, &team, &owner, "earlier", &[&first]);
+        let waiting = dependent(&fixture, &team, &owner, "waiting", &[&first]);
+        let files = fixture.ts.dependent_file_checks(&first.task.id).unwrap();
+        match change {
+            "references" => {
+                fixture
+                    .ts
+                    .update_task(UpdateTaskInput {
+                        task_id: waiting.task.id.clone(),
+                        title: waiting.task.title.clone(),
+                        description: String::new(),
+                        owner_role_id: owner.id.clone(),
+                        file_refs: vec![FileRef {
+                            path: "new.md".into(),
+                            anchor: None,
+                        }],
+                        depends_on: vec![first.task.id.clone()],
+                    })
+                    .unwrap();
+            }
+            "candidate" => {
+                dependent(&fixture, &team, &owner, "new", &[&first]);
+            }
+            "workspace" => {
+                fixture
+                    .ts
+                    .write(|tx| {
+                        tx.execute(
+                            "UPDATE teams SET workspace_path = ?2 WHERE id = ?1",
+                            rusqlite::params![team.id, "changed"],
+                        )?;
+                        Ok(())
+                    })
+                    .unwrap();
+            }
+            _ => unreachable!(),
+        }
+        assert_kind(
+            fixture.ts.write(|tx| {
+                tx.execute(
+                    "UPDATE tasks SET status = 'done' WHERE id = ?1",
+                    [&first.task.id],
+                )?;
+                crate::service::task::on_task_done(tx, &first.task.id, &files)
+            }),
+            ErrorKind::Conflict,
+        );
+        let conn = fixture.ts.lock();
+        assert_eq!(
+            crate::service::task::get(&conn, &first.task.id)
+                .unwrap()
+                .status,
+            first.task.status
+        );
+        for id in [&earlier.task.id, &waiting.task.id] {
+            assert_eq!(crate::service::task::get(&conn, id).unwrap().status, Todo);
+            assert_eq!(
+                event::for_task(&conn, id).unwrap().len(),
+                if change == "references" && id == &waiting.task.id {
+                    2
+                } else {
+                    1
+                }
+            );
+        }
+    }
+}
+
+#[test]
+fn readiness_is_rechecked_after_file_scan() {
+    let fixture = fixture();
+    let team = fixture.team("T");
+    let owner = fixture.role(&team.id, "role_frontend");
+    let first = fixture.task(&team.id, &owner, "first");
+    let second = fixture.task(&team.id, &owner, "second");
+    finish(&fixture, &second);
+    let waiting = dependent(&fixture, &team, &owner, "waiting", &[&first, &second]);
+    let files = fixture.ts.dependent_file_checks(&first.task.id).unwrap();
+    fixture.move_to(&second.task.id, Ready).unwrap();
+    let advanced = fixture
+        .ts
+        .write(|tx| {
+            tx.execute(
+                "UPDATE tasks SET status = 'done' WHERE id = ?1",
+                [&first.task.id],
+            )?;
+            crate::service::task::on_task_done(tx, &first.task.id, &files)
+        })
+        .unwrap();
+    assert!(advanced.is_empty());
+    assert_eq!(
+        fixture.ts.get_task(&waiting.task.id).unwrap().task.status,
+        Todo
     );
 }
 

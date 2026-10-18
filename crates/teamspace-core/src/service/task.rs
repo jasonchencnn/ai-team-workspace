@@ -762,6 +762,7 @@ pub(crate) fn change_status(
     conn: &Connection,
     input: ChangeTaskStatusInput,
     files: &FileCheck,
+    dependent_files: Option<&super::dependency::FileChecks>,
 ) -> Result<TaskDetail> {
     let task = get(conn, &input.task_id)?;
     let team = team::get_active(conn, &task.team_id)?;
@@ -838,7 +839,9 @@ pub(crate) fn change_status(
         },
     )?;
     if to == TaskStatus::Done {
-        on_task_done(conn, &task.id)?;
+        let dependent_files = dependent_files
+            .ok_or_else(|| Error::conflict("缺少下游引用文件检查，请重试完成任务"))?;
+        on_task_done(conn, &task.id, dependent_files)?;
     }
     build_detail(conn, get(conn, &task.id)?, problems, files)
 }
@@ -859,12 +862,16 @@ pub(crate) fn review_needs_merge(conn: &Connection, task: &Task) -> Result<bool>
 /// （[`super::dependency::advance_dependents`]）。
 ///
 /// 调用约定：在把任务置为 DONE 的**同一个事务**里、紧随状态更新（及其活动记录）之后调用——验收通过
-/// （[`crate::api`] 的 `approve_review`）与 `change_task_status` 置为 DONE 两处。这样「上游完成」与
+/// （[`crate::api`] 的 `approve_review`）、手动合并完成、合并对账与 `change_task_status` 置为 DONE。这样「上游完成」与
 /// 「下游就绪」一起提交或一起回滚，不会出现上游已完成、下游仍停在 TODO 的中间状态；钩子返回错误时整个
-/// 事务回滚，任务也不会变成 DONE。钩子只做数据库内的工作（不做文件或进程 I/O，岗位文件夹由调用方在
-/// 事务提交后同步）。
-pub(crate) fn on_task_done(conn: &Connection, task_id: &str) -> Result<Vec<String>> {
-    super::dependency::advance_dependents(conn, task_id)
+/// 事务回滚，任务也不会变成 DONE。调用方在数据库锁外扫描下游引用文件，再传入快照；钩子内重新校验
+/// 候选、引用和就绪条件，快照失效时报错回滚。钩子不做文件或进程 I/O，岗位文件夹由调用方在事务提交后同步。
+pub(crate) fn on_task_done(
+    conn: &Connection,
+    task_id: &str,
+    files: &super::dependency::FileChecks,
+) -> Result<Vec<String>> {
+    super::dependency::advance_dependents(conn, task_id, files)
 }
 
 #[cfg(test)]
