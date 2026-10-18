@@ -26,6 +26,7 @@ import type { TaskStatus } from "../../bindings/TaskStatus.js";
 import type { TaskSummary } from "../../bindings/TaskSummary.js";
 import { RunExecutionArea } from "./run/RunExecutionArea.js";
 import { TaskDependencies } from "./TaskDependencies.js";
+import { canGoReview } from "./run/runUi.js";
 import { isRunActive } from "./run/useRunEvents.js";
 import { useTaskRuns } from "./run/useTaskRuns.js";
 import { isMarkdownRef } from "../files/filesUi.js";
@@ -132,7 +133,7 @@ export function TaskDetailPage() {
   const outcomeHasActions =
     run !== null &&
     !active &&
-    (run.status === "succeeded" ||
+    ((run.status === "succeeded" && canGoReview(run, task.status)) ||
       run.status === "failed" ||
       run.status === "interrupted" ||
       run.takenOver);
@@ -262,6 +263,7 @@ export function TaskDetailPage() {
         fileRefs={task.fileRefs}
         api={runApi}
         allowedTransitions={allowedTransitions}
+        taskStatus={task.status}
         onRequestTakeover={() => {
           setTakeoverOpen(true);
         }}
