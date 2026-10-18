@@ -760,7 +760,8 @@ impl Teamspace {
     ///
     /// `path` 必须是工作空间内的相对路径、不含 `..`、是 `.md`，且**解析符号链接后仍在工作空间内**
     /// （越界返回 invalid，文件不存在返回 not_found，都是中文说明）。超过
-    /// [`crate::workspace_file::MAX_MARKDOWN_BYTES`] 时截断内容并在 `truncated` 里说明。
+    /// [`crate::workspace_file::MAX_MARKDOWN_BYTES`] 时在 UTF-8 字符边界截断内容并在 `truncated` 里说明，
+    /// `size` 仍是文件的真实大小。
     pub fn read_workspace_markdown(&self, input: MarkdownReadQuery) -> Result<MarkdownFile> {
         let workspace = team::get_active(&self.lock(), &input.team_id)?.workspace_path;
         workspace_file::read(Path::new(&workspace), &input.team_id, &input.path)

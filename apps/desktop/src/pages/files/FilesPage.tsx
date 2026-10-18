@@ -128,20 +128,25 @@ export function FilesPage() {
     />
   );
 
-  if (files.isPending) {
-    return (
-      <>
-        {header}
-        <div className="files-state">
+  // 文件列表与正文各自加载、各自报错：列表慢或列表出错都不该挡住正文（缺陷 M3-G-1）。
+  // 页面骨架始终在，搜索框、地址栏与按钮随时可点，不会出现「整页转圈直到文档渲染完」。
+  const treePanel = (
+    <>
+      <input
+        className="files-search"
+        type="search"
+        aria-label="搜索文件名"
+        placeholder="搜索文件名"
+        value={search}
+        onChange={(event) => {
+          setSearch(event.target.value);
+        }}
+      />
+      {files.isPending ? (
+        <div className="files-panel__pending">
           <Spinner label="正在列出工作空间文件" />
         </div>
-      </>
-    );
-  }
-  if (files.isError) {
-    return (
-      <>
-        {header}
+      ) : files.isError ? (
         <ErrorBanner
           error={files.error}
           action={
@@ -150,25 +155,8 @@ export function FilesPage() {
             </Button>
           }
         />
-      </>
-    );
-  }
-
-  return (
-    <>
-      {header}
-      <div className="files-layout">
-        <aside className="files-panel files-panel--tree" aria-label="工作空间 Markdown 文件">
-          <input
-            className="files-search"
-            type="search"
-            aria-label="搜索文件名"
-            placeholder="搜索文件名"
-            value={search}
-            onChange={(event) => {
-              setSearch(event.target.value);
-            }}
-          />
+      ) : (
+        <>
           <p className="files-meta">
             {teamName} · {String(listed.length)} 个 Markdown 文件
             {files.data.truncated ? "（已截断，只显示前一部分）" : ""}
@@ -192,76 +180,92 @@ export function FilesPage() {
               ))}
             </ul>
           )}
-          <p className="files-note">
-            只显示工作空间内的 .md 文件；.git、node_modules 和指向工作空间之外的符号链接不显示。
+        </>
+      )}
+      <p className="files-note">
+        只显示工作空间内的 .md 文件；.git、node_modules 和指向工作空间之外的符号链接不显示。
+      </p>
+    </>
+  );
+
+  const docPanel =
+    selected === "" ? (
+      <EmptyState
+        title="还没有可看的文件"
+        description="在工作空间里放一个 .md 文件，然后点「刷新文件列表」。"
+      />
+    ) : doc.isPending ? (
+      <Spinner label="正在读取文件" />
+    ) : doc.isError ? (
+      <EmptyState
+        title="文件已被移动或删除"
+        description={`${selected} 现在读不到：${errorMessage(doc.error)}`}
+        action={
+          <Button variant="neutral" onClick={refresh}>
+            重试
+          </Button>
+        }
+      />
+    ) : (
+      <>
+        <div className="files-doc__head">
+          <code className="files-doc__path">{doc.data.path}</code>
+          <Tag tone="neutral">只读</Tag>
+          <span className="files-doc__meta">
+            更新于 {formatUpdated(doc.data.updatedAt, new Date())} · {formatSize(doc.data.size)}
+            {doc.data.truncated ? "（内容已截断）" : ""}
+          </span>
+        </div>
+        {doc.data.truncated ? (
+          <p className="files-doc__truncated">
+            <Tag tone="warning">内容已截断</Tag>
+            <span>文件较大，这里只显示前一部分；完整内容请在工作空间里用编辑器打开。</span>
           </p>
+        ) : null}
+        {/* 只渲染 Markdown，不启用原始 HTML（没有 rehype-raw）。 */}
+        <article className="files-doc__body">
+          <ReactMarkdown
+            remarkPlugins={[remarkGfm]}
+            components={{
+              a: ({ href, children }) => {
+                const link = resolveDocLink(doc.data.path, href);
+                if (link.kind === "doc") {
+                  return (
+                    <button
+                      type="button"
+                      className="files-doc__link"
+                      onClick={() => {
+                        select(link.path);
+                      }}
+                    >
+                      {children}
+                    </button>
+                  );
+                }
+                return (
+                  <span className="files-doc__link files-doc__link--blocked" title={link.reason}>
+                    {children}
+                  </span>
+                );
+              },
+            }}
+          >
+            {doc.data.content}
+          </ReactMarkdown>
+        </article>
+      </>
+    );
+
+  return (
+    <>
+      {header}
+      <div className="files-layout">
+        <aside className="files-panel files-panel--tree" aria-label="工作空间 Markdown 文件">
+          {treePanel}
         </aside>
 
         <main className="files-panel files-panel--doc" aria-label="文件内容">
-          {selected === "" ? (
-            <EmptyState
-              title="还没有可看的文件"
-              description="在工作空间里放一个 .md 文件，然后点「刷新文件列表」。"
-            />
-          ) : doc.isPending ? (
-            <Spinner label="正在读取文件" />
-          ) : doc.isError ? (
-            <EmptyState
-              title="文件已被移动或删除"
-              description={`${selected} 现在读不到：${errorMessage(doc.error)}`}
-              action={
-                <Button variant="neutral" onClick={refresh}>
-                  重试
-                </Button>
-              }
-            />
-          ) : (
-            <>
-              <div className="files-doc__head">
-                <code className="files-doc__path">{doc.data.path}</code>
-                <Tag tone="neutral">只读</Tag>
-                <span className="files-doc__meta">
-                  更新于 {formatUpdated(doc.data.updatedAt, new Date())} ·{" "}
-                  {formatSize(doc.data.size)}
-                  {doc.data.truncated ? "（内容已截断）" : ""}
-                </span>
-              </div>
-              {/* 只渲染 Markdown，不启用原始 HTML（没有 rehype-raw）。 */}
-              <article className="files-doc__body">
-                <ReactMarkdown
-                  remarkPlugins={[remarkGfm]}
-                  components={{
-                    a: ({ href, children }) => {
-                      const link = resolveDocLink(doc.data.path, href);
-                      if (link.kind === "doc") {
-                        return (
-                          <button
-                            type="button"
-                            className="files-doc__link"
-                            onClick={() => {
-                              select(link.path);
-                            }}
-                          >
-                            {children}
-                          </button>
-                        );
-                      }
-                      return (
-                        <span
-                          className="files-doc__link files-doc__link--blocked"
-                          title={link.reason}
-                        >
-                          {children}
-                        </span>
-                      );
-                    },
-                  }}
-                >
-                  {doc.data.content}
-                </ReactMarkdown>
-              </article>
-            </>
-          )}
+          {docPanel}
         </main>
 
         <aside className="files-panel files-panel--refs" aria-label="引用此文件的任务">

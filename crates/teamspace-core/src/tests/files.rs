@@ -355,6 +355,28 @@ fn oversized_files_are_truncated_instead_of_failing() {
 }
 
 #[test]
+fn a_truncated_preview_stays_valid_utf8_at_the_cap() {
+    let f = plain_fixture();
+    let team = f.team("中文大文件组");
+    let cap = crate::workspace_file::MAX_MARKDOWN_BYTES as usize;
+    // 「规」3 字节：让上限切在这个字的中间。
+    let head = "# ".repeat(cap / 2 - 1);
+    let body = format!("{head}规划说明{}", "详细需求".repeat(64));
+    fs::write(f.ws.join("cn.md"), &body).unwrap();
+
+    let file =
+        f.ts.read_workspace_markdown(MarkdownReadQuery {
+            team_id: team.id,
+            path: "cn.md".into(),
+        })
+        .unwrap();
+    assert!(file.truncated);
+    assert!(file.content.len() <= cap);
+    assert_eq!(file.content, head, "裁到字符边界，不留半个字");
+    assert!(file.size > cap as u64, "真实大小仍然如实报告");
+}
+
+#[test]
 fn reading_after_the_workspace_moved_reports_the_directory() {
     let f = plain_fixture();
     let team = f.team("搬迁组");

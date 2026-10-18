@@ -14,8 +14,13 @@ use std::path::{Path, PathBuf};
 use crate::error::{Error, Result};
 use crate::model::MarkdownFile;
 
-/// 读取 Markdown 的内容上限（1 MiB）；超过时截断并在 `truncated` 里说明。
-pub const MAX_MARKDOWN_BYTES: u64 = 1024 * 1024;
+/// 读取 Markdown 的内容上限（256 KiB）；超过时截断并在 `truncated` 里说明。
+///
+/// 与验收 diff 的单文件补丁上限 [`crate::run::git_review::MAX_PATCH_BYTES`] 取同一个值：共享文件页
+/// 把内容整段交给前端渲染，上限就是「渲染一次要多久」的预算。1 MiB 的文档在浏览器主线程上一次
+/// react-markdown 渲染要 20 秒以上，页面会整段卡住（连文件列表都刷不出来）；256 KiB 约 1 秒，
+/// 页面始终可交互。完整内容在工作空间里，用编辑器打开即可。
+pub const MAX_MARKDOWN_BYTES: u64 = 256 * 1024;
 
 /// 校验结果：文件在哪里、以什么写法回显。
 #[derive(Debug)]
@@ -95,7 +100,7 @@ pub(crate) fn resolve(workspace: &Path, raw: &str) -> Result<Located> {
 /// 读取工作空间内的一个 Markdown 文件，返回内容、大小、最后修改时间。
 ///
 /// 读之前先 [`resolve`]（校验全部在 [`resolve`] 里），读的时候最多取 [`MAX_MARKDOWN_BYTES`] 字节，
-/// 超出的部分不读进内存。
+/// 超出的部分不读进内存；截断落在 UTF-8 字符边界上，预览里不会出现半个字或替换字符。
 pub(crate) fn read(workspace: &Path, team_id: &str, raw: &str) -> Result<MarkdownFile> {
     let Located { real, display } = resolve(workspace, raw)?;
     let meta = fs::metadata(&real)
@@ -107,12 +112,20 @@ pub(crate) fn read(workspace: &Path, team_id: &str, raw: &str) -> Result<Markdow
         .and_then(|file| file.take(limit).read_to_end(&mut buffer))
         .map_err(|err| Error::internal(format!("无法读取文件：{err}")))?;
 
+    // 文件本身不是合法 UTF-8 时用替换字符兜住（能读就显示），随后把内容裁到不超过上限的最后一个
+    // 字符边界：上限可能正好切在多字节字符中间，裁完的预览仍是完整的一串字符。
+    let mut content = String::from_utf8_lossy(&buffer).into_owned();
+    let mut end = content.len().min(MAX_MARKDOWN_BYTES as usize);
+    while end > 0 && !content.is_char_boundary(end) {
+        end -= 1;
+    }
+    content.truncate(end);
+
     let modified = meta.modified().unwrap_or(std::time::SystemTime::UNIX_EPOCH);
     Ok(MarkdownFile {
         team_id: team_id.to_owned(),
         path: display,
-        // 截断可能切在多字节字符中间，from_utf8_lossy 用替换字符兜住，不会因此失败。
-        content: String::from_utf8_lossy(&buffer).into_owned(),
+        content,
         truncated: size > MAX_MARKDOWN_BYTES,
         size,
         updated_at: chrono::DateTime::<chrono::Utc>::from(modified)
@@ -228,6 +241,37 @@ mod tests {
         assert!(file.truncated);
         assert_eq!(file.size, big.len() as u64);
         assert_eq!(file.content.len(), MAX_MARKDOWN_BYTES as usize);
+    }
+
+    #[test]
+    fn a_file_at_the_limit_is_not_marked_truncated() {
+        let dir = workspace();
+        let exact = "x".repeat(MAX_MARKDOWN_BYTES as usize);
+        fs::write(dir.path().join("exact.md"), &exact).unwrap();
+        let file = read(dir.path(), "team", "exact.md").unwrap();
+        assert!(!file.truncated, "正好等于上限不算截断");
+        assert_eq!(file.content.len(), MAX_MARKDOWN_BYTES as usize);
+    }
+
+    #[test]
+    fn truncation_lands_on_a_utf8_character_boundary() {
+        let dir = workspace();
+        // 「规」占 3 字节；把前缀凑到上限前 2 字节，读窗口就会正好切在这个字的中间。
+        let cap = MAX_MARKDOWN_BYTES as usize;
+        let head = "# ".repeat(cap / 2 - 1);
+        assert_eq!(head.len(), cap - 2, "上限落在「规」的第三个字节上");
+        fs::write(dir.path().join("cn.md"), format!("{head}规划说明")).unwrap();
+
+        let file = read(dir.path(), "team", "cn.md").unwrap();
+        assert!(file.truncated);
+        assert_eq!(
+            file.size,
+            (cap + 10) as u64,
+            "「规划说明」4 个汉字各 3 字节"
+        );
+        // 半个字符被裁掉，预览里既没有半个字也没有替换字符。
+        assert_eq!(file.content, head);
+        assert!(!file.content.contains('\u{fffd}'));
     }
 
     #[test]
