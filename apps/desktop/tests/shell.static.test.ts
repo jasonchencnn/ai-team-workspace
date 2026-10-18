@@ -10,14 +10,27 @@ const tauriConfigPath = fileURLToPath(new URL("../src-tauri/tauri.conf.json", im
 const iconPath = fileURLToPath(new URL("../src-tauri/icons/icon.png", import.meta.url));
 
 describe("desktop shell security boundary", () => {
-  it("does not authorize frontend native APIs", async () => {
+  it("authorizes only event listen/unlisten, no other native API (D23)", async () => {
     const capability = JSON.parse(await readFile(capabilityPath, "utf8")) as {
       permissions: unknown[];
       windows: string[];
     };
 
     expect(capability.windows).toEqual(["main"]);
-    expect(capability.permissions).toEqual([]);
+    expect(capability.permissions).toEqual([
+      "core:event:allow-listen",
+      "core:event:allow-unlisten",
+    ]);
+  });
+
+  it("does not authorize event emit or the whole event default set", async () => {
+    const capability = JSON.parse(await readFile(capabilityPath, "utf8")) as {
+      permissions: string[];
+    };
+
+    expect(capability.permissions).not.toContain("core:event:default");
+    expect(capability.permissions).not.toContain("core:event:allow-emit");
+    expect(capability.permissions).not.toContain("core:event:allow-emit-to");
   });
 
   it("does not include shell, filesystem, or external-navigation plugins", async () => {

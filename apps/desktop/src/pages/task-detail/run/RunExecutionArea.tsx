@@ -9,18 +9,20 @@ import type { FileRef } from "../../../bindings/FileRef.js";
 import type { TaskStatus } from "../../../bindings/TaskStatus.js";
 import { roleBindingPath } from "../../roles/rolesNav.js";
 import { PermissionDialog } from "./PermissionDialog.js";
+import { RunHeartbeat } from "./RunHeartbeat.js";
 import { RunOutcome } from "./RunOutcome.js";
 import { RunProgressStream } from "./RunProgressStream.js";
 import { RunSidePanel } from "./RunSidePanel.js";
 import {
   execDirTitle,
-  formatDuration,
   formatLocal,
+  formatRunClock,
   hasEnded,
   runDisplayStatus,
   runElapsedSeconds,
 } from "./runUi.js";
-import { isRunActive, useRunUpdates } from "./useRunEvents.js";
+import { isRunActive } from "./useRunEvents.js";
+import { useRunMonitor } from "./useRunMonitor.js";
 import type { TaskRunsApi } from "./useTaskRuns.js";
 import "./run.css";
 
@@ -54,7 +56,7 @@ export function RunExecutionArea({
 }: RunExecutionAreaProps) {
   const run = api.run;
   const navigate = useNavigate();
-  const { updates, loading } = useRunUpdates(run?.id ?? null);
+  const { updates, loading, realtime, lastActivityAt } = useRunMonitor(run);
   const [permissionOpen, setPermissionOpen] = useState(false);
   const [dismissed, setDismissed] = useState<string[]>([]);
   const [changedOpen, setChangedOpen] = useState(false);
@@ -119,7 +121,7 @@ export function RunExecutionArea({
           <span className="run-info__value">
             {formatLocal(run.startedAt)}
             <span className="run-info__sub">
-              {ended ? `总时长 ${formatDuration(elapsed)}` : `已运行 ${formatDuration(elapsed)}`}
+              {ended ? `总时长 ${formatRunClock(elapsed)}` : `已运行 ${formatRunClock(elapsed)}`}
             </span>
           </span>
         </div>
@@ -155,9 +157,15 @@ export function RunExecutionArea({
               <div className="run-progress__head">
                 <h2 className="run-progress__title">执行进度</h2>
                 <span className="run-progress__meta">
-                  实时更新 · 已收到 {String(updates.length)} 条事件
+                  {realtime ? "实时更新" : "定时刷新"} · 已记录 {String(updates.length)} 条进度
                 </span>
               </div>
+              <RunHeartbeat
+                run={run}
+                lastActivityAt={lastActivityAt}
+                realtime={realtime}
+                now={now}
+              />
               <RunProgressStream
                 run={run}
                 updates={updates}
