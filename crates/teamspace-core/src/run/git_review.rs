@@ -82,6 +82,7 @@ fn branch_ref(branch: &str) -> String {
 fn valid_branch(dir: &Path, branch: &str, path_env: Option<&OsStr>) -> bool {
     !branch.is_empty()
         && !branch.starts_with('-')
+        && !branch.contains('=')
         && git(dir, &["check-ref-format", &branch_ref(branch)], path_env).is_ok()
 }
 
@@ -325,18 +326,39 @@ fn operation_in_progress(dir: &Path, path_env: Option<&OsStr>) -> Result<bool, S
     Ok(false)
 }
 
+fn collision_pathspecs(dir: &Path, added: &str) -> Result<Vec<String>, String> {
+    let mut paths = BTreeSet::new();
+    for path in added.split_terminator('\0') {
+        paths.insert(path);
+        let mut ancestor = path;
+        while let Some((parent, _name)) = ancestor.rsplit_once('/') {
+            match dir.join(parent).symlink_metadata() {
+                Ok(metadata) if !metadata.is_dir() => {
+                    paths.insert(parent);
+                }
+                Ok(_) => {}
+                Err(err)
+                    if matches!(
+                        err.kind(),
+                        std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
+                    ) => {}
+                Err(err) => return Err(format!("无法检查未跟踪路径 {parent}：{err}")),
+            }
+            ancestor = parent;
+        }
+    }
+    Ok(paths
+        .into_iter()
+        .map(|path| format!(":(top,literal){path}"))
+        .collect())
+}
+
 fn checkout_collision(
     dir: &Path,
     base: &str,
     tree: &str,
     path_env: Option<&OsStr>,
 ) -> Result<Option<String>, String> {
-    let untracked = git(dir, &["ls-files", "--others", "-z", "--"], path_env)
-        .map_err(|err| format!("无法检查未跟踪文件：{err}"))?;
-    let untracked: BTreeSet<&str> = untracked
-        .split_terminator('\0')
-        .map(|path| path.trim_end_matches('/'))
-        .collect();
     let added = diff(
         dir,
         base,
@@ -344,6 +366,26 @@ fn checkout_collision(
         &["--name-only", "--diff-filter=A", "-z"],
         path_env,
     )?;
+    let pathspecs = collision_pathspecs(dir, &added)?;
+    let mut untracked = BTreeSet::new();
+    for batch in pathspecs.chunks(32) {
+        let mut args = vec![
+            "ls-files",
+            "--others",
+            "--directory",
+            "--no-empty-directory",
+            "-z",
+            "--",
+        ];
+        args.extend(batch.iter().map(String::as_str));
+        let found =
+            git(dir, &args, path_env).map_err(|err| format!("无法检查未跟踪文件：{err}"))?;
+        untracked.extend(
+            found
+                .split_terminator('\0')
+                .map(|path| path.trim_end_matches('/').to_owned()),
+        );
+    }
     for path in added.split_terminator('\0') {
         let mut ancestor = path;
         loop {
@@ -357,7 +399,7 @@ fn checkout_collision(
         }
         let prefix = format!("{path}/");
         if untracked
-            .range(prefix.as_str()..)
+            .range(prefix.clone()..)
             .next()
             .is_some_and(|local| local.starts_with(&prefix))
         {
@@ -380,6 +422,9 @@ pub fn merge_into_base(
         return Ok(blocked(
             "无法确定基线分支，工作空间可能处于分离 HEAD 状态；请先选择基线分支",
         ));
+    }
+    if base_branch.contains('=') || run_branch.contains('=') {
+        return Ok(blocked("分支名包含 =，无法安全合并"));
     }
     if !valid_branch(&root, base_branch, path_env) || !valid_branch(&root, run_branch, path_env) {
         return Ok(blocked("基线或执行分支名称无效，无法合并"));
@@ -1022,6 +1067,123 @@ mod tests {
     }
 
     #[test]
+    fn merge_protects_collisions_inside_ignored_directories() {
+        let repo = Repo::new();
+        let run = repo.worktree();
+        fs::create_dir_all(run.root.join("node_modules/pkg")).unwrap();
+        fs::write(run.root.join("node_modules/pkg/new.txt"), "run\n").unwrap();
+        save(&run.root);
+        fs::write(repo.root.join(".git/info/exclude"), "node_modules/\n").unwrap();
+        fs::create_dir_all(repo.root.join("node_modules/pkg")).unwrap();
+        fs::write(repo.root.join("node_modules/pkg/new.txt"), "local\n").unwrap();
+        assert!(matches!(repo.merge(), MergeOutcome::Blocked { .. }));
+        assert_eq!(repo.main_head(), repo.base);
+        assert_eq!(
+            fs::read_to_string(repo.root.join("node_modules/pkg/new.txt")).unwrap(),
+            "local\n"
+        );
+    }
+
+    #[test]
+    fn collision_pathspecs_never_expand_existing_parent_directories() {
+        let repo = Repo::new();
+        fs::create_dir_all(repo.root.join("node_modules/pkg")).unwrap();
+        fs::write(repo.root.join("ancestor"), "local\n").unwrap();
+        assert_eq!(
+            collision_pathspecs(
+                &repo.root,
+                "node_modules/pkg/new[1].txt\0ancestor/nested/file\0"
+            )
+            .unwrap(),
+            [
+                ":(top,literal)ancestor",
+                ":(top,literal)ancestor/nested/file",
+                ":(top,literal)node_modules/pkg/new[1].txt",
+            ]
+        );
+    }
+
+    #[test]
+    fn merge_checks_literal_paths_without_glob_expansion() {
+        for collision in [false, true] {
+            let repo = Repo::new();
+            let run = repo.worktree();
+            fs::write(run.root.join("new[1].txt"), "run\n").unwrap();
+            save(&run.root);
+            let local = if collision { "new[1].txt" } else { "new1.txt" };
+            fs::write(repo.root.join(local), "local\n").unwrap();
+            if collision {
+                assert!(matches!(repo.merge(), MergeOutcome::Blocked { .. }));
+                assert_eq!(repo.main_head(), repo.base);
+            } else {
+                merged(repo.merge());
+            }
+            assert_eq!(
+                fs::read_to_string(repo.root.join(local)).unwrap(),
+                "local\n"
+            );
+        }
+    }
+
+    #[test]
+    fn merge_protects_untracked_file_ancestors_and_directory_descendants() {
+        for local_is_directory in [false, true] {
+            let repo = Repo::new();
+            let run = repo.worktree();
+            if local_is_directory {
+                fs::write(run.root.join("new"), "run\n").unwrap();
+                fs::create_dir_all(repo.root.join("new/deep")).unwrap();
+                fs::write(repo.root.join("new/deep/local"), "local\n").unwrap();
+            } else {
+                fs::create_dir_all(run.root.join("new/deep")).unwrap();
+                fs::write(run.root.join("new/deep/file"), "run\n").unwrap();
+                fs::write(repo.root.join("new"), "local\n").unwrap();
+            }
+            save(&run.root);
+            fs::write(repo.root.join(".git/info/exclude"), "new\n").unwrap();
+            assert!(matches!(repo.merge(), MergeOutcome::Blocked { .. }));
+            assert_eq!(repo.main_head(), repo.base);
+            let local = if local_is_directory {
+                "new/deep/local"
+            } else {
+                "new"
+            };
+            assert_eq!(
+                fs::read_to_string(repo.root.join(local)).unwrap(),
+                "local\n"
+            );
+        }
+    }
+
+    #[test]
+    fn empty_untracked_directory_does_not_block_added_file() {
+        let repo = Repo::new();
+        let run = repo.worktree();
+        fs::write(run.root.join("new"), "run\n").unwrap();
+        save(&run.root);
+        fs::create_dir(repo.root.join("new")).unwrap();
+        merged(repo.merge());
+        assert_eq!(fs::read_to_string(repo.root.join("new")).unwrap(), "run\n");
+    }
+
+    #[test]
+    fn collision_checks_include_later_pathspec_batches() {
+        let repo = Repo::new();
+        let run = repo.worktree();
+        for index in 0..70 {
+            fs::write(run.root.join(format!("new-{index:02}.txt")), "run\n").unwrap();
+        }
+        save(&run.root);
+        fs::write(repo.root.join("new-69.txt"), "local\n").unwrap();
+        assert!(matches!(repo.merge(), MergeOutcome::Blocked { .. }));
+        assert_eq!(repo.main_head(), repo.base);
+        assert_eq!(
+            fs::read_to_string(repo.root.join("new-69.txt")).unwrap(),
+            "local\n"
+        );
+    }
+
+    #[test]
     fn unchecked_conflicting_base_does_not_move_refs_or_checkout() {
         let repo = Repo::new();
         let run = repo.worktree();
@@ -1110,6 +1272,29 @@ mod tests {
                 MergeOutcome::Blocked { .. }
             ));
             assert_eq!(repo.main_head(), repo.base);
+        }
+    }
+
+    #[test]
+    fn branch_names_with_equals_are_rejected_before_merging() {
+        let repo = Repo::new();
+        repo.worktree();
+        checked(&repo.root, &["branch", "main=unsafe"]);
+        checked(&repo.root, &["branch", "run=unsafe", "run"]);
+        for (base, run) in [("main=unsafe", "run"), ("main", "run=unsafe")] {
+            assert!(!valid_branch(
+                &repo.root,
+                if base.contains('=') { base } else { run },
+                None
+            ));
+            assert_eq!(
+                merge_into_base(&repo.root, base, run, "Accept", None).unwrap(),
+                MergeOutcome::Blocked {
+                    reason: "分支名包含 =，无法安全合并".into()
+                }
+            );
+            assert_eq!(repo.main_head(), repo.base);
+            assert_eq!(checked(&repo.root, &["status", "--porcelain"]), "");
         }
     }
 

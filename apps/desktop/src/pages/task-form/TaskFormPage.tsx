@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { FormEvent } from "react";
 import { useNavigate, useParams } from "react-router";
 
@@ -201,16 +201,29 @@ export function TaskFormPage() {
   // 预填只在对应任务的数据首次到达时执行一次，之后的重新拉取不覆盖用户正在编辑的内容。
   const prefilledFor = useRef<string | null>(null);
   const detail = detailQuery.data;
+  const dependencySelection = useMemo(() => [...dependsOn].sort(), [dependsOn]);
+  const debouncedDependencies = useDebouncedValue(dependencySelection, 200);
+  const dependenciesDebouncing =
+    dependencySelection.length !== debouncedDependencies.length ||
+    dependencySelection.some((id, index) => id !== debouncedDependencies[index]);
   const dependencyCheck = useQuery({
-    queryKey: ["task-dependency-check", teamId, taskId ?? null, dependsOn],
-    queryFn: () => checkTaskDependencies({ teamId, taskId: taskId ?? null, dependsOn }),
+    queryKey: ["task-dependency-check", teamId, taskId ?? null, debouncedDependencies],
+    queryFn: () =>
+      checkTaskDependencies({
+        teamId,
+        taskId: taskId ?? null,
+        dependsOn: debouncedDependencies,
+      }),
     enabled: ready && (!isEdit || detail !== undefined),
     retry: false,
     staleTime: 0,
   });
-  const cycle = dependencyCheck.data?.cycle ?? [];
+  const cycle = dependenciesDebouncing ? [] : (dependencyCheck.data?.cycle ?? []);
   const dependenciesValid =
-    dependencyCheck.isSuccess && !dependencyCheck.isFetching && cycle.length === 0;
+    !dependenciesDebouncing &&
+    dependencyCheck.isSuccess &&
+    !dependencyCheck.isFetching &&
+    cycle.length === 0;
   useEffect(() => {
     if (detail === undefined || prefilledFor.current === detail.task.id) {
       return;
@@ -698,8 +711,10 @@ export function TaskFormPage() {
                 })}
               </ul>
             ) : null}
-            {dependencyCheck.isFetching ? <p role="status">正在检查依赖…</p> : null}
-            {dependencyCheck.isError ? (
+            {dependenciesDebouncing || dependencyCheck.isFetching ? (
+              <p role="status">正在检查依赖…</p>
+            ) : null}
+            {!dependenciesDebouncing && dependencyCheck.isError ? (
               <ErrorBanner
                 error={dependencyCheck.error}
                 action={
@@ -732,7 +747,7 @@ export function TaskFormPage() {
                 statusLabel={(status) => boardLabel.get(status) ?? labelOf(status)}
               />
             ) : null}
-            {dependsOn.length > 0 && cycle.length === 0 && dependencyCheck.isSuccess ? (
+            {dependsOn.length > 0 && dependenciesValid ? (
               <Card title="自动就绪" tone="info">
                 <p>{dependencyCheck.data.readinessNotice}</p>
               </Card>

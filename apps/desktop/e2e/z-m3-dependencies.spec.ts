@@ -186,9 +186,23 @@ test("检查期间禁用保存，迟到的环路响应不会覆盖新的无环�
   });
   await page.goto(`/#/teams/${teamId}/tasks/${first.id}/edit`);
   await expect(page.getByRole("button", { name: "保存", exact: true })).toBeEnabled();
+  const cycleRequest = page.waitForRequest((request) => {
+    if (!request.url().endsWith("/invoke") || request.method() !== "POST") {
+      return false;
+    }
+    const body = request.postDataJSON() as {
+      cmd: string;
+      args?: { input?: { dependsOn?: string[] } };
+    };
+    return (
+      body.cmd === "check_task_dependencies" &&
+      (body.args?.input?.dependsOn?.includes(second.id) ?? false)
+    );
+  });
   await page.getByRole("checkbox", { name: new RegExp(second.title) }).check();
   await expect(page.getByRole("status")).toContainText("正在检查依赖");
   await expect(page.getByRole("button", { name: "保存", exact: true })).toBeDisabled();
+  await cycleRequest;
   await page.getByRole("button", { name: new RegExp(`移除依赖 ${second.key}`) }).click();
   await expect(page.getByRole("button", { name: "保存", exact: true })).toBeEnabled();
   const lateResponse = page.waitForResponse((response) => {
@@ -208,6 +222,49 @@ test("检查期间禁用保存，迟到的环路响应不会覆盖新的无环�
   await lateResponse;
   await expect(page.getByRole("alert")).toHaveCount(0);
   await expect(page.getByRole("button", { name: "保存", exact: true })).toBeEnabled();
+});
+
+test("依赖预检防抖 200ms，快速选择只请求一次且选择顺序不影响缓存", async ({ page }) => {
+  const { teamId, roleId, first, second } = await scenario();
+  const third = await createTaskApi({ teamId, roleId, title: "C 独立前置", status: "todo" });
+  const checked: string[][] = [];
+  await page.route("**/invoke", async (route) => {
+    const request = route.request().postDataJSON() as {
+      cmd: string;
+      args?: { input?: { dependsOn?: string[] } };
+    };
+    if (request.cmd === "check_task_dependencies") {
+      checked.push(request.args?.input?.dependsOn ?? []);
+    }
+    await route.continue();
+  });
+  await page.goto(`/#/teams/${teamId}/tasks/${second.id}/edit`);
+  const save = page.getByRole("button", { name: "保存", exact: true });
+  await expect(save).toBeEnabled();
+  await expect(
+    page.getByRole("button", { name: new RegExp(`移除依赖 ${first.key}`) }),
+  ).toBeVisible();
+  await page.clock.install();
+  await page.clock.pauseAt(new Date(Date.now() + 1_000));
+  checked.length = 0;
+  await page.getByRole("checkbox", { name: new RegExp(third.title) }).check();
+  await expect(save).toBeDisabled();
+  await expect(page.getByRole("status")).toContainText("正在检查依赖");
+  await page.clock.runFor(100);
+  expect(checked).toHaveLength(0);
+  await page.getByRole("button", { name: new RegExp(`移除依赖 ${first.key}`) }).click();
+  await page.getByRole("checkbox", { name: new RegExp(first.title) }).check();
+  await page.clock.runFor(199);
+  expect(checked).toHaveLength(0);
+  await expect(save).toBeDisabled();
+  await page.clock.runFor(1);
+  await expect(save).toBeEnabled();
+  expect(checked).toEqual([[first.id, third.id].sort()]);
+  await page.getByRole("button", { name: new RegExp(`移除依赖 ${first.key}`) }).click();
+  await page.getByRole("checkbox", { name: new RegExp(first.title) }).check();
+  await page.clock.runFor(200);
+  await expect(save).toBeEnabled();
+  expect(checked).toHaveLength(1);
 });
 
 test("多跳环路展示全部任务编号，移除后可保存", async ({ page }) => {
