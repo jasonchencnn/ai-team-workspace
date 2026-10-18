@@ -404,3 +404,30 @@ export function runBadge(run: Run | undefined): RunBadge | null {
   }
   return null;
 }
+
+/**
+ * 成功的执行面板上是否还有「去验收」：执行还没有验收结果（待验收），或验收时合并冲突且任务仍因此受阻。
+ * 已通过、已退回、冲突后被「重新执行」丢弃的执行（任务已不是受阻）不再有——以后端的 `Run.review`
+ * 与任务状态为准。
+ */
+export function canGoReview(run: Run, taskStatus: string): boolean {
+  if (run.review === null) {
+    return true;
+  }
+  return run.review.outcome === "conflict" && taskStatus === "blocked";
+}
+
+/** 已有验收结果的成功执行在面板上的状态标签。 */
+export function reviewedLabel(run: Run, taskStatus: string): string | null {
+  if (run.review === null) {
+    return null;
+  }
+  switch (run.review.outcome) {
+    case "approved":
+      return "已完成 · 已通过验收";
+    case "rejected":
+      return "已完成 · 已退回";
+    case "conflict":
+      return taskStatus === "blocked" ? "已完成 · 合并冲突" : "已完成 · 旧执行已丢弃";
+  }
+}

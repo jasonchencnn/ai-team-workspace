@@ -34,6 +34,8 @@ interface RunExecutionAreaProps {
   api: TaskRunsApi;
   /** 任务当前可执行的状态流转（人工接管时判断能否直接提交验收）。 */
   allowedTransitions: TaskStatus[];
+  /** 任务当前状态（后端值）。 */
+  taskStatus: TaskStatus;
   /** 请求人工接管：由页面统一弹出确认框。 */
   onRequestTakeover: () => void;
 }
@@ -47,6 +49,7 @@ export function RunExecutionArea({
   fileRefs,
   api,
   allowedTransitions,
+  taskStatus,
   onRequestTakeover,
 }: RunExecutionAreaProps) {
   const run = api.run;
@@ -186,6 +189,7 @@ export function RunExecutionArea({
               onOpenExecDir={api.openRunDir}
               execDirBusy={api.execDirPending}
               canSubmitReview={allowedTransitions.includes("review")}
+              taskStatus={taskStatus}
             />
           )}
         </div>

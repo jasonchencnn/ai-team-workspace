@@ -11,7 +11,7 @@ import { dirname, join } from "node:path";
 import { type Page, expect, test } from "@playwright/test";
 
 import { createMockHarness } from "./harnessHelpers.js";
-import { type RunInfo, invoke, runsOf } from "./z-qa-r2-helpers.js";
+import { type RunInfo, runsOf } from "./z-qa-r2-helpers.js";
 
 const TIMEOUT = 25_000;
 const HARNESS = "m3f-mock";
@@ -265,9 +265,12 @@ async function conflictThenRerun(page: Page, title: string, file: string) {
 test("合并冲突 → 重新执行（确认丢弃旧执行）→ 再执行 → 再验收 → 合并成功", async ({ page }) => {
   const task = await conflictThenRerun(page, "重做改写", "notes/x.txt");
 
-  // 产品缺陷（M3-09 发现，见下一条 fixme）：任务详情此时仍显示旧执行的成功面板、没有「开始执行」按钮，
-  // 所以第 2 次执行用桥接 start_run 触发（后端本身是通的），其余步骤仍走界面。
-  await invoke("start_run", { taskId: task.id });
+  // 重新执行后任务详情提供「开始执行」，第 2 次执行走界面触发
+  await page.goto(task.url);
+  await page
+    .getByRole("button", { name: /^(开始执行|重新执行)$/ })
+    .first()
+    .click();
   await expect.poll(async () => (await runsOf(task.id))[0]?.attempt).toBe(2);
   await expect
     .poll(async () => (await runsOf(task.id))[0]?.status, { timeout: TIMEOUT })
@@ -285,11 +288,10 @@ test("合并冲突 → 重新执行（确认丢弃旧执行）→ 再执行 → 
   await expect(page.locator(".task-detail__status")).toContainText("已完成");
 });
 
-// 产品缺陷（M3-09 发现）：「重新执行」成功、任务回到 READY 后，任务详情仍把已被丢弃的第 1 次执行当作
-// 最近执行：显示旧的「已完成 · 待验收」面板（含「去验收」），页头没有「开始执行」按钮（TaskDetailPage 的
-// outcomeHasActions 对 succeeded 的最近执行隐藏页头按钮），用户在界面上无法继续。修复后去掉 fixme。
-test.fixme("合并冲突重新执行后，任务详情提供「开始执行」入口", async ({ page }) => {
+test("合并冲突重新执行后，任务详情提供「开始执行」入口", async ({ page }) => {
   await conflictThenRerun(page, "重做入口", "notes/y.txt");
   await page.reload();
   await expect(page.getByRole("button", { name: /^(开始执行|重新执行)$/ }).first()).toBeVisible();
+  await expect(page.locator(".run-outcome--success")).not.toContainText("待验收");
+  await expect(page.getByRole("button", { name: "去验收" })).toHaveCount(0);
 });

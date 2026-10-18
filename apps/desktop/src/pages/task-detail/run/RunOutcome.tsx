@@ -14,6 +14,8 @@ import {
   formatLocal,
   lastEventSummary,
   noResumeReason,
+  canGoReview,
+  reviewedLabel,
   resumeCapabilityText,
   runElapsedSeconds,
 } from "./runUi.js";
@@ -143,6 +145,8 @@ export interface RunOutcomeProps {
   execDirBusy: boolean;
   /** 任务当前是否允许流转到「待验收」（人工接管时用）。 */
   canSubmitReview: boolean;
+  /** 任务当前状态（后端值），用来判断已有验收结果的执行是否还能「去验收」。 */
+  taskStatus: string;
 }
 
 export function RunOutcome(props: RunOutcomeProps) {
@@ -187,7 +191,10 @@ function SuccessOutcome({
   changedOpen,
   onToggleChanged,
   onGoReview,
+  taskStatus,
 }: RunOutcomeProps) {
+  const reviewButton = canGoReview(run, taskStatus);
+  const reviewed = reviewedLabel(run, taskStatus);
   // 后端判定 Agent 改了权限范围外的文件：执行完成，但任务受阻，不进入待验收。
   const scopeBlocked = run.outOfScope.length > 0;
   return (
@@ -201,7 +208,9 @@ function SuccessOutcome({
         {scopeBlocked ? (
           <Tag tone="warning">已完成 · 受阻</Tag>
         ) : (
-          <Tag tone="success">已完成 · 待验收</Tag>
+          <Tag tone={reviewed === null ? "success" : "neutral"}>
+            {reviewed ?? "已完成 · 待验收"}
+          </Tag>
         )}
       </header>
       <Subtitle run={run} taskKey={taskKey} taskTitle={taskTitle} />
@@ -241,12 +250,14 @@ function SuccessOutcome({
         <Button variant="neutral" onClick={onToggleChanged} aria-expanded={changedOpen}>
           {changedOpen ? "收起改动" : "查看改动"}
         </Button>
-        {scopeBlocked ? null : <Button onClick={onGoReview}>去验收</Button>}
+        {scopeBlocked || !reviewButton ? null : <Button onClick={onGoReview}>去验收</Button>}
       </div>
       <p className="run-outcome__note">
         {scopeBlocked
           ? "任务已转为受阻：请先检查上面的文件，处理后再继续（原因见任务的受阻原因）。"
-          : "执行完成不等于验收通过：任务进入「待验收」，由你查看改动后决定通过或退回。"}
+          : reviewed !== null && !reviewButton
+            ? "这次执行已经验收处理过；需要的话可以重新开始一次执行。"
+            : "执行完成不等于验收通过：任务进入「待验收」，由你查看改动后决定通过或退回。"}
       </p>
     </section>
   );

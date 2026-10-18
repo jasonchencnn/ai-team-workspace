@@ -397,11 +397,11 @@ export function ReviewPage() {
               <p className="review__text">
                 {run.review?.comment ?? task.blockedReason ?? "合并有冲突，已中止合并。"}
               </p>
-              {result?.outcome === "conflict" && result.conflictFiles.length > 0 ? (
+              {view.conflictFiles.length > 0 ? (
                 <>
                   <p className="review__caption">冲突文件</p>
                   <ul className="review__list review__list--mono">
-                    {result.conflictFiles.map((file) => (
+                    {view.conflictFiles.map((file) => (
                       <li key={file}>{file}</li>
                     ))}
                   </ul>
