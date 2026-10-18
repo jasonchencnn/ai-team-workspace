@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "main-window",
-  "description": "No frontend native APIs are authorized while the desktop shell is being established.",
+  "description": "Only event listen/unlisten are authorized: the frontend follows run events. No other native API is authorized. Execution-in-progress also polls as a fallback (D23).",
   "windows": ["main"],
-  "permissions": []
+  "permissions": ["core:event:allow-listen", "core:event:allow-unlisten"]
 }

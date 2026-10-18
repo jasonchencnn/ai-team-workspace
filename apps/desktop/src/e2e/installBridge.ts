@@ -19,6 +19,18 @@ interface PolledEvents {
 
 const POLL_INTERVAL_MS = 300;
 
+/**
+ * 只在端到端测试里打开的开关：在页面加载前用 page.addInitScript 把它设为 true，
+ * `plugin:event|listen` 就会像真实应用里 capability 没放行事件权限（D23）那样被拒绝，
+ * 用例据此验证「实时通道不可用时靠轮询兜底，界面照样跟着执行状态走」。
+ */
+const NO_REALTIME_FLAG = "__teamspace_no_realtime";
+
+function realtimeBlocked(): boolean {
+  const flag = (window as unknown as Record<string, unknown>)[NO_REALTIME_FLAG];
+  return flag === true;
+}
+
 async function call(bridge: string, cmd: string, args: unknown): Promise<unknown> {
   const response = await fetch(`${bridge}/invoke`, {
     method: "POST",
@@ -61,6 +73,23 @@ export function installBridge(): void {
   if (typeof bridge !== "string" || bridge === "") {
     throw new Error("VITE_E2E_BRIDGE is required in e2e mode.");
   }
-  mockIPC((cmd: string, args?: unknown) => call(bridge, cmd, args), { shouldMockEvents: true });
-  pollRunEvents(bridge);
+  const blocked = realtimeBlocked();
+  mockIPC(
+    (cmd: string, args?: unknown) => {
+      // 关闭模拟事件时，事件相关命令落到这里并像 Tauri 的权限拒绝一样失败。
+      if (blocked && cmd.startsWith("plugin:event|")) {
+        return Promise.reject(
+          new Error(
+            `${cmd} not allowed. Permissions associated with this command: core:event:allow-listen, core:event:allow-unlisten`,
+          ),
+        );
+      }
+      return call(bridge, cmd, args);
+    },
+    // 打开时事件由 mock 的事件系统处理，不经过上面的回调。
+    { shouldMockEvents: !blocked },
+  );
+  if (!blocked) {
+    pollRunEvents(bridge);
+  }
 }

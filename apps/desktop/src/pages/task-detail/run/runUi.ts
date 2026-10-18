@@ -282,6 +282,55 @@ export function formatDuration(seconds: number): string {
     : `${pad(minutes)}:${pad(rest)}`;
 }
 
+/**
+ * 运行时长格式化成 `m:ss`（超过一小时 `h:mm:ss`）：心跳指示与执行信息条的「已运行」共用，
+ * 分钟不补零，读起来更接近「已运行 3 分 12 秒」的说法。
+ */
+export function formatRunClock(seconds: number): string {
+  const total = Math.max(0, Math.floor(seconds));
+  const hours = Math.floor(total / 3600);
+  const minutes = Math.floor((total % 3600) / 60);
+  const rest = total % 60;
+  const pad = (value: number) => String(value).padStart(2, "0");
+  return hours > 0
+    ? `${String(hours)}:${pad(minutes)}:${pad(rest)}`
+    : `${String(minutes)}:${pad(rest)}`;
+}
+
+/** 相对时间的中文短语：不足 1 秒「刚刚」，之后按秒 / 分 / 小时。 */
+export function formatSecondsAgo(seconds: number): string {
+  const total = Math.max(0, Math.floor(seconds));
+  if (total < 1) {
+    return "刚刚";
+  }
+  if (total < 60) {
+    return `${String(total)} 秒前`;
+  }
+  const minutes = Math.floor(total / 60);
+  if (minutes < 60) {
+    return `${String(minutes)} 分钟前`;
+  }
+  return `${String(Math.floor(minutes / 60))} 小时前`;
+}
+
+/**
+ * 长时间没有新动静时的温和提醒（D23）：超过阈值给一句话说明可以取消或人工接管，
+ * 不判定执行失败——Agent 可能确实在长时间思考。阈值内返回 null。
+ */
+export const RUN_STALE_SECONDS = 60;
+
+export function runStaleHint(seconds: number): string | null {
+  const total = Math.max(0, Math.floor(seconds));
+  if (total < RUN_STALE_SECONDS) {
+    return null;
+  }
+  const since =
+    total < 120
+      ? `${String(total)} 秒`
+      : `${String(Math.floor(total / 60))} 分 ${String(total % 60)} 秒`;
+  return `已 ${since}没有新的进度，Agent 可能在长时间思考；可取消或人工接管`;
+}
+
 /** 已运行的秒数：已结束用 endedAt - startedAt，进行中用当前时间 - startedAt。 */
 export function runElapsedSeconds(run: Run, now: number = Date.now()): number {
   const start = new Date(run.startedAt).getTime();

@@ -1,6 +1,7 @@
 // 任务详情的执行状态：读取历次执行、选择当前查看的那次，并统一发起执行操作
 // （开始、取消、续接、标记失败、人工接管、打开执行目录、回应权限、提交验收）。
-// 状态变化后由 useRunEventInvalidation 触发的查询失效来刷新，这里不重复轮询。
+// 状态变化后由 useRunEventInvalidation 触发的查询失效来刷新；执行进行中另有
+// useRunRecordPolling 每 3 秒兜底一次，不依赖单一通道（D23）。
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useState } from "react";
 

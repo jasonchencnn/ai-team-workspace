@@ -112,6 +112,74 @@
   line-height: var(--line-height-caption);
 }
 
+/* ---------------- 心跳指示（监控中） ---------------- */
+
+.run-heartbeat {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 16px;
+  margin-bottom: var(--space-section);
+  padding: 8px 12px;
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius-control);
+  background: var(--color-info-surface);
+  color: var(--color-info);
+  font-size: var(--font-size-caption);
+  line-height: var(--line-height-caption);
+}
+
+.run-heartbeat__live {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-weight: 600;
+}
+
+.run-heartbeat__dot {
+  width: 8px;
+  height: 8px;
+  border-radius: var(--radius-pill);
+  background: currentcolor;
+  animation: run-heartbeat-pulse 1.6s ease-in-out infinite;
+}
+
+@keyframes run-heartbeat-pulse {
+  0%,
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.35;
+    transform: scale(0.75);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .run-heartbeat__dot {
+    animation-duration: 3.2s;
+  }
+}
+
+.run-heartbeat__clock {
+  font-variant-numeric: tabular-nums;
+}
+
+.run-heartbeat__since {
+  color: var(--color-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.run-heartbeat__fallback,
+.run-heartbeat__stale {
+  color: var(--color-warning);
+}
+
+.run-heartbeat__stale {
+  flex-basis: 100%;
+}
+
 .run-stream {
   display: flex;
   flex-direction: column;

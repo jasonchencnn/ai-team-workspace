@@ -28,6 +28,7 @@ import { RunExecutionArea } from "./run/RunExecutionArea.js";
 import { TaskDependencies } from "./TaskDependencies.js";
 import { canGoReview } from "./run/runUi.js";
 import { isRunActive } from "./run/useRunEvents.js";
+import { useRunRecordPolling } from "./run/useRunPolling.js";
 import { useTaskRuns } from "./run/useTaskRuns.js";
 import { isMarkdownRef } from "../files/filesUi.js";
 import { formatTime, statusTone } from "../tasks/taskUi.js";
@@ -57,6 +58,9 @@ export function TaskDetailPage() {
     enabled: teamId !== "",
   });
   const runApi = useTaskRuns(teamId, taskId);
+  // 事件之外的第二条通道（D23）：执行进行中定时刷新执行列表、任务详情与待验收入口，
+  // 执行结束后停止。事件正常时也保留，保证不依赖单一通道。
+  useRunRecordPolling(teamId, taskId, runApi.run);
   // 「去验收」入口：待验收，或因合并冲突受阻（是否因冲突以验收数据的 conflict 为准）。
   const taskStatus = detail.data?.task.status;
   const reviewEntry = useQuery({
