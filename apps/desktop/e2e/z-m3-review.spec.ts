@@ -374,11 +374,23 @@ test("Git：验收页打开后执行分支又有新提交 → 通过被拒并提
   const execDir = (await invoke<{ execDir: string }[]>("list_runs", { taskId: task.id }))[0]
     ?.execDir;
   expect(execDir).toBeTruthy();
+  // 从任务详情进入时验收页先显示缓存，再在后台重新读取（get_review 会顺带提交执行目录里的改动）。
+  // 重新加载页面，确保列表来自唯一一次读取且已完成，再在执行分支上追加提交。
+  await page.reload();
+  await expect(page.locator(".review-file", { hasText: "docs/eh.txt" })).toBeVisible();
   const headBefore = git(execDir ?? "", "rev-parse", "HEAD").trim();
   put(execDir ?? "", "docs/eh-extra.txt", "late change\n");
-  git(execDir ?? "", "add", "docs/eh-extra.txt");
-  git(execDir ?? "", "commit", "-q", "-m", "docs: late change");
-  expect(git(execDir ?? "", "rev-parse", "HEAD").trim()).not.toBe(headBefore);
+  // 验收页刷新（get_review）会把执行目录里的未提交改动自己提交到执行分支，可能与这里的手动提交竞争
+  // （index.lock 或「无可提交」）。只要执行分支 head 已经前进即可。
+  try {
+    git(execDir ?? "", "add", "docs/eh-extra.txt");
+    git(execDir ?? "", "commit", "-q", "-m", "docs: late change");
+  } catch {
+    // 交给下面的轮询确认 head 已前进。
+  }
+  await expect
+    .poll(() => git(execDir ?? "", "rev-parse", "HEAD").trim(), { timeout: 10_000 })
+    .not.toBe(headBefore);
 
   await page.getByRole("button", { name: "通过并合并到 main" }).click();
   await page.getByRole("dialog").getByRole("button", { name: "确认合并" }).click();
