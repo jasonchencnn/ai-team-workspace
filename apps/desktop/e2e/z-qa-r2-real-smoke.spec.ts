@@ -1,6 +1,7 @@
 // 测试轮次 2026-10-14 · QA R2：真实 Harness 冒烟。
 // - RUN-SMK-001、RUN-SMK-002：MiniMax Code（mcode acp），需要 TEAMSPACE_REAL_SMOKE=1。
 // - RUN-SMK-003：Claude Code（claude-code-acp），单独开关 TEAMSPACE_REAL_SMOKE_CLAUDE=1，消耗 Claude 额度。
+// - RUN-SMK-M3-001（M3-09）：MiniMax Code 在临时 Git 仓库完成极小任务 → 验收页 diff → 通过并合并 → 清理，同样需要 TEAMSPACE_REAL_SMOKE=1。
 // 没有对应环境变量时整组跳过，不调用真实 Harness、不消耗额度。前提：本机已安装并登录对应 CLI。
 // 运行命令（会消耗额度，只在需要时执行）：
 //   TEAMSPACE_REAL_SMOKE=1 TEAMSPACE_E2E_PORT_BASE=15781 \
@@ -8,7 +9,8 @@
 //   TEAMSPACE_REAL_SMOKE_CLAUDE=1 TEAMSPACE_E2E_PORT_BASE=15781 \
 //     pnpm --dir apps/desktop exec playwright test e2e/z-qa-r2-real-smoke.spec.ts -g "RUN-SMK-003"
 // 工作空间用临时普通文件夹，不碰仓库；任务编号由内核生成（岗位前缀 FE / CL），不是用例里写的编号。
-import { mkdtempSync, existsSync, readFileSync, rmSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { mkdtempSync, existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -347,5 +349,114 @@ test.describe("真实冒烟（Claude Code，需要 TEAMSPACE_REAL_SMOKE_CLAUDE=1
       .poll(() => journalOf(workspace, ROLE), { timeout: 30_000 })
       .toContain(`${task.key} · 第 1 次执行完成（${HARNESS}）`);
     expect(run.summary ?? "").not.toBe("");
+  });
+});
+
+test.describe("真实冒烟 M3（MiniMax Code，需要 TEAMSPACE_REAL_SMOKE=1）", () => {
+  test.skip(!REAL, "未设置 TEAMSPACE_REAL_SMOKE=1：不调用真实 Harness，不消耗额度");
+  test.describe.configure({ mode: "serial", timeout: 600_000 });
+
+  const HARNESS = "MiniMax Code M3";
+  const FILE = "docs/smoke-m3.md";
+  let workspace = "";
+  let team: TeamSetup;
+
+  const git = (...args: string[]): string =>
+    execFileSync(
+      "git",
+      [
+        "-c",
+        "user.name=E2E",
+        "-c",
+        "user.email=e2e@example.invalid",
+        "-c",
+        "commit.gpgsign=false",
+        ...args,
+      ],
+      { cwd: workspace, encoding: "utf8" },
+    );
+
+  test.beforeAll(async () => {
+    workspace = mkdtempSync(join(tmpdir(), "teamspace-real-smoke-m3-"));
+    git("init", "-q", "-b", "main");
+    writeFileSync(join(workspace, "README.md"), "# M3 smoke\n");
+    git("add", ".");
+    git("commit", "-q", "-m", "docs: seed");
+    team = await setupTeam("M3 真实冒烟团队", workspace, [{ name: ROLE, prefix: "FE" }]);
+    const harness = await invoke<{ id: string }>("create_harness", {
+      input: { teamId: team.teamId, name: HARNESS, preset: "minimax_code" },
+    });
+    const checked = await invoke<{ handshake: { status: string; detail: string | null } }>(
+      "check_harness",
+      { harnessId: harness.id },
+    );
+    expect(
+      checked.handshake.status,
+      `MiniMax Code 握手未通过（${checked.handshake.detail ?? "无说明"}）：请先在终端安装 mcode 并登录`,
+    ).toBe("connected");
+    await bind(team.roleIds[ROLE] ?? "", harness.id);
+  });
+
+  test.afterAll(() => {
+    rmSync(workspace, { recursive: true, force: true });
+  });
+
+  test("RUN-SMK-M3-001 MiniMax Code 在 Git 仓库完成极小任务：待验收 → 看 diff → 通过并合并 → 清理", async ({
+    page,
+  }) => {
+    const started = Date.now();
+    const task = await createTaskApi({
+      teamId: team.teamId,
+      roleId: team.roleIds[ROLE] ?? "",
+      title: "新增冒烟说明文件",
+      description: `在当前工作目录新建文件 ${FILE}，内容只有一行：Hello M3 smoke。不要改动其他文件。`,
+    });
+    await openTask(page, task);
+    await startRunUi(page);
+    await expect(infoStrip(page)).toContainText(HARNESS);
+
+    const { run } = await approveUntilDone(page, task, { limit: RUN_LIMIT });
+    expect(run.status, `执行未成功：${run.failure ?? ""}`).toBe("succeeded");
+    expect(run.outOfScope, "出现范围外改动，任务会受阻").toEqual([]);
+    await expect(statusLine(page)).toContainText("待验收");
+    const branch = run.branch ?? "";
+    expect(branch).toBe(`teamspace/${task.key}-r1`);
+    const execDir = run.execDir;
+
+    // 验收页：改动文件与 diff
+    await page
+      .getByRole("region", { name: "验收入口" })
+      .getByRole("button", { name: "去验收" })
+      .click();
+    const row = page.locator(".review-file", { hasText: "smoke-m3.md" });
+    await expect(row).toContainText("新增");
+    await row.getByRole("button", { name: /smoke-m3\.md/ }).click();
+    await expect(
+      page.locator(".diff-card", { hasText: "smoke-m3.md" }).locator(".diff-row--add"),
+    ).toContainText("Hello M3 smoke");
+
+    // 通过并合并
+    await page.getByRole("button", { name: "通过并合并到 main" }).click();
+    await page.getByRole("dialog").getByRole("button", { name: "确认合并" }).click();
+    await expect(page.locator(".review-banner--success").first()).toContainText("合并成功");
+
+    // 基线分支有文件与合并提交，worktree 与执行分支已清理
+    const mergedFile = join(workspace, FILE);
+    expect(existsSync(mergedFile), `基线分支没有 ${FILE}`).toBe(true);
+    expect(readFileSync(mergedFile, "utf8")).toContain("Hello M3 smoke");
+    const parents = git("log", "-1", "--format=%p").trim().split(" ");
+    expect(parents).toHaveLength(2);
+    test.info().annotations.push({
+      type: "merge-commit",
+      description: git("log", "-1", "--format=%h %s").trim(),
+    });
+    expect(git("branch", "--list", branch).trim()).toBe("");
+    expect(existsSync(execDir), "worktree 目录没有清理").toBe(false);
+    await page.goto(task.url);
+    await expect(statusLine(page)).toContainText("已完成");
+    test.info().annotations.push({
+      type: "elapsed",
+      description: `${String(Math.round((Date.now() - started) / 1000))}s`,
+    });
   });
 });

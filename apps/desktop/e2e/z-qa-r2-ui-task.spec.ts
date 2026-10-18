@@ -625,9 +625,10 @@ test("UI-FORM-009 依赖选择与循环依赖：依赖勾选列表、编辑排�
 
   // 构造 A→B、B→A：这里选中依赖 T_DEPS 的任务，再让 T_DEPS 反过来依赖它，保存被拒。
   await page.locator("label.task-form__option", { hasText: T_DEPS }).locator("input").check();
-  await page.getByRole("button", { name: "保存", exact: true }).click();
+  // M3-07 起环路在选择依赖时就预检出来：显示错误并禁用保存（不再等保存时才被后端拒绝）。
   const banner = page.getByRole("alert");
   await expect(banner).toContainText(/依赖形成环路：.*→.*/);
+  await expect(page.getByRole("button", { name: "保存", exact: true })).toBeDisabled();
   await shot(page, "form-009-cycle-error", banner);
   // 表单内容保留。
   await expect(page.getByRole("heading", { name: "编辑任务" })).toBeVisible();
