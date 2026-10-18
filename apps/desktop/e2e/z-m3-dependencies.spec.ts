@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -24,11 +25,8 @@ test.afterEach(() => {
   rmSync(workspace, { recursive: true, force: true });
 });
 
-let scenarioSeq = 0;
-
 async function scenario() {
-  scenarioSeq += 1;
-  const team = await setupTeam(`依赖与冲突 ${String(scenarioSeq)}`, workspace, [
+  const team = await setupTeam(`依赖与冲突 ${randomUUID().slice(0, 8)}`, workspace, [
     { name: "前端", prefix: "FE" },
   ]);
   const roleId = team.roleIds["前端"] ?? "";
@@ -246,6 +244,14 @@ test("依赖预检防抖 200ms，快速选择只请求一次且选择顺序不�
   ).toBeVisible();
   await page.clock.install();
   await page.clock.pauseAt(new Date(Date.now() + 1_000));
+  // 时钟暂停时，查询库的通知也挂在定时器上：边推进时钟边等保存按钮恢复。
+  const settle = () =>
+    expect
+      .poll(async () => {
+        await page.clock.runFor(20);
+        return save.isEnabled();
+      })
+      .toBe(true);
   checked.length = 0;
   await page.getByRole("checkbox", { name: new RegExp(third.title) }).check();
   await expect(save).toBeDisabled();
@@ -258,12 +264,12 @@ test("依赖预检防抖 200ms，快速选择只请求一次且选择顺序不�
   expect(checked).toHaveLength(0);
   await expect(save).toBeDisabled();
   await page.clock.runFor(1);
-  await expect(save).toBeEnabled();
+  await settle();
   expect(checked).toEqual([[first.id, third.id].sort()]);
   await page.getByRole("button", { name: new RegExp(`移除依赖 ${first.key}`) }).click();
   await page.getByRole("checkbox", { name: new RegExp(first.title) }).check();
   await page.clock.runFor(200);
-  await expect(save).toBeEnabled();
+  await settle();
   expect(checked).toHaveLength(1);
 });
 
