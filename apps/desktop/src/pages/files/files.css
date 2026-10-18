@@ -20,9 +20,8 @@
   padding: 16px;
 }
 
-.files-state {
-  margin-top: var(--space-section);
-  padding: 48px 0;
+.files-panel__pending {
+  padding: 24px 0;
   text-align: center;
 }
 
@@ -127,6 +126,17 @@
 .files-doc__body {
   margin-top: 16px;
   line-height: var(--line-height-body);
+}
+
+/* 超大文件只显示前一部分：正文之前明确说清楚，别让人以为文件就这么长。 */
+.files-doc__truncated {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 12px;
+  padding: 10px 14px;
+  background: var(--color-warning-surface);
+  font-size: var(--font-size-caption);
 }
 
 .files-doc__body h1 {

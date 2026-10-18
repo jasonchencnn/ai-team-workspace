@@ -945,21 +945,36 @@ test("21. 共享文件：非 md 文件（如 .txt、.png）不出现在列表且
   await expect(page.getByText("共享文件只显示 Markdown（.md）文件")).toBeVisible();
 });
 
-// 缺陷 M3-G-1：打开约 1 MB 的 Markdown 时页面长时间停在「正在列出工作空间文件」，8 秒内无法显示。
-test.fixme("22. 共享文件：超大 Markdown 文件（>1MB）截断提示「（内容已截断）」", async ({
+// 超大文件（1.2 MB，远超 256 KiB 的读取上限）只渲染前一部分并明确标注截断，页面不再整页卡住。
+test("22. 共享文件：超大 Markdown 文件（>256KiB 读取上限）截断提示「（内容已截断）」且页面可交互", async ({
   page,
 }) => {
-  // 创建超过 1MB (1,048,576 字节) 的超大 Markdown 文件
+  // 创建 1.2 MB 的 Markdown 文件：仍是后端读取上限（256 KiB）的 4 倍以上
   const hugeContent = "# 超大需求规格书\n\n" + "M3 specification detail line.\n".repeat(40000);
   put(gitWs, "docs/huge.md", hugeContent);
+  expect(Buffer.byteLength(hugeContent)).toBeGreaterThan(256 * 1024);
 
   await page.goto(`/#/teams/${teamGitId}/files?path=docs%2Fhuge.md`);
   await page.reload();
 
+  // 列表与正文互不阻塞：文件树先出来，正文随后跟上（默认 8 秒超时内完成）
+  await expect(page.locator(".files-tree__item").filter({ hasText: "huge.md" })).toBeVisible();
   await expect(page.locator(".files-doc__path")).toHaveText("docs/huge.md");
   await expect(page.locator(".files-doc__body h1")).toHaveText("超大需求规格书");
   // 验证顶部元数据明确标注「（内容已截断）」
   await expect(page.locator(".files-doc__meta")).toContainText("（内容已截断）");
+  // 正文之前有独立的截断说明，并如实报告真实大小（1.1 MB > 上限）
+  const notice = page.locator(".files-doc__truncated");
+  await expect(notice).toBeVisible();
+  await expect(notice.locator(".ui-tag")).toHaveText("内容已截断");
+  await expect(notice).toContainText("只显示前一部分");
+  await expect(page.locator(".files-doc__meta")).toContainText(/1\.\d MB/);
+
+  // 渲染被截断的文档后页面仍然可交互：搜索框能立刻筛出文件
+  await page.getByLabel("搜索文件名").fill("huge");
+  await expect(page.locator(".files-tree__item").filter({ hasText: "huge.md" })).toBeVisible();
+  await page.getByLabel("搜索文件名").fill("");
+  await expect(page.locator(".files-tree__item").filter({ hasText: "spec.md" })).toBeVisible();
 });
 
 test("23. 共享文件：任务 ↔ 文件双向跳转", async ({ page }) => {
