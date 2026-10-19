@@ -26,7 +26,7 @@ import type { TaskStatus } from "../../bindings/TaskStatus.js";
 import type { TaskSummary } from "../../bindings/TaskSummary.js";
 import { RunExecutionArea } from "./run/RunExecutionArea.js";
 import { TaskDependencies } from "./TaskDependencies.js";
-import { canGoReview } from "./run/runUi.js";
+import { canGoReview, showStartRunButton } from "./run/runUi.js";
 import { isRunActive } from "./run/useRunEvents.js";
 import { useRunRecordPolling } from "./run/useRunPolling.js";
 import { useTaskRuns } from "./run/useTaskRuns.js";
@@ -133,7 +133,9 @@ export function TaskDetailPage() {
   // 页头按钮随执行状态切换：执行中是「人工接管」「取消执行」。
   // 失败、已中断、已接管、成功这四种状态，执行区面板里已经带了主操作（重试 / 续接 / 重新执行），
   // 页头再放一次会出现两个主按钮，所以这里只留「返回任务面板」和「编辑」。
-  // 能否开始以后端的 runProblems 为准，不可用时把原因显示在下面。
+  // 任务验收通过（done）后不再显示开始 / 重新执行：内核此时不接受开始执行，
+  // 要重做得先在「状态操作」里重新打开为 READY（判定见 runUi.showStartRunButton）。
+  // 其余状态能否开始以后端的 runProblems 为准，不可用时把原因显示在下面。
   const outcomeHasActions =
     run !== null &&
     !active &&
@@ -161,7 +163,7 @@ export function TaskDetailPage() {
         取消执行
       </Button>
     </>
-  ) : outcomeHasActions ? null : (
+  ) : outcomeHasActions || !showStartRunButton(task.status) ? null : (
     <Button
       loading={runApi.busy}
       disabled={runApi.busy || roleProblems.length > 0}

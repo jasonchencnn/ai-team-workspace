@@ -6,6 +6,7 @@ import type { FileChangeKind } from "../../../bindings/FileChangeKind.js";
 import type { PermissionOption } from "../../../bindings/PermissionOption.js";
 import type { Run } from "../../../bindings/Run.js";
 import type { RunStatus } from "../../../bindings/RunStatus.js";
+import type { TaskStatus } from "../../../bindings/TaskStatus.js";
 import type { RunUpdate } from "../../../bindings/RunUpdate.js";
 import type { RunUpdateBody } from "../../../bindings/RunUpdateBody.js";
 
@@ -479,4 +480,17 @@ export function reviewedLabel(run: Run, taskStatus: string): string | null {
     case "conflict":
       return taskStatus === "blocked" ? "已完成 · 合并冲突" : "已完成 · 旧执行已丢弃";
   }
+}
+
+/**
+ * 任务详情页头是否显示「开始执行 / 重新执行」。
+ *
+ * 已验收通过（done）的任务不再显示：内核里 done 只能回到 READY（`TaskStatus::next`），
+ * runProblems 也会说明「只有 READY、受阻，或执行中断、人工接管后的任务可以开始执行」，
+ * 这时页头只剩一个永远点不动的按钮。需要重做先在「状态操作」里重新打开为 READY，按钮会重新出现。
+ *
+ * 其余状态一律显示，可用与否仍以后端返回的 runProblems 为准：有问题时置灰并在 title 里说明原因。
+ */
+export function showStartRunButton(taskStatus: TaskStatus): boolean {
+  return taskStatus !== "done";
 }

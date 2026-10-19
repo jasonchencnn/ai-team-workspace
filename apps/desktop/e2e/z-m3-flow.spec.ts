@@ -286,6 +286,8 @@ test("合并冲突 → 重新执行（确认丢弃旧执行）→ 再执行 → 
   expect(readFileSync(join(ws, "notes/x.txt"), "utf8")).toContain(OK_MARK);
   await page.goto(task.url);
   await expect(page.locator(".task-detail__status")).toContainText("已完成");
+  // 验收通过后页头不再给「重新执行」：内核此时不接受开始执行，要重做得先重新打开为 READY
+  await expect(page.getByRole("button", { name: /^(开始执行|重新执行)$/ })).toHaveCount(0);
 });
 
 test("合并冲突重新执行后，任务详情提供「开始执行」入口", async ({ page }) => {
