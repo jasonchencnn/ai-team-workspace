@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import { type Locator, type Page, expect, test } from "@playwright/test";
 
 import { acpEntry, createMockHarness } from "./harnessHelpers.js";
+import { tickTaskBoardBox } from "./taskBoardHelpers.js";
 
 const artifacts = fileURLToPath(new URL("../e2e-artifacts/", import.meta.url));
 mkdirSync(artifacts, { recursive: true });
@@ -340,7 +341,7 @@ test("05. 任务取消与恢复（CANCELLED → TODO）并在看板「显示已�
   await expect(page.locator(".task-board__heading--cancelled")).toHaveCount(0);
 
   // 3. 勾选「显示已取消」后展示已取消列和卡片
-  await page.getByLabel("显示已取消").check();
+  await tickTaskBoardBox(page, "显示已取消");
   await expect(page.locator(".task-board__heading--cancelled")).toBeVisible();
   const cancelledCard = page.locator("a.task-card-link", { hasText: "受阻流转校验任务" });
   await expect(cancelledCard).toBeVisible();
@@ -582,6 +583,6 @@ test("11. 当团队所有任务均已取消时，看板保留工具栏并提示�
   await expect(page.getByLabel("显示已取消")).toBeVisible({ timeout: 2000 });
   await expect(page.getByText("当前只有已取消的任务")).toBeVisible();
   await expect(page.getByText("创建第一项任务")).toHaveCount(0);
-  await page.getByLabel("显示已取消").check();
+  await tickTaskBoardBox(page, "显示已取消");
   await expect(page.getByRole("link", { name: /将被取消的唯一任务/ })).toBeVisible();
 });

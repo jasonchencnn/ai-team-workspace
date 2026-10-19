@@ -1,6 +1,6 @@
 import { useQueries, useQuery } from "@tanstack/react-query";
-import { useMemo, useState } from "react";
-import { Link, useNavigate, useParams } from "react-router";
+import { useMemo } from "react";
+import { Link, useNavigate, useParams, useSearchParams } from "react-router";
 
 import { getRoleWorkbench, getTaskBoard, getTeamOverview, listRoles } from "../../api/commands.js";
 import { queryKeys } from "../../api/queryKeys.js";
@@ -19,11 +19,15 @@ import type { Run } from "../../bindings/Run.js";
 import type { TaskStatus } from "../../bindings/TaskStatus.js";
 import type { TaskSummary } from "../../bindings/TaskSummary.js";
 import { runBadge } from "../task-detail/run/runUi.js";
-import { formatTime, statusTone } from "./taskUi.js";
+import type { FirstColumnFilter, TaskPanelState } from "./taskUi.js";
+import {
+  formatTime,
+  parseTaskPanel,
+  serializeTaskPanel,
+  statusTone,
+  taskPanelSearch,
+} from "./taskUi.js";
 import "./tasks.css";
-
-type ViewMode = "board" | "list";
-type FirstColumnFilter = "all" | "todo" | "ready";
 
 /** 看板上展示的列：TODO 列合并 todo 与 ready。 */
 interface DisplayColumn {
@@ -104,11 +108,14 @@ function lastLine(task: TaskSummary): string | null {
 function TaskCard({
   task,
   teamId,
+  search,
   roleViews,
   badge,
 }: {
   task: TaskSummary;
   teamId: string;
+  /** 带上当前地址栏参数，返回任务面板时还是这个视图和筛选。 */
+  search: string;
   roleViews: RoleView[] | undefined;
   badge: ReturnType<typeof runBadge>;
 }) {
@@ -120,7 +127,7 @@ function TaskCard({
   const card = (
     <Link
       className="task-card-link"
-      to={`/teams/${teamId}/tasks/${task.id}`}
+      to={`/teams/${teamId}/tasks/${task.id}${search}`}
       aria-label={`${task.key} ${task.title}`}
     >
       <Card
@@ -162,7 +169,7 @@ function TaskCard({
   return (
     <div className="task-card-wrap">
       {card}
-      <Link className="task-card__review" to={`/teams/${teamId}/tasks/${task.id}/review`}>
+      <Link className="task-card__review" to={`/teams/${teamId}/tasks/${task.id}/review${search}`}>
         去验收
       </Link>
     </div>
@@ -172,10 +179,17 @@ function TaskCard({
 export function TasksPage() {
   const { teamId = "" } = useParams();
   const navigate = useNavigate();
-  const [view, setView] = useState<ViewMode>("board");
-  const [filter, setFilter] = useState<FirstColumnFilter>("all");
-  const [showDone, setShowDone] = useState(false);
-  const [showCancelled, setShowCancelled] = useState(false);
+  const [params, setParams] = useSearchParams();
+  // 视图与筛选全部存在地址栏（与活动与审计页同一做法）：刷新、复制链接、从任务详情返回
+  // 都保持一致，面板自己不做记忆，也不需要额外状态。
+  const panel = parseTaskPanel(params);
+  const { view, filter, showDone, showCancelled } = panel;
+  const update = (patch: Partial<TaskPanelState>) => {
+    // 用 replace：调整筛选不应该在历史里堆一串记录，但当前地址栏仍是筛选后的状态。
+    setParams(serializeTaskPanel({ ...panel, ...patch }), { replace: true });
+  };
+  // 进任务详情时把面板参数一起带上，返回时才能恢复；别的页面的参数不带过去。
+  const detailSearch = taskPanelSearch(params.toString());
 
   const query = { teamId, includeCancelled: showCancelled };
   const board = useQuery({
@@ -305,7 +319,7 @@ export function TasksPage() {
           <select
             value={filter}
             onChange={(event) => {
-              setFilter(event.target.value as FirstColumnFilter);
+              update({ filter: event.target.value as FirstColumnFilter });
             }}
           >
             <option value="all">全部</option>
@@ -318,7 +332,7 @@ export function TasksPage() {
             variant={view === "board" ? "primary" : "neutral"}
             aria-pressed={view === "board"}
             onClick={() => {
-              setView("board");
+              update({ view: "board" });
             }}
           >
             看板
@@ -327,7 +341,7 @@ export function TasksPage() {
             variant={view === "list" ? "primary" : "neutral"}
             aria-pressed={view === "list"}
             onClick={() => {
-              setView("list");
+              update({ view: "list" });
             }}
           >
             列表
@@ -338,7 +352,7 @@ export function TasksPage() {
             type="checkbox"
             checked={showDone}
             onChange={(event) => {
-              setShowDone(event.target.checked);
+              update({ showDone: event.target.checked });
             }}
           />
           显示已完成（{doneCount}）
@@ -348,7 +362,7 @@ export function TasksPage() {
             type="checkbox"
             checked={showCancelled}
             onChange={(event) => {
-              setShowCancelled(event.target.checked);
+              update({ showCancelled: event.target.checked });
             }}
           />
           显示已取消
@@ -379,6 +393,7 @@ export function TasksPage() {
                   key={task.id}
                   task={task}
                   teamId={teamId}
+                  search={detailSearch}
                   roleViews={roles.data}
                   badge={runBadge(runByTask.get(task.id))}
                 />
@@ -407,12 +422,14 @@ export function TasksPage() {
                 return (
                   <tr
                     key={task.id}
-                    onClick={() => void navigate(`/teams/${teamId}/tasks/${task.id}`)}
+                    onClick={() =>
+                      void navigate(`/teams/${teamId}/tasks/${task.id}${detailSearch}`)
+                    }
                   >
                     <td>
                       <Link
                         className="task-table__link"
-                        to={`/teams/${teamId}/tasks/${task.id}`}
+                        to={`/teams/${teamId}/tasks/${task.id}${detailSearch}`}
                         onClick={(event) => {
                           event.stopPropagation();
                         }}

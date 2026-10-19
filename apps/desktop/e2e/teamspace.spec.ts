@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import { type Locator, type Page, expect, test } from "@playwright/test";
 
 import { acpEntry, createMockHarness } from "./harnessHelpers.js";
+import { tickTaskBoardBox } from "./taskBoardHelpers.js";
 
 const artifacts = fileURLToPath(new URL("../e2e-artifacts/", import.meta.url));
 mkdirSync(artifacts, { recursive: true });
@@ -337,7 +338,7 @@ test("团队空间页显示计数、进行中的任务和最近活动", async ({
 
 test("编辑任务：修改标题与说明后详情页立即更新", async ({ page }) => {
   await gotoTeam(page, "/tasks");
-  await page.getByLabel(/^显示已完成（\d+）/).check(); // FE-001 已完成，默认不在看板上
+  await tickTaskBoardBox(page, /^显示已完成（\d+）/); // FE-001 已完成，默认不在看板上
   await card(page, /FE-001 实现注册界面/).click();
   await page.getByRole("button", { name: "编辑" }).click();
   await page.getByLabel("任务名称").fill("实现注册与登录界面");
@@ -352,7 +353,7 @@ test("编辑任务：修改标题与说明后详情页立即更新", async ({ pa
 
 test("看板可显示已完成列；文件引用可选，引用不存在的文件由后端拒绝", async ({ page }) => {
   await gotoTeam(page, "/tasks");
-  await page.getByLabel("显示已完成（1）").check();
+  await tickTaskBoardBox(page, "显示已完成（1）");
   await expect(page.locator(".task-board__heading", { hasText: "已完成 1" })).toBeVisible();
   await shot(page, "tasks-board-with-done");
 

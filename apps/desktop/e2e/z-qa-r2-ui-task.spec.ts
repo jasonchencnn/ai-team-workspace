@@ -941,20 +941,26 @@ test("UI-DETAIL-009 状态色、刷新保持与异常兜底：七种状态文字
 });
 
 test("UI-DETAIL-009 返回任务面板后保持之前的视图与筛选", async ({ page }) => {
-  test.fixme(
-    true,
-    "缺陷 UI-DETAIL-009：返回任务面板后视图回到看板、首列筛选回到「全部」，此前的选择没有被保留",
-  );
   await page.goto(`/#/teams/${teamBoard}/tasks`);
   await page.getByLabel("TODO / READY").selectOption("ready");
   await page.getByRole("button", { name: "列表", exact: true }).click();
   await expect(page.locator(".task-table")).toBeVisible();
+  // 视图与筛选写进地址栏：进详情时带在链接上。
+  await expect(page).toHaveURL(/view=list&filter=ready$/);
 
   await page.locator(".task-table tbody tr").first().click();
   await expect(statusLine(page)).toBeVisible();
   await page.getByRole("button", { name: "返回任务面板" }).click();
-  await expect(page).toHaveURL(new RegExp(`/teams/${teamBoard}/tasks$`));
+  await expect(page).toHaveURL(new RegExp(`/teams/${teamBoard}/tasks\\?view=list&filter=ready$`));
 
+  await expect(page.getByRole("button", { name: "列表", exact: true })).toHaveAttribute(
+    "aria-pressed",
+    "true",
+  );
+  await expect(page.getByLabel("TODO / READY")).toHaveValue("ready");
+
+  // 刷新页面仍是这个视图和筛选（状态在地址栏里，不靠组件内存）。
+  await page.reload();
   await expect(page.getByRole("button", { name: "列表", exact: true })).toHaveAttribute(
     "aria-pressed",
     "true",
