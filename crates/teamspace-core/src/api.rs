@@ -779,7 +779,7 @@ impl Teamspace {
     // ---------------------------------------------------------------- 执行
 
     /// 开始执行任务（D13 / D15）：任务须为 READY 或受阻（重试；清除受阻原因），或执行中且最近一次执行
-    /// 已中断或人工接管（重新执行；已中断的那次记为失败）；须满足就绪条件，负责岗位已绑定 Harness 且
+    /// 已中断或人工接管（重新执行；已中断的那次记为失败并留活动）；须满足就绪条件，负责岗位已绑定 Harness 且
     /// 握手状态不是 error；同一任务、同一个普通文件夹同时只能有一个活动执行。不满足时为 conflict，
     /// 原因同 `TaskDetail.runProblems`。
     ///
@@ -831,7 +831,21 @@ impl Teamspace {
                     },
                 )?;
                 if ended {
-                    run_svc::status_update(tx, &prev.id, RunStatus::Failed, Some(failure))?;
+                    run_svc::status_update(tx, &prev.id, RunStatus::Failed, Some(failure.clone()))?;
+                    // 旧执行被置为失败同样要留痕，否则工作日志里只有新的那次开始执行（K-EVT-004）。
+                    run_svc::record_event(
+                        tx,
+                        &prev,
+                        Actor::Human,
+                        EventKind::RunFinished,
+                        format!(
+                            "{} 第 {} 次执行失败，中断后已重新执行（{}）",
+                            prev.task_key, prev.attempt, prev.harness.name
+                        ),
+                        serde_json::json!({ "runId": prev.id, "attempt": prev.attempt,
+                                            "status": RunStatus::Failed, "failure": failure,
+                                            "replacedByRerun": true }),
+                    )?;
                     replaced = Some(prev.id.clone());
                 }
             }

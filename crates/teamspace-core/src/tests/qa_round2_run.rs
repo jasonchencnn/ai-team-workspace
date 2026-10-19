@@ -509,6 +509,20 @@ fn k_run_012_mark_failed_and_rerun_after_interruption() {
     assert_eq!(old.status, RunStatus::Failed);
     assert_eq!(old.failure.as_deref(), Some("执行中断后已重新执行"));
     assert_eq!(old.failure_kind, Some(FailureKind::Interrupted));
+    // 旧的这次被置为失败也要留下活动：种类与摘要对齐执行结束的活动，data 指向旧执行。
+    let replaced: Vec<Event> = events_of(&ts2, &team.id)
+        .into_iter()
+        .filter(|e| e.kind == EventKind::RunFinished && e.data["runId"] == "r-b")
+        .collect();
+    assert_eq!(replaced.len(), 1);
+    assert_eq!(
+        replaced[0].summary,
+        format!(
+            "{} 第 1 次执行失败，中断后已重新执行（{}）",
+            b.task.key, h.name
+        )
+    );
+    assert_eq!(replaced[0].actor, Actor::Human);
     wait_end(&ts2, &new_run.id);
 }
 
