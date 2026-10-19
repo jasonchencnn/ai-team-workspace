@@ -219,10 +219,6 @@ async function openWorkbench(page: Page, team: string, roleName: string): Promis
 // ==========================================================================
 
 test("UI-CREATE-003 团队名称为空提交：显示「请填写团队名称」且不发起创建请求", async ({ page }) => {
-  test.fixme(
-    true,
-    "缺陷 UI-CREATE-003：TeamCreatePage.submit()（:128-140）无条件调用 createTeam，名称为空仍向内核发起创建请求，界面弹出「团队名称不能为空」错误横幅，与预期结果「不发起创建请求」不符（已实测：前 3 项断言通过，仅此项失败）。",
-  );
   await page.goto("/#/teams/new");
   await detectWorkspace(page, plainDir);
   await expect(teamNameCardTitle(page)).toHaveText("未命名团队");

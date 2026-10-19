@@ -345,6 +345,10 @@ export function TaskFormPage() {
       // 标题为空时前端直接拦下，不发请求；错误走 InputField 的 error 通道。
       return;
     }
+    if (ownerRoleId.trim() === "") {
+      // 负责人必选：同样前端拦下，后端仍会校验负责岗位是否存在或已归档。
+      return;
+    }
     saveMutation.mutate({
       title,
       description,
@@ -360,7 +364,10 @@ export function TaskFormPage() {
   };
 
   const busy = rolesQuery.isPending || (isEdit && detailQuery.isPending);
-  const canSubmit = !busy && !saveMutation.isPending && dependenciesValid;
+  // 团队还没有可用岗位时没有负责人可选，创建无从谈起：禁用提交并由上面的空态引导去添加岗位。
+  // 岗位是否可用最终仍以后端返回为准，这里只按界面已加载到的岗位列表判断。
+  const hasOwnerChoice = rolesQuery.isSuccess && roles.length > 0;
+  const canSubmit = !busy && !saveMutation.isPending && dependenciesValid && hasOwnerChoice;
   const detailBlocked = isEdit && detailQuery.isError;
   // 有活动执行时后端会拒绝编辑；这里提前提示并禁用保存，文案与后端一致。
   const editBlocked = isEdit && isRunActive(detail?.latestRun ?? null);
@@ -446,6 +453,12 @@ export function TaskFormPage() {
               label="负责人岗位"
               required
               value={ownerRoleId}
+              error={
+                // 只在标题已填好时提示负责人，和 submit 的判定顺序一致：一次只报第一个卡住的地方。
+                submitted && title.trim() !== "" && ownerRoleId.trim() === ""
+                  ? "请选择负责岗位"
+                  : undefined
+              }
               onChange={(event) => {
                 setOwnerRoleId(event.target.value);
               }}

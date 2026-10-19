@@ -346,10 +346,6 @@ test("UI-ROLE-010 从示例添加：无可用示例时显示「没有可用的�
 });
 
 test("UI-ROLE-010 从示例添加：加载失败时显示可重试的错误条", async ({ page }) => {
-  test.fixme(
-    true,
-    "缺陷 UI-ROLE-010: 示例加载失败的 ErrorBanner 没有「重试」按钮，ErrorBanner 也没有 action 传入",
-  );
   await page.route("**/invoke", async (route) => {
     if ((route.request().postData() ?? "").includes("list_role_templates")) {
       await route.fulfill({
