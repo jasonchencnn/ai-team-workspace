@@ -294,6 +294,7 @@ pub struct AgentProcess {
     child: Mutex<Child>,
     pub conn: Connection,
     stderr: Arc<Mutex<Vec<u8>>>,
+    stderr_thread: Mutex<Option<thread::JoinHandle<()>>>,
 }
 
 impl AgentProcess {
@@ -325,12 +326,13 @@ impl AgentProcess {
         };
         let stderr = Arc::new(Mutex::new(Vec::new()));
         let tail = Arc::clone(&stderr);
-        thread::spawn(move || keep_tail(stderr_pipe, &tail));
+        let handle = thread::spawn(move || keep_tail(stderr_pipe, &tail));
         let conn = Connection::start(stdout, stdin, on_incoming);
         Ok(Self {
             child: Mutex::new(child),
             conn,
             stderr,
+            stderr_thread: Mutex::new(Some(handle)),
         })
     }
 
@@ -357,8 +359,16 @@ impl AgentProcess {
         }
     }
 
+    /// 等 stderr 读取线程结束（管道已关闭），确保缓冲区完整。
+    pub fn wait_stderr(&self) {
+        if let Some(handle) = lock(&self.stderr_thread).take() {
+            let _ = handle.join();
+        }
+    }
+
     /// stderr 最后一行非空内容（截断）。
     pub fn stderr_tail(&self) -> Option<String> {
+        self.wait_stderr();
         let text = String::from_utf8_lossy(&lock(&self.stderr)).into_owned();
         super::last_meaningful_line(&text)
     }
