@@ -461,7 +461,6 @@ test("UI-FORM-003 无岗位时阻断负责人选择：加载中提示与空岗�
 });
 
 test("UI-FORM-003 无岗位时无法提交", async ({ page }) => {
-  test.fixme(true, "缺陷 UI-FORM-003：团队无岗位时「创建并分配」仍可点击，表单没有阻断提交");
   await page.goto(`/#/teams/${teamNoRole}/tasks/new`);
   await expect(page.getByRole("heading", { name: "创建任务" })).toBeVisible();
   await expect(page.getByRole("heading", { name: "还没有可用岗位" })).toBeVisible();
@@ -471,10 +470,6 @@ test("UI-FORM-003 无岗位时无法提交", async ({ page }) => {
 // ---------------------------------------------------------------- UI-FORM-004
 
 test("UI-FORM-004 负责人必选：不选负责人直接提交不发起创建请求", async ({ page }) => {
-  test.fixme(
-    true,
-    "缺陷 UI-FORM-004：负责人未选时表单仍会发起创建请求，只由后端报「负责岗位不存在或已归档」",
-  );
   await page.goto(`/#/teams/${teamBoard}/tasks/new`);
   await expect(page.getByRole("heading", { name: "创建任务" })).toBeVisible();
   await page.getByLabel("任务名称").fill("没有负责人的任务");

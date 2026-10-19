@@ -127,6 +127,11 @@ export function TeamCreatePage() {
 
   const submit = () => {
     setSubmitted(true);
+    if (name.trim() === "") {
+      // 团队名为空时前端直接拦下，不发请求；错误走 InputField 的 error 通道。
+      // 规则仍由后端把关，这里只是提前给出界面提示。
+      return;
+    }
     const roles: NewRole[] = entries
       .filter((entry) => entry.draft.name.trim() !== "" || entry.draft.taskPrefix.trim() !== "")
       .map((entry) => ({

@@ -146,10 +146,22 @@ export function RoleCreateForm({ teamId, onCancel, onCreated }: RoleCreateFormPr
       {showExamples ? (
         <div className="role-create__examples">
           {templatesQuery.isPending ? <p className="role-create__note">正在加载示例…</p> : null}
-          {templatesQuery.error === null ? null : <ErrorBanner error={templatesQuery.error} />}
-          {!templatesQuery.isPending &&
-          templatesQuery.error === null &&
-          exampleList.length === 0 ? (
+          {templatesQuery.isError ? (
+            <ErrorBanner
+              error={templatesQuery.error}
+              action={
+                <Button
+                  variant="neutral"
+                  onClick={() => {
+                    void templatesQuery.refetch();
+                  }}
+                >
+                  重试
+                </Button>
+              }
+            />
+          ) : null}
+          {!templatesQuery.isPending && !templatesQuery.isError && exampleList.length === 0 ? (
             <p className="role-create__note">没有可用的示例岗位，直接自定义即可。</p>
           ) : null}
           {exampleList.length > 0 ? (

@@ -11,6 +11,7 @@ const state = vi.hoisted(() => ({
   debounced: null as string[] | null,
   fetching: false,
   cycle: [] as string[],
+  roles: [] as { role: { id: string; code: string; name: string }; harness: null }[],
   query: null as null | { queryKey: unknown[]; queryFn: () => Promise<unknown> },
 }));
 
@@ -48,6 +49,9 @@ vi.mock("@tanstack/react-query", () => ({
       };
     }
     const data = options.queryKey.includes("detail") ? undefined : [];
+    if (options.queryKey.includes("roles")) {
+      return { data: state.roles, isPending: false, isSuccess: true };
+    }
     return { data, isPending: false };
   },
   useMutation: () => ({ isPending: false, isError: false }),
@@ -70,6 +74,9 @@ describe("任务表单依赖预检", () => {
     state.debounced = null;
     state.fetching = false;
     state.cycle = [];
+    // 默认给一个可选择的负责人：这些用例验的是依赖预检对保存的影响，
+    // 团队有没有岗位是另一条规则（见下方「无可用岗位」用例）。
+    state.roles = [{ role: { id: "role_1", code: "D1", name: "开发" }, harness: null }];
     state.query = null;
     vi.clearAllMocks();
   });
@@ -117,5 +124,24 @@ describe("任务表单依赖预检", () => {
     expect(html).not.toMatch(/<button[^>]*type="submit"[^>]*disabled=""/);
     expect(html).not.toContain("正在检查依赖");
     expect(html).toContain("后端就绪说明");
+  });
+});
+
+describe("任务表单的负责人前置校验", () => {
+  beforeEach(() => {
+    state.selection = [];
+    state.debounced = null;
+    state.fetching = false;
+    state.cycle = [];
+    state.roles = [];
+    state.query = null;
+    vi.clearAllMocks();
+  });
+
+  it("团队没有可用岗位时禁用创建，并引导先添加岗位", () => {
+    const html = render();
+    expect(html).toMatch(/<button[^>]*type="submit"[^>]*disabled=""/);
+    expect(html).toContain("还没有可用岗位");
+    expect(html).toContain("任务必须指定负责岗位，请先在「岗位与绑定」里添加岗位。");
   });
 });
