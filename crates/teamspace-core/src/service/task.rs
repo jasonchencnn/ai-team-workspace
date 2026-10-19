@@ -7,7 +7,10 @@ use rusqlite::{Connection, OptionalExtension, params};
 use serde_json::json;
 
 use super::event::{self, NewEvent};
-use super::{MAX_LONG_TEXT, MAX_REASON, MAX_TITLE, role, team, text};
+use super::{
+    MAX_LONG_TEXT, MAX_REASON, MAX_REF_ANCHOR, MAX_REF_PATH, MAX_TITLE, role, single_line, team,
+    text,
+};
 use crate::error::{Error, Result};
 use crate::model::{
     BoardColumn, ChangeTaskStatusInput, CheckTaskDependenciesInput, CreateTaskInput, EventKind,
@@ -360,6 +363,7 @@ fn build_detail(
 // ---------------------------------------------------------------- 规则
 
 /// 规范化文件引用：相对工作区、`/` 分隔、禁止绝对路径和 `..`；`a.md#x` 拆出锚点；去重。
+/// 路径与锚点不含控制字符，分别不超过 [`MAX_REF_PATH`] 和 [`MAX_REF_ANCHOR`] 个字符。
 /// 最多 [`MAX_FILE_REFS`] 个。
 pub(crate) fn normalize_refs(refs: Vec<FileRef>) -> Result<Vec<FileRef>> {
     if refs.len() > MAX_FILE_REFS {
@@ -369,6 +373,11 @@ pub(crate) fn normalize_refs(refs: Vec<FileRef>) -> Result<Vec<FileRef>> {
     let mut seen: HashSet<(String, Option<String>)> = HashSet::with_capacity(refs.len());
     for r in refs {
         let raw = r.path.trim().replace('\\', "/");
+        // 先查控制字符再拆锚点：含换行或 NUL 的输入一律拒绝，也不回显原文，避免污染错误消息。
+        single_line("文件引用的路径", &raw, MAX_REF_PATH, false)?;
+        if let Some(a) = &r.anchor {
+            single_line("文件引用的锚点", a, MAX_REF_ANCHOR, false)?;
+        }
         let (raw_path, inline_anchor) = match raw.split_once('#') {
             Some((p, a)) => (p.to_owned(), Some(a.to_owned())),
             None => (raw, None),
@@ -376,6 +385,9 @@ pub(crate) fn normalize_refs(refs: Vec<FileRef>) -> Result<Vec<FileRef>> {
         let anchor = non_blank(r.anchor.or(inline_anchor))
             .map(|a| a.trim_start_matches('#').to_owned())
             .filter(|a| !a.is_empty());
+        if let Some(a) = &anchor {
+            single_line("文件引用的锚点", a, MAX_REF_ANCHOR, false)?;
+        }
         let bytes = raw_path.as_bytes();
         let is_drive = bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':';
         if raw_path.starts_with('/') || is_drive {
@@ -927,6 +939,48 @@ mod tests {
             let err = normalize_refs(vec![r(bad)]).unwrap_err();
             assert_eq!(err.kind(), crate::ErrorKind::Invalid, "{bad}");
         }
+    }
+
+    #[test]
+    fn refs_reject_control_characters_and_overlong_values() {
+        let long_path = "a".repeat(MAX_REF_PATH + 1);
+        let long_anchor = format!("x.md#{}", "b".repeat(MAX_REF_ANCHOR + 1));
+        // 控制字符：NUL、换行、回车、制表符，以及藏在锚点里的那些。
+        for bad in [
+            "a\u{0}b.md",
+            "a\nb.md",
+            "a\rb.md",
+            "a\tb.md",
+            "docs/a\u{0}.md",
+            "docs/a.md#x\ny",
+            &long_path,
+            &long_anchor,
+        ] {
+            let err = normalize_refs(vec![r(bad)]).unwrap_err();
+            assert_eq!(err.kind(), crate::ErrorKind::Invalid, "{bad:?}");
+        }
+        // 显式传入的 anchor 字段同样受控字符与长度约束。
+        for bad in ["x\ny", "x\0y", "x\ty", &"b".repeat(MAX_REF_ANCHOR + 1)] {
+            let err = normalize_refs(vec![FileRef {
+                path: "docs/PLAN.md".into(),
+                anchor: Some((*bad).to_owned()),
+            }])
+            .unwrap_err();
+            assert_eq!(err.kind(), crate::ErrorKind::Invalid, "{bad:?}");
+        }
+        // 边界：路径恰好达到上限、锚点恰好达到上限时仍然接受。
+        let ok_path = "a".repeat(MAX_REF_PATH);
+        let ok_anchor = "b".repeat(MAX_REF_ANCHOR);
+        let ok = normalize_refs(vec![
+            r(&ok_path),
+            FileRef {
+                path: "docs/PLAN.md".into(),
+                anchor: Some(ok_anchor.clone()),
+            },
+        ])
+        .unwrap();
+        assert_eq!(ok[0].path, ok_path);
+        assert_eq!(ok[1].anchor.as_deref(), Some(ok_anchor.as_str()));
     }
 
     #[test]

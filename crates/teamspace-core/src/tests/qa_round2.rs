@@ -2225,7 +2225,6 @@ fn k_sec_001_hostile_ref_paths_are_rejected() {
 
 /// K-SEC-001（控制字符与长度）：期望 NUL、换行、超长路径与超长锚点被拒绝。
 #[test]
-#[ignore = "缺陷 K-SEC-001（Q-05）: 文件引用路径与锚点没有控制字符和长度校验，含 NUL、换行、5000 字符的值被接受并写入数据库"]
 fn k_sec_001_control_characters_and_overlong_refs_are_rejected() {
     let f = plain_fixture();
     let team = f.team("T");
@@ -2336,7 +2335,6 @@ fn k_sec_003_hostile_role_names_stay_inside_and_nul_is_rejected() {
 
 /// K-SEC-003（换行）：期望岗位名含换行被拒，或至少不破坏岗位说明的标题。
 #[test]
-#[ignore = "缺陷 K-SEC-003（Q-09）: 岗位名允许换行，岗位说明的标题行与「岗位名」行被换行打断"]
 fn k_sec_003_newline_in_role_name_does_not_break_the_brief() {
     let f = plain_fixture();
     let team = f.team("T");
