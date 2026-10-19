@@ -4,7 +4,7 @@ use rusqlite::{Connection, OptionalExtension, params};
 use serde_json::json;
 
 use super::event::{self, NewEvent};
-use super::{MAX_LONG_TEXT, MAX_NAME, harness, team, text};
+use super::{MAX_LONG_TEXT, MAX_NAME, harness, name_line, team, text};
 use crate::error::{Error, Result};
 use crate::model::{CreateRoleInput, EventKind, NewRole, Role, RoleRef, RoleView, UpdateRoleInput};
 use crate::store::{new_id, now};
@@ -116,8 +116,9 @@ fn valid_prefix(prefix: &str) -> bool {
         && chars.all(|c| c.is_ascii_uppercase() || c.is_ascii_digit())
 }
 
+/// 岗位名会拼进岗位说明的标题行，必须保持单行：拒绝换行等会断开标题行的控制字符。
 fn validate_name(name: &str) -> Result<String> {
-    text("岗位名称", name, MAX_NAME, true)
+    name_line("岗位名称", name, MAX_NAME, true)
 }
 
 /// 校验职责与工作约定。
@@ -505,6 +506,30 @@ mod tests {
         assert!(!valid_prefix("1F"));
         assert!(!valid_prefix("R-1"));
         assert!(!valid_prefix("ＡＢ"));
+    }
+
+    #[test]
+    fn role_name_must_stay_single_line() {
+        assert_eq!(validate_name("  后端  ").unwrap(), "后端");
+        // 岗位名会拼进岗位说明的标题行，换行等控制字符一律拒绝。
+        for bad in [
+            "甲\n乙",
+            "甲\r乙",
+            "甲\u{b}乙",
+            "甲\u{c}乙",
+            "甲\u{85}乙",
+            "甲\u{7}乙",
+            "甲\0乙",
+            "  \n  ",
+            &"x".repeat(MAX_NAME + 1),
+        ] {
+            let err = validate_name(bad).unwrap_err();
+            assert_eq!(err.kind(), crate::ErrorKind::Invalid, "{bad:?}");
+        }
+        // 制表符保留：k_fld_002 要求它被接受并转成安全的文件夹名。
+        assert_eq!(validate_name("含\t制表符").unwrap(), "含\t制表符");
+        // 职责与工作约定是多行文本，仍允许换行。
+        assert!(validate_texts("第一行\n第二行", "约定\n换行").is_ok());
     }
 
     fn taken(list: &[&str]) -> Vec<String> {
