@@ -601,11 +601,6 @@ test("UI-ACP-010 握手检查、状态色与归档：needs_auth 警告色、Mock
 });
 
 test("UI-ACP-010 未握手接入的说明行：应显示「尚未握手。」", async ({ page }) => {
-  test.fixme(
-    true,
-    "缺陷 UI-ACP-010：未做过握手检查的接入（status=unknown、detail 为空）整行不渲染说明，列表里看不到「尚未握手。」——HarnessInstancesSection.tsx:182 在该状态下直接返回 null，导致第 186 行的「尚未握手。」永不可达。",
-  );
-
   await openHarnessTab(page);
   const unknownEntry = acpEntry(page, MOCK_UNCHECKED);
   await expect(unknownEntry.locator(".ui-tag--neutral", { hasText: "未检查" })).toBeVisible();

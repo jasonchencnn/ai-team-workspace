@@ -1,7 +1,7 @@
 // 测试轮次 2026-10-14 · QA R2：执行（RUN-*）用例中「需新增 e2e / 部分覆盖」的部分。
 // 真实界面 + 测试桥接 + 真实内核；Harness 是内置 Mock ACP Agent（标记见 mock_agent.rs 的模块文档）。
 // 准备数据直接走桥接，被测的界面行为才用页面操作。每个 test 标题以用例编号开头。
-// 断言一律按用例预期写；确认是产品缺陷的用例用 test.fixme 保留，注释写明疑点编号。
+// 断言一律按用例预期写；本文件的缺陷用例已全部修复，目前没有 test.fixme。
 import { execFileSync } from "node:child_process";
 import {
   chmodSync,
@@ -130,22 +130,6 @@ async function plainTask(
     refs: extra.refs ?? [SPEC_REF],
     dependsOn: extra.dependsOn,
   });
-}
-
-/**
- * 已确认的产品缺陷：按用例预期写断言并保留，默认标为 fixme 跳过，让门禁保持绿色。
- * 设置 R2_RUN_FIXME=1 可把它们当作普通用例运行，用来复核缺陷是否仍然存在。
- */
-function defect(title: string, body: (args: { page: Page }) => Promise<void>): void {
-  if (process.env.R2_RUN_FIXME === "1") {
-    test(title, async ({ page }) => {
-      await body({ page });
-    });
-  } else {
-    test.fixme(title, async ({ page }) => {
-      await body({ page });
-    });
-  }
 }
 
 // ================================================================ 前置条件
@@ -786,40 +770,37 @@ test("RUN-PRM-010 侧栏「权限规则」：原地执行的自动批准 / 转�
   await cancelActive(task);
 });
 
-defect(
-  "RUN-PRM-010 [缺陷 N-03] Git worktree 的侧栏规则：不再写单执行约束；两种模式都说明例外与读取规则",
-  async ({ page }) => {
-    const task = await createTaskApi({
-      teamId: teamG.teamId,
-      roleId: teamG.roleIds[ROLE_GIT] ?? "",
-      title: "规则面板 Git [mock:perm]",
-      refs: ["brief.txt"],
-    });
-    await openTask(page, task);
-    await startRunUi(page);
-    await expect(dialogOf(page)).toBeVisible({ timeout: TIMEOUT });
-    await dialogOf(page).getByRole("button", { name: "稍后处理" }).click();
-    const panel = page.locator(".run-side__panel", { hasText: "权限规则" });
-    await expect(panel.locator(".run-rule", { hasText: "自动批准" })).toContainText(
-      "Git 工作空间内：写入本次 worktree 分支里的任何位置",
-    );
-    await expect(panel.locator(".run-side__note")).toContainText("Git worktree 分支");
-    // 期望：Git 工作空间可并行，不再写单执行约束（现状仍写「同一文件夹同时只运行一个执行」）
-    await expect(panel.locator(".run-side__note")).not.toContainText(
-      "同一文件夹同时只运行一个执行",
-    );
-    // 期望：岗位说明需确认、工作日志只允许追加（D14）；读取工作空间内自动允许、之外需确认（D18）
-    await expect(panel).toContainText("岗位说明");
-    await expect(panel).toContainText("工作日志");
-    await expect(panel.locator(".run-rule", { hasText: "自动批准" })).toContainText(
-      "读取工作空间内的文件与搜索",
-    );
-    await expect(panel.locator(".run-rule", { hasText: "转交你确认" })).toContainText(
-      "读取工作空间之外的文件",
-    );
-    await cancelActive(task);
-  },
-);
+test("RUN-PRM-010 Git worktree 的侧栏规则：不再写单执行约束；两种模式都说明例外与读取规则", async ({
+  page,
+}) => {
+  const task = await createTaskApi({
+    teamId: teamG.teamId,
+    roleId: teamG.roleIds[ROLE_GIT] ?? "",
+    title: "规则面板 Git [mock:perm]",
+    refs: ["brief.txt"],
+  });
+  await openTask(page, task);
+  await startRunUi(page);
+  await expect(dialogOf(page)).toBeVisible({ timeout: TIMEOUT });
+  await dialogOf(page).getByRole("button", { name: "稍后处理" }).click();
+  const panel = page.locator(".run-side__panel", { hasText: "权限规则" });
+  await expect(panel.locator(".run-rule", { hasText: "自动批准" })).toContainText(
+    "Git 工作空间内：写入本次 worktree 分支里的任何位置",
+  );
+  await expect(panel.locator(".run-side__note")).toContainText("Git worktree 分支");
+  // D15：Git 工作空间靠 worktree 并行，不写单执行约束
+  await expect(panel.locator(".run-side__note")).not.toContainText("同一文件夹同时只运行一个执行");
+  // D17：岗位说明需确认、工作日志只允许追加；D18：读取工作空间内自动允许、之外需确认
+  await expect(panel).toContainText("岗位说明");
+  await expect(panel).toContainText("工作日志");
+  await expect(panel.locator(".run-rule", { hasText: "自动批准" })).toContainText(
+    "读取工作空间内的文件与搜索",
+  );
+  await expect(panel.locator(".run-rule", { hasText: "转交你确认" })).toContainText(
+    "读取工作空间之外的文件",
+  );
+  await cancelActive(task);
+});
 
 // ================================================================ 取消、失败与中断
 
@@ -1298,7 +1279,7 @@ test("RUN-WRK-001 工作台「最近执行」：次数、Harness、状态胶囊�
 
 // 缺陷 Q-23：人工接管后数据库状态是 cancelled，工作台「最近执行」直接显示后端的「已取消」，
 // 与任务详情页的「已被接管」不一致。
-defect("RUN-WRK-001 [缺陷 Q-23] 被人工接管的执行在工作台显示「已被接管」", async ({ page }) => {
+test("RUN-WRK-001 被人工接管的执行在工作台显示「已被接管」", async ({ page }) => {
   const task = await plainTask("工作台 接管 [mock:hang]");
   await invoke("start_run", { taskId: task.id });
   const run = await waitLatest(task.id, (r) => r.status === "running", "进入执行中");

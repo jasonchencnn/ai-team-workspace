@@ -29,7 +29,7 @@ import {
 } from "../harness-detail/harnessFormat.js";
 import { splitJournalLine, useRevealRoleFolder } from "../roles/roleFolder.js";
 import { roleBindingPath } from "../roles/rolesNav.js";
-import { runStatusTone } from "../task-detail/run/runUi.js";
+import { runDisplayStatus } from "../task-detail/run/runUi.js";
 import { statusTone } from "../tasks/taskUi.js";
 import { formatLocalDateTime } from "../team-home/formatLocalDateTime.js";
 import "./role-workbench.css";
@@ -340,26 +340,30 @@ function RecentRuns({ runs, onOpen }: RecentRunsProps) {
         />
       ) : (
         <ul className="rw-run-list">
-          {runs.map((run) => (
-            <li key={run.id}>
-              <button
-                type="button"
-                className="rw-run-row"
-                onClick={() => {
-                  onOpen(run.taskId);
-                }}
-              >
-                <span className="rw-run-row__key">
-                  第 {String(run.attempt)} 次 · {run.taskKey}
-                </span>
-                <span className="rw-run-row__title" title={run.taskKey}>
-                  {run.harness.name}
-                </span>
-                <Tag tone={runStatusTone[run.status]}>{run.statusLabel}</Tag>
-                <span className="rw-run-row__time">{formatRelative(run.startedAt, now)}</span>
-              </button>
-            </li>
-          ))}
+          {runs.map((run) => {
+            // 与任务详情页共用同一个展示口径：人工接管的执行显示「已被接管」而不是后端的「已取消」。
+            const status = runDisplayStatus(run);
+            return (
+              <li key={run.id}>
+                <button
+                  type="button"
+                  className="rw-run-row"
+                  onClick={() => {
+                    onOpen(run.taskId);
+                  }}
+                >
+                  <span className="rw-run-row__key">
+                    第 {String(run.attempt)} 次 · {run.taskKey}
+                  </span>
+                  <span className="rw-run-row__title" title={run.taskKey}>
+                    {run.harness.name}
+                  </span>
+                  <Tag tone={status.tone}>{status.label}</Tag>
+                  <span className="rw-run-row__time">{formatRelative(run.startedAt, now)}</span>
+                </button>
+              </li>
+            );
+          })}
         </ul>
       )}
       <p className="rw-note">点击进入任务详情，可查看这次执行的完整进度与改动。</p>
