@@ -2150,7 +2150,6 @@ fn k_evt_004_harness_and_resume_activities() {
 
 /// K-EVT-004（4）/ K-RUN-012（2）：重新执行时旧的中断执行被置为失败，应留下可追溯的活动。
 #[test]
-#[ignore = "缺陷 K-EVT-004/K-RUN-012（Q-12）: start_run 把中断的旧执行置为 failed 但没有写活动记录，工作日志里看不到"]
 fn k_evt_004_rerun_of_interrupted_run_leaves_an_activity_for_the_old_run() {
     let f = plain_fixture();
     let team = f.team("T");
