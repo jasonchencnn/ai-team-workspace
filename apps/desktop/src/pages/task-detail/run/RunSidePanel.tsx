@@ -50,10 +50,15 @@ function PermissionRules({ run, roleFolder, fileRefs }: PermissionRulesProps) {
         </ul>
       </div>
 
+      {/* 注脚按实际隔离方式（D15）说明：单执行约束只属于普通文件夹，Git 工作空间靠 worktree 并行。
+          岗位文件夹内的岗位说明与工作日志是两个例外（D17），两种隔离方式下都一样。 */}
       <p className="run-side__note">
-        同一文件夹同时只运行一个执行；本次为「
-        {isWorktree ? "Git worktree 分支" : "原地：普通文件夹"}」。
-        {isWorktree ? "Git 工作空间会为每次执行创建独立 worktree 分支。" : null}
+        {isWorktree
+          ? "本次为「Git worktree 分支」：Git 工作空间为每次执行创建独立 worktree 与分支，可同时执行多个任务。"
+          : "本次为「原地：普通文件夹」：同一文件夹同时只运行一个执行。"}
+        {roleFolder === null
+          ? null
+          : `岗位文件夹 ${roleFolder}/ 内：岗位说明.md 需你确认后才修改，工作日志.md 只允许在末尾追加进展。`}
       </p>
     </Panel>
   );

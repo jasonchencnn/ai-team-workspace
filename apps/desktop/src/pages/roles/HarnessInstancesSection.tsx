@@ -179,13 +179,13 @@ function HarnessEntry({ instance, boundRoles, onOpenDetail }: HarnessEntryProps)
         </span>
       </div>
 
-      {handshake.status === "unknown" && handshake.detail === null ? null : (
-        <p
-          className={`acp-entry__detail acp-entry__detail--${handshakeDetailTone(handshake.status)}`}
-        >
-          {handshake.detail ?? "尚未握手。"}
-        </p>
-      )}
+      {/* 没做过握手检查的接入也保留说明行，给出「尚未握手。」的兜底文案（L-10），
+          否则 unknown + detail 为空时整行不渲染，列表里看不出这个接入还没连过。 */}
+      <p
+        className={`acp-entry__detail acp-entry__detail--${handshakeDetailTone(handshake.status)}`}
+      >
+        {handshake.detail ?? "尚未握手。"}
+      </p>
 
       <p className="acp-entry__command">
         <span className="nowrap">启动命令</span>
