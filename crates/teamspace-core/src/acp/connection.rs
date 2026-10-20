@@ -367,8 +367,9 @@ impl AgentProcess {
     }
 
     /// stderr 最后一行非空内容（截断）。
+    ///
+    /// 进程退出后先调 [`wait_stderr`] 确保缓冲区完整；进程存活时直接读当前缓冲。
     pub fn stderr_tail(&self) -> Option<String> {
-        self.wait_stderr();
         let text = String::from_utf8_lossy(&lock(&self.stderr)).into_owned();
         super::last_meaningful_line(&text)
     }
@@ -613,6 +614,7 @@ mod tests {
             process.exit_status(Duration::from_secs(5)).as_deref(),
             Some("退出码 3")
         );
+        process.wait_stderr();
         assert_eq!(
             process.stderr_tail().as_deref(),
             Some("boom: not logged in")
