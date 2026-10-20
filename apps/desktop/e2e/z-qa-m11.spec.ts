@@ -9,6 +9,7 @@ import { fileURLToPath } from "node:url";
 import { type Locator, type Page, expect, test } from "@playwright/test";
 
 import { acpEntry, createMockHarness } from "./harnessHelpers.js";
+import { tickTaskBoardBox } from "./taskBoardHelpers.js";
 
 const artifactsDir = fileURLToPath(new URL("../e2e-artifacts/", import.meta.url));
 mkdirSync(artifactsDir, { recursive: true });
@@ -218,7 +219,7 @@ test.describe("M1.1 回归与探索测试套件", () => {
 
     // 12. 看板中勾选「显示已完成」后显示该任务卡片
     await page.goto(`/#/teams/${videoTeamId}/tasks`);
-    await page.getByLabel(/显示已完成/).check();
+    await tickTaskBoardBox(page, /显示已完成/);
     const doneCard = page.locator("a.task-card-link", { hasText: /ED-001.*宣传片首版粗剪/ });
     await expect(doneCard).toBeVisible();
     await captureQaShot(page, "task-board-shows-completed-ed001");
@@ -348,7 +349,7 @@ test.describe("M1.1 回归与探索测试套件", () => {
 
     // 4. 前往任务面板，勾选「显示已完成」，验证原有任务编号依然保持 ED-001，没有被篡改
     await page.goto(`/#/teams/${videoTeamId}/tasks`);
-    await page.getByLabel(/显示已完成/).check();
+    await tickTaskBoardBox(page, /显示已完成/);
     const taskCard = page.locator("a.task-card-link", { hasText: "ED-001" });
     await expect(taskCard).toBeVisible();
 

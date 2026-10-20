@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
-import { Link, useNavigate, useParams } from "react-router";
+import { Link, useLocation, useNavigate, useParams } from "react-router";
 
 import {
   changeTaskStatus,
@@ -31,12 +31,13 @@ import { isRunActive } from "./run/useRunEvents.js";
 import { useRunRecordPolling } from "./run/useRunPolling.js";
 import { useTaskRuns } from "./run/useTaskRuns.js";
 import { isMarkdownRef } from "../files/filesUi.js";
-import { formatTime, statusTone } from "../tasks/taskUi.js";
+import { formatTime, statusTone, taskPanelSearch } from "../tasks/taskUi.js";
 import "./task-detail.css";
 
 export function TaskDetailPage() {
   const { teamId = "", taskId = "" } = useParams();
   const navigate = useNavigate();
+  const location = useLocation();
   const queryClient = useQueryClient();
   const [blockingOpen, setBlockingOpen] = useState(false);
   const [reason, setReason] = useState("");
@@ -87,8 +88,11 @@ export function TaskDetailPage() {
   });
 
   const boardPath = `/teams/${teamId}/tasks`;
+  // 面板的视图与筛选存在地址栏里：带着参数返回，返回后仍是之前的视图和筛选；
+  // 从别处直接进详情时地址栏没有这些参数，返回就是默认面板。
+  const backPath = `${boardPath}${taskPanelSearch(location.search)}`;
   const backButton = (
-    <Button variant="neutral" onClick={() => void navigate(boardPath)}>
+    <Button variant="neutral" onClick={() => void navigate(backPath)}>
       返回任务面板
     </Button>
   );
