@@ -164,6 +164,24 @@ impl Env {
     fn journal(&self) -> String {
         std::fs::read_to_string(self.ws.join("Teamspace/前端/工作日志.md")).unwrap()
     }
+
+    /// 轮询等待工作日志包含指定内容（`sync_role_folders` 在 DB 状态更新之后异步写入）。
+    fn wait_journal(&self, needle: &str) -> String {
+        let deadline = Instant::now() + Duration::from_secs(30);
+        let path = self.ws.join("Teamspace/前端/工作日志.md");
+        loop {
+            if let Ok(text) = std::fs::read_to_string(&path)
+                && text.contains(needle)
+            {
+                return text;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "timed out waiting for journal to contain: {needle}"
+            );
+            std::thread::sleep(Duration::from_millis(30));
+        }
+    }
 }
 
 fn messages(updates: &[RunUpdate], role: MessageRole) -> Vec<String> {
@@ -318,14 +336,10 @@ fn plain_folder_run_succeeds_in_place_and_writes_journal() {
     assert_eq!(seen, updates.len());
     assert_eq!(page_len(&e, &run.id, &cursor), 0);
 
-    // 日志：执行摘要与改动文件。
-    let journal = e.journal();
+    // 日志：执行摘要与改动文件（sync_role_folders 在 DB 更新后异步写入，需等待）。
+    let journal = e.wait_journal("第 1 次执行完成（Mock）；摘要：已完成");
     assert!(
         journal.contains("FE-001 · 开始第 1 次执行（Harness「Mock」，原地执行）"),
-        "{journal}"
-    );
-    assert!(
-        journal.contains("第 1 次执行完成（Mock）；摘要：已完成"),
         "{journal}"
     );
     assert!(
@@ -489,10 +503,7 @@ fn failures_block_the_task_and_can_be_retried() {
     let t = e.task_status(&task.id);
     assert_eq!(t.status, TaskStatus::Blocked);
     assert!(t.blocked_reason.unwrap().starts_with("执行失败：协议错误"));
-    assert!(
-        e.journal()
-            .contains("第 1 次执行失败（Mock）；原因：协议错误")
-    );
+    e.wait_journal("第 1 次执行失败（Mock）；原因：协议错误");
 
     // 重试：从受阻开始第 2 次执行（标题里的标记还在，仍会失败）。
     assert!(e.ts.get_task(&task.id).unwrap().run_problems.is_empty());
