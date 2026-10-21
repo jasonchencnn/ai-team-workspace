@@ -331,6 +331,7 @@ fn brief_input(journal: Vec<String>) -> BriefInput {
         branch: None,
         role_folder: Some("Teamspace/前端".into()),
         journal_path: None,
+        previous_branch: None,
     }
 }
 

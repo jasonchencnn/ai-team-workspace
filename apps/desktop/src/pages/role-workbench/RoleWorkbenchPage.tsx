@@ -341,7 +341,7 @@ function RecentRuns({ runs, onOpen }: RecentRunsProps) {
       ) : (
         <ul className="rw-run-list">
           {runs.map((run) => {
-            // 与任务详情页共用同一个展示口径：人工接管的执行显示「已被接管」而不是后端的「已取消」。
+            // 与任务详情页共用同一个展示口径：状态名取后端的 statusLabel（人工接管为「已被接管」）。
             const status = runDisplayStatus(run);
             return (
               <li key={run.id}>

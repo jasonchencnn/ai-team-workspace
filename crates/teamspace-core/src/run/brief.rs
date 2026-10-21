@@ -60,6 +60,9 @@ pub struct BriefInput {
     /// 工作空间中本岗位工作日志的绝对路径（Teamspace 写入的那一份；worktree 执行时不在执行目录内）。
     /// 为 `None` 时按 `role_folder` 给出相对路径。
     pub journal_path: Option<String>,
+    /// 上一次执行（同一任务的前一次）留下的执行分支：重新执行（新的 worktree）时带上它，
+    /// 告诉 Agent 上一次中断的改动还在那个分支上，可以 `git cherry-pick` 取回。
+    pub previous_branch: Option<String>,
 }
 
 /// 工作日志条目的格式说明（与 [`crate::role_folder::JournalEntry`] 写入的行一致）。
@@ -175,6 +178,14 @@ pub fn render(input: &BriefInput) -> String {
             "- 隔离方式：直接在工作空间中工作（普通文件夹）。写入本岗位文件夹和引用文件之外的位置、\
              执行命令都需要 Human 确认，请尽量把产出放在岗位文件夹里。",
         ),
+    }
+    if let Some(previous) = input.previous_branch.as_deref() {
+        push(
+            &mut out,
+            &format!(
+                "- 上一次执行的改动保存在分支 `{previous}`，需要时可以 `git cherry-pick` 取回其中有用的部分。"
+            ),
+        );
     }
     push(&mut out, "");
     push(&mut out, "## 工作要求");
@@ -471,6 +482,7 @@ mod tests {
             branch: Some("teamspace/FE-001-r1".into()),
             role_folder: Some("Teamspace/前端开发".into()),
             journal_path: Some("/ws/Teamspace/前端开发/工作日志.md".into()),
+            previous_branch: None,
         }
     }
 
@@ -503,6 +515,22 @@ mod tests {
             !text.contains("日志 11"),
             "only {JOURNAL_LINES} journal lines"
         );
+    }
+
+    #[test]
+    fn brief_mentions_the_previous_run_branch_only_when_there_is_one() {
+        let text = render(&BriefInput {
+            previous_branch: Some("teamspace/FE-001-r1".into()),
+            ..input()
+        });
+        assert!(
+            text.contains(
+                "- 上一次执行的改动保存在分支 `teamspace/FE-001-r1`，需要时可以 `git cherry-pick` 取回其中有用的部分。"
+            ),
+            "{text}"
+        );
+        let plain = render(&input());
+        assert!(!plain.contains("git cherry-pick"), "{plain}");
     }
 
     #[test]

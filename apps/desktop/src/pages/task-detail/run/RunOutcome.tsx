@@ -13,8 +13,11 @@ import {
   formatDuration,
   formatLocal,
   lastEventSummary,
+  NO_CHANGES_TEXT,
   noResumeReason,
   canGoReview,
+  preservedChangesText,
+  preservedProblemText,
   reviewedLabel,
   resumeCapabilityText,
   runElapsedSeconds,
@@ -53,6 +56,24 @@ function OutOfScopeAlert({ run }: { run: Run }) {
           </li>
         ))}
       </ul>
+    </section>
+  );
+}
+
+/** 成功但相对基线没有任何改动：后端给出 `noChanges`，界面据此醒目提示（使用记录 2）。 */
+function NoChangesAlert({ run }: { run: Run }) {
+  if (!run.noChanges) {
+    return null;
+  }
+  return (
+    <section className="run-outcome__alert run-outcome__alert--scope" role="alert">
+      <h4 className="run-outcome__alert-title">⚠ 这次执行没有产生任何改动</h4>
+      <p className="run-outcome__alert-text">{NO_CHANGES_TEXT}。</p>
+      <p className="run-outcome__alert-text">
+        {run.isolation === "worktree"
+          ? "执行分支相对基线提交没有任何差异，验收页会要求你二次确认才能通过。"
+          : "执行前后的目录快照比对没有发现改动，验收页会要求你二次确认才能通过。"}
+      </p>
     </section>
   );
 }
@@ -217,6 +238,8 @@ function SuccessOutcome({
 
       {scopeBlocked ? <OutOfScopeAlert run={run} /> : null}
 
+      <NoChangesAlert run={run} />
+
       <Card title="执行摘要">
         <p className="run-outcome__summary">
           {run.summary === null ? "Agent 没有留下摘要。" : run.summary}
@@ -372,6 +395,8 @@ function InterruptedOutcome({
   onTakeover,
 }: RunOutcomeProps) {
   const lastEvent = lastEventSummary(updates);
+  const preserved = preservedChangesText(run);
+  const preservedProblem = preservedProblemText(run);
   return (
     <section className="run-outcome run-outcome--interrupted">
       <header className="run-outcome__head">
@@ -388,6 +413,16 @@ function InterruptedOutcome({
             ? `${run.harness.name} 支持续接会话，可以接着上次的上下文继续执行。`
             : "这次执行已经无法回到 Agent 进程，需要你决定继续还是结束。"}
         </p>
+        {preserved === null ? null : (
+          <p className="run-outcome__alert-text">
+            {preserved}；重新执行时可以在新分支上 `git cherry-pick` 取回。
+          </p>
+        )}
+        {preservedProblem === null ? null : (
+          <p className="run-outcome__alert-text">
+            {preservedProblem}，改动仍留在执行目录里，请自行检查。
+          </p>
+        )}
       </section>
 
       <dl className="run-outcome__facts run-outcome__info">
@@ -446,7 +481,8 @@ function InterruptedOutcome({
         </li>
         <li>
           「重新执行」：新建第 {String(run.attempt + 1)}{" "}
-          次执行，这次中断的执行记为失败，已产生的改动保留。
+          次执行，这次中断的执行记为失败，已产生的改动保留
+          {run.branch === null ? "。" : `在分支 ${run.branch} 上。`}
         </li>
         <li>「标记为失败」：把任务转为受阻，之后可以重新执行或换绑 Harness。</li>
       </ul>

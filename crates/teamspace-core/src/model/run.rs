@@ -237,6 +237,15 @@ pub struct Run {
     pub change_incomplete: bool,
     /// 本次执行中的工具调用次数。
     pub tool_call_count: u32,
+    /// 执行成功但相对基线没有任何改动：worktree 执行是执行分支相对基线提交的 diff 为空，原地执行是快照
+    /// 比对没有发现改动。这类执行仍进入待验收，界面据此提示 Agent 可能提前结束（例如权限被拒）。
+    /// 失败、取消、中断、人工接管的执行恒为 `false`。
+    pub no_changes: bool,
+    /// 中断时把执行目录里的未提交改动提交到执行分支得到的提交（完整哈希）；没有保全或不是 Git 执行时为 `null`。
+    pub interrupted_commit: Option<String>,
+    /// 中断时没能把改动保全到执行分支的原因（中文），如「执行目录不在执行分支 X 上（当前：main）」；
+    /// 保全成功或不需要保全时为 `null`。
+    pub interrupted_problem: Option<String>,
     /// 是否为人工接管而停止。
     pub taken_over: bool,
     /// 等待 Human 确认的权限请求（status 为 waiting_permission 时有值）。

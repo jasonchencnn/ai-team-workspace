@@ -48,6 +48,8 @@
 //! - `[mock:shellrm=<相对路径>]`：模拟 Agent 用 shell（`rm`）直接删除工作目录下的文件，不申请权限；
 //! - `[mock:rmgrant=<相对路径>]`：先申请一次 `delete` 类权限（Human 确认），允许才由 Mock 自己删除该文件；
 //! - `[mock:modes]`：在总结里报告会话当前的权限模式（`[modes:<取值>]`，没有公布模式时为 `[modes:none]`）；
+//! - `[mock:nochange]`：跳过写入过程文件这一步（也不申请权限），制造「成功但没有产生任何改动」的执行
+//!   （使用记录 2）；
 //! - 提示中有「## 退回意见」一节（验收退回后的提示）时，总结末尾加上 ` [revise:<意见第一行>]`；续接原会话时
 //!   提示里没有「## 任务」一节，意见里的标记（如 `[mock:shellwrite=…]`）同样生效；
 //! - `[mock:linger]`：与其他标记合用；其余步骤（含权限请求的结果）都完成后不立刻总结，发一条消息后等待
@@ -645,46 +647,49 @@ impl Mock<'_> {
         }
 
         // 2. 在过程文件夹写文件：先申请编辑权限，再经 fs/write_text_file 写入
-        self.plan(&session, ["completed", "in_progress", "pending"])?;
         let folder = process_folder(&text).unwrap_or_else(|| "Teamspace/过程文件".to_owned());
-        let file = cwd.join(&folder).join(format!("mock-{session}.md"));
-        let content = format!("# Mock 工作记录\n\n会话：{session}\n");
-        let file_str = file.display().to_string();
-        self.update(&session, json!({
-            "sessionUpdate": "tool_call", "toolCallId": "mock-write", "title": "写入过程文件",
-            "kind": "edit", "status": "pending",
-            "locations": [{ "path": file_str }],
-            "content": [{ "type": "diff", "path": file_str, "oldText": null, "newText": content }]
-        }))?;
-        let reply = self.request(
-            "session/request_permission",
-            json!({ "sessionId": session, "toolCall": { "toolCallId": "mock-write" }, "options": options() }),
-            &mut cancelled,
-        )?;
-        let allowed = match reply {
-            Reply::Eof => return Ok(()),
-            Reply::Result(r) => selected(&r).is_some_and(|o| o.starts_with("allow")),
-            Reply::Error(_) => false,
-        };
         let mut wrote = false;
-        if allowed && !cancelled {
-            match self.request(
-                "fs/write_text_file",
-                json!({ "sessionId": session, "path": file_str, "content": content }),
+        // [mock:nochange]：跳过写入，制造「成功但没有产生任何改动」的执行（使用记录 2）。
+        if !has("nochange") {
+            self.plan(&session, ["completed", "in_progress", "pending"])?;
+            let file = cwd.join(&folder).join(format!("mock-{session}.md"));
+            let content = format!("# Mock 工作记录\n\n会话：{session}\n");
+            let file_str = file.display().to_string();
+            self.update(&session, json!({
+                "sessionUpdate": "tool_call", "toolCallId": "mock-write", "title": "写入过程文件",
+                "kind": "edit", "status": "pending",
+                "locations": [{ "path": file_str }],
+                "content": [{ "type": "diff", "path": file_str, "oldText": null, "newText": content }]
+            }))?;
+            let reply = self.request(
+                "session/request_permission",
+                json!({ "sessionId": session, "toolCall": { "toolCallId": "mock-write" }, "options": options() }),
                 &mut cancelled,
-            )? {
+            )?;
+            let allowed = match reply {
                 Reply::Eof => return Ok(()),
-                Reply::Result(_) => wrote = true,
-                Reply::Error(_) => {}
+                Reply::Result(r) => selected(&r).is_some_and(|o| o.starts_with("allow")),
+                Reply::Error(_) => false,
+            };
+            if allowed && !cancelled {
+                match self.request(
+                    "fs/write_text_file",
+                    json!({ "sessionId": session, "path": file_str, "content": content }),
+                    &mut cancelled,
+                )? {
+                    Reply::Eof => return Ok(()),
+                    Reply::Result(_) => wrote = true,
+                    Reply::Error(_) => {}
+                }
             }
-        }
-        self.tool(
-            &session,
-            json!({ "toolCallId": "mock-write",
-            "status": if wrote { "completed" } else { "failed" } }),
-        )?;
-        if cancelled {
-            return self.finish(id, "cancelled");
+            self.tool(
+                &session,
+                json!({ "toolCallId": "mock-write",
+                "status": if wrote { "completed" } else { "failed" } }),
+            )?;
+            if cancelled {
+                return self.finish(id, "cancelled");
+            }
         }
 
         // 2b. 越权与边界场景（标记见模块说明）：每个场景把结果记入 notes，写进总结

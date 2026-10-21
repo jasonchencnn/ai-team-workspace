@@ -367,12 +367,40 @@ export function execDirTitle(run: Run): string {
     : "原地：普通文件夹";
 }
 
-/** 已被人工接管的执行在状态胶囊上显示「已被接管」，覆盖后端的「已取消」。 */
+/**
+ * 执行状态的显示名。取后端返回的 `statusLabel`（后端已把人工接管统一成「已被接管」，
+ * 接管后再送验收的验收页也用同一份文案）；这里只补胶囊的颜色。
+ */
 export function runDisplayStatus(run: Run): { label: string; tone: TagTone } {
-  if (run.takenOver) {
-    return { label: "已被接管", tone: "info" };
+  return {
+    label: run.statusLabel,
+    tone: run.takenOver ? "info" : runStatusTone[run.status],
+  };
+}
+
+/** 成功但没有任何改动的提醒文案（后端 `run.noChanges` 为真时显示）。 */
+export const NO_CHANGES_TEXT =
+  "这次执行没有产生任何改动，Agent 可能提前结束（例如权限被拒）；建议退回并说明原因";
+
+/** 提交哈希的短显示（与 git 默认一致的前 7 位）。 */
+export function shortCommit(commit: string): string {
+  return commit.slice(0, 7);
+}
+
+/** 中断时改动被保全到执行分支的说明；没有保全时为 `null`。 */
+export function preservedChangesText(run: Run): string | null {
+  if (run.interruptedCommit === null) {
+    return null;
   }
-  return { label: run.statusLabel, tone: runStatusTone[run.status] };
+  return `中断前的改动已保存在执行分支 ${run.branch ?? "—"} 的提交 ${shortCommit(run.interruptedCommit)}`;
+}
+
+/** 中断时没能把改动保全到执行分支的说明；保全成功或不需要保全时为 `null`。 */
+export function preservedProblemText(run: Run): string | null {
+  if (run.interruptedProblem === null) {
+    return null;
+  }
+  return `中断时没能把改动提交到执行分支：${run.interruptedProblem}`;
 }
 
 /**

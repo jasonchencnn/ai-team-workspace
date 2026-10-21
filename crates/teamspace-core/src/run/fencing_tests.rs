@@ -450,12 +450,18 @@ fn late_finish_does_not_commit_to_the_run_branch() {
     s.f.raw_sql("UPDATE runs SET branch = 'teamspace/X-r1', base_commit = 'abc'");
     let git = Arc::new(FakeGit::default());
     s.core.set_review_git(git.clone());
+    let commits = |git: &FakeGit| -> Vec<String> {
+        git.calls()
+            .into_iter()
+            .filter(|call| call.starts_with("commit "))
+            .collect()
+    };
     let (interrupted, _) = &s.runs[0];
     let (running, _) = &s.runs[1];
     driver_for(&s.core, interrupted).finish(End::Succeeded("end_turn".into()));
-    assert!(git.calls().is_empty(), "{:?}", git.calls());
+    assert!(commits(&git).is_empty(), "{:?}", git.calls());
     driver_for(&s.core, running).finish(End::Succeeded("end_turn".into()));
-    let calls = git.calls();
+    let calls = commits(&git);
     assert_eq!(calls.len(), 1, "{calls:?}");
     assert!(
         calls[0].starts_with("commit ") && calls[0].ends_with("teamspace: FE-002 attempt 1"),

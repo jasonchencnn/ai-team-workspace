@@ -34,7 +34,7 @@ const COLS: &str = "r.id, r.team_id, r.task_id, r.role_id, r.harness_id, r.harne
     r.stop_reason, r.failure, r.failure_kind, r.summary, r.changed_files, r.tool_call_count, \
     r.taken_over, r.pending_permission, t.key, r.workspace_path, r.out_of_scope, r.change_note, \
     r.change_incomplete, r.base_branch, r.merged_commit, r.revision_of, r.review_outcome, \
-    r.review_comment, r.reviewed_at";
+    r.review_comment, r.reviewed_at, r.no_changes, r.interrupted_commit, r.interrupted_problem";
 
 fn json_opt<T: serde::de::DeserializeOwned>(
     row: &rusqlite::Row<'_>,
@@ -49,6 +49,7 @@ fn from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Run> {
     let capabilities: Option<AcpCapabilities> = json_opt(row, 16)?;
     let session_id: Option<String> = row.get(11)?;
     let failure_kind: Option<String> = row.get(21)?;
+    let taken_over: bool = row.get(25)?;
     Ok(Run {
         id: row.get(0)?,
         team_id: row.get(1)?,
@@ -63,7 +64,12 @@ fn from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Run> {
         },
         attempt: row.get(9)?,
         status,
-        status_label: status.label().to_owned(),
+        // 人工接管的执行状态仍是「已取消」，但对 Human 的说法统一为「已被接管」（与 FE-002 一致）。
+        status_label: if taken_over {
+            "已被接管".to_owned()
+        } else {
+            status.label().to_owned()
+        },
         can_resume: status == RunStatus::Interrupted
             && session_id.is_some()
             && capabilities.as_ref().is_some_and(|c| c.load_session),
@@ -85,7 +91,10 @@ fn from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Run> {
         change_note: row.get(30)?,
         change_incomplete: row.get(31)?,
         tool_call_count: row.get(24)?,
-        taken_over: row.get(25)?,
+        no_changes: row.get(38)?,
+        interrupted_commit: row.get(39)?,
+        interrupted_problem: row.get(40)?,
+        taken_over,
         pending_permission: json_opt(row, 26)?,
         task_key: row.get(27)?,
         journal: RunJournal::default(),
@@ -429,6 +438,8 @@ pub(crate) struct Ending {
     pub change_note: Option<String>,
     /// 改动统计不完整（见 [`Run::change_incomplete`]）。
     pub change_incomplete: bool,
+    /// 成功但相对基线没有任何改动（见 [`Run::no_changes`]）。
+    pub no_changes: bool,
     pub tool_call_count: u32,
     pub taken_over: bool,
 }
@@ -469,12 +480,14 @@ fn end_from(
 ) -> Result<bool> {
     debug_assert!(!status.is_active());
     let failure = ending.failure.as_deref().map(crate::redact::text);
+    // 「成功但无改动」只对成功的执行成立：失败、取消、中断、人工接管的执行恒为 `false`。
+    let no_changes = status == RunStatus::Succeeded && ending.no_changes;
     let changed = conn.execute(
         &format!(
             "UPDATE runs SET status = ?2, ended_at = ?3, stop_reason = ?4, failure = ?5,
                              failure_kind = ?6, summary = ?7, changed_files = ?8, tool_call_count = ?9,
                              taken_over = ?10, out_of_scope = ?11, change_note = ?12,
-                             change_incomplete = ?13, pending_permission = NULL
+                             change_incomplete = ?13, pending_permission = NULL, no_changes = ?14
              WHERE id = ?1 AND status IN {from}"
         ),
         params![
@@ -491,6 +504,7 @@ fn end_from(
             serde_json::to_string(&ending.out_of_scope)?,
             ending.change_note,
             ending.change_incomplete,
+            no_changes,
         ],
     )?;
     fenced(conn, changed, id, what)
