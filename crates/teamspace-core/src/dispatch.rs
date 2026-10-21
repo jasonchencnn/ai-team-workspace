@@ -121,6 +121,9 @@ pub fn dispatch(
         )),
         "reveal_role_folder" => out(ts.reveal_role_folder(&arg::<String>(args, "roleId")?)),
         "get_role_workbench" => out(ts.get_role_workbench(&arg::<String>(args, "roleId")?)),
+        "get_role_handoff_preview" => {
+            out(ts.get_role_handoff_preview(&arg::<String>(args, "roleId")?))
+        }
         "open_role_path" => out(ts.open_role_path(
             &arg::<String>(args, "roleId")?,
             arg::<Option<String>>(args, "relativePath")?.as_deref(),
@@ -244,6 +247,7 @@ fn operation_label(cmd: &str) -> String {
         "bind_role_harness" => "换绑岗位的 Harness",
         "unbind_role_harness" => "解绑岗位的 Harness",
         "reveal_role_folder" => "在文件管理器中显示岗位文件夹",
+        "get_role_handoff_preview" => "预览岗位启动包",
         "open_role_path" => "打开岗位文件或目录",
         "list_acp_presets" => "读取 ACP 预设",
         "create_harness" => "注册 Harness",
@@ -567,6 +571,24 @@ mod tests {
         )
         .unwrap();
         assert_eq!(team["name"], "人类创建");
+    }
+
+    /// 界面与桥接（Human）可以预览岗位启动包。
+    #[test]
+    fn human_can_preview_the_role_handoff() {
+        let f = plain_fixture();
+        let team = f.team("团队");
+        let role = f.role(&team.id, "role_frontend");
+        let harness = f.harness(&team.id, "Mock", crate::model::AcpPreset::Mock);
+        f.ts.bind_role_harness(&role.id, &harness.id).unwrap();
+        let preview = dispatch(
+            &f.ts,
+            Caller::Human,
+            "get_role_handoff_preview",
+            &json!({ "roleId": role.id }),
+        )
+        .unwrap();
+        assert!(preview.as_str().unwrap().contains("岗位交接"), "{preview}");
     }
 
     /// Leader 不能把任务置为已完成：被拒绝并留痕。

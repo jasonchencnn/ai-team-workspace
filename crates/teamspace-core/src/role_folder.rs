@@ -288,6 +288,19 @@ pub fn read_recent_journal(folder: &Path, limit: usize) -> std::io::Result<Vec<S
         .collect())
 }
 
+/// 读取工作日志末尾的 `limit` 条（以 `- ` 开头的行），按文件里的先后顺序（旧的在前），
+/// 去掉行首的 `- `。交接内容用这个顺序：日志是追加写的，末尾才是最近的进展。
+pub fn read_journal_tail(folder: &Path, limit: usize) -> std::io::Result<Vec<String>> {
+    let text = fs::read_to_string(folder.join(JOURNAL_FILE))?;
+    let lines: Vec<String> = text
+        .lines()
+        .filter_map(|line| line.strip_prefix("- "))
+        .map(str::to_owned)
+        .collect();
+    let start = lines.len().saturating_sub(limit);
+    Ok(lines[start..].to_vec())
+}
+
 // ---------------------------------------------------------------- 生成内容
 
 /// 岗位说明里显示的绑定信息。

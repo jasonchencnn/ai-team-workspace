@@ -32,6 +32,7 @@ pub mod brief;
 pub mod env_profile;
 pub mod git_review;
 mod grants;
+pub mod handoff;
 pub mod policy;
 pub(crate) mod review_seam;
 mod session_mode;
@@ -1341,7 +1342,47 @@ impl Driver {
             role_folder: ctx.role_folder.clone(),
             journal_path: journal_path(ctx),
             previous_branch: self.core.previous_run_branch(&self.run, &ctx.workspace),
+            handoff: self.handoff_section(ctx),
         }
+    }
+
+    /// 岗位启动包（交接节）：岗位换绑到新的 Harness 后，新环境第一次执行时把接手前的上下文
+    /// 附在任务说明包里；同一个 Harness 再次执行时不重复附上。
+    ///
+    /// 数据库部分在锁内取（未完成任务、近期执行结果、文件引用），工作日志在锁外读文件。
+    fn handoff_section(&self, ctx: &Context) -> Option<String> {
+        let role_id = self.run.role_id.as_str();
+        let data = {
+            let conn = self.core.lock();
+            if !crate::service::handoff::needs_handoff(
+                &conn,
+                role_id,
+                &self.run.harness.harness_id,
+                Some(&self.run.id),
+            )
+            .unwrap_or(false)
+            {
+                return None;
+            }
+            crate::service::handoff::collect(&conn, role_id, Some(&self.run.id)).ok()?
+        };
+        let journal = ctx
+            .role_folder
+            .as_deref()
+            .map(|rel| role_folder::absolute(&ctx.workspace, rel))
+            .and_then(|dir| role_folder::read_journal_tail(&dir, handoff::JOURNAL_LINES).ok())
+            .unwrap_or_default();
+        Some(handoff::render(
+            &handoff::HandoffInput {
+                role_description: ctx.role.description.clone(),
+                role_guidelines: ctx.role.guidelines.clone(),
+                open_tasks: data.open_tasks,
+                recent_runs: data.recent_runs,
+                journal,
+                files: data.files,
+            },
+            handoff::HANDOFF_LIMIT,
+        ))
     }
 
     fn spawn_spec(&self, ctx: &Context, exec_dir: &Path) -> std::result::Result<SpawnSpec, End> {

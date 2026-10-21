@@ -5,6 +5,7 @@ mod dependencies;
 mod events;
 mod files;
 mod folders;
+mod handoff;
 mod harnesses;
 mod inbox;
 mod messages;
