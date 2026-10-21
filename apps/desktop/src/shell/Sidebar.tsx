@@ -32,6 +32,8 @@ const NAV_ENTRIES: NavEntry[] = [
   // 岗位通信（M5-03）与待我处理（M5-04）：角标显示待处理总数。
   { label: "岗位通信", to: "/messages", end: true },
   { label: "待我处理", to: "/inbox", end: true, badge: "inbox" },
+  // 设置（M7-04）：数据备份与导出。应用级设置，放在导航最后。
+  { label: "设置", to: "/settings", end: true },
 ];
 
 function DisabledItem({ id, label, note }: { id: string; label: string; note: string }) {

@@ -249,7 +249,7 @@ test("ACT-010 时间范围为今天时包含刚写入的记录", async ({ page }
 
 test("ACT-011 侧边栏里「活动与审计」在「岗位与绑定」之后、「待我处理」之前", async ({ page }) => {
   await gotoActivity(page);
-  // 「共享文件」自 M3-05 起是可点入口，不再是禁用项。
+  // 「共享文件」自 M3-05 起是可点入口，不再是禁用项；「设置」自 M7-04 起是数据备份入口。
   await expect(page.locator(".sidebar__nav .nav-item .nav-item__label")).toHaveText([
     "团队空间",
     "任务面板",
@@ -258,6 +258,7 @@ test("ACT-011 侧边栏里「活动与审计」在「岗位与绑定」之后、
     "活动与审计",
     "岗位通信",
     "待我处理",
+    "设置",
   ]);
   await expect(page.locator(".sidebar__nav .nav-item--active")).toHaveText("活动与审计");
 });

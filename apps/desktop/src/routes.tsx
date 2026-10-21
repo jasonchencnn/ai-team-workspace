@@ -10,6 +10,7 @@ import { NotificationSettingsPage } from "./pages/inbox/NotificationSettingsPage
 import { ReviewPage } from "./pages/review/ReviewPage.js";
 import { RoleWorkbenchPage } from "./pages/role-workbench/RoleWorkbenchPage.js";
 import { RolesPage } from "./pages/roles/RolesPage.js";
+import { SettingsPage } from "./pages/settings/SettingsPage.js";
 import { TaskDetailPage } from "./pages/task-detail/TaskDetailPage.js";
 import { TaskFormPage } from "./pages/task-form/TaskFormPage.js";
 import { TasksPage } from "./pages/tasks/TasksPage.js";
@@ -38,6 +39,8 @@ export function AppRoutes() {
         <Route path="teams/:teamId/inbox" element={<InboxPage />} />
         {/* 通知订阅（M5-04）：类别总开关与岗位开关。 */}
         <Route path="teams/:teamId/notifications" element={<NotificationSettingsPage />} />
+        {/* 设置（M7-04）：数据备份与导出。 */}
+        <Route path="teams/:teamId/settings" element={<SettingsPage />} />
         <Route path="teams/:teamId/harnesses/:harnessId" element={<HarnessDetailPage />} />
         <Route path="*" element={<IndexRedirect />} />
       </Route>

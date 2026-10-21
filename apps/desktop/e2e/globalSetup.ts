@@ -78,6 +78,11 @@ export default async function globalSetup(): Promise<() => void> {
   writeRepoFile(plain, "素材清单.txt", "镜头 1\n");
   process.env.E2E_PLAIN_WORKSPACE = plain;
 
+  // 备份存放目录：桥接在 pick_backup_dest_dir 时返回它，模拟用户在对话框里选了这个目录。
+  const backups = join(root, "backups");
+  mkdirSync(backups, { recursive: true });
+  process.env.E2E_BACKUP_DIR = backups;
+
   execFileSync("cargo", ["build", "-q", "--locked", "-p", "teamspace-e2e-bridge"], {
     cwd: repoRoot,
     stdio: "inherit",
