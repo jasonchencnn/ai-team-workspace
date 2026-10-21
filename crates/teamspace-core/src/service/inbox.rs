@@ -8,7 +8,7 @@
 //!   原因里提到合并冲突的单独提示解决冲突的两个动作。
 //! - **待答复的权限请求**：状态为 `waiting_permission` 且带待确认请求的执行。
 //! - **需要拍板的消息**：岗位发来还没答复的消息，或投递失败 / 过期的消息；
-//!   已经为这条消息记过决策的就不再出现。
+//!   已经为这条消息记过决策的就不再出现；决策之后又失败 / 过期的消息重新出现，等着再拍一次板。
 //! - **Leader 越权记录**：最近 7 天内的 `leader_denied` 活动（越权留痕本身不是待办，
 //!   过期后自然消失）。
 
@@ -199,9 +199,10 @@ fn permission_items(conn: &Connection, team_id: &str, items: &mut Vec<InboxItem>
 
 fn decision_items(conn: &Connection, team_id: &str, items: &mut Vec<InboxItem>) -> Result<()> {
     let decided = decision::decided_messages(conn, team_id)?;
+    let order = message_event_order(conn, team_id)?;
     let messages = messages_needing_decision(conn, team_id)?;
     for message in messages {
-        if decided.contains(&message.id) {
+        if decided.contains(&message.id) && !failed_again(&order, &message.id) {
             continue;
         }
         let to_name = role_name_of(conn, &message.to_role_id);
@@ -269,6 +270,68 @@ fn messages_needing_decision(conn: &Connection, team_id: &str) -> Result<Vec<Mes
         .query_map(params![team_id], message::from_row)?
         .collect::<rusqlite::Result<Vec<_>>>()?;
     Ok(rows)
+}
+
+/// 消息的失败 / 过期与决策的先后顺序。
+///
+/// 用活动表的自增序号（`events.seq`）排序，不用时间戳：同一毫秒里的两条记录时间戳会并列，
+/// 序号不会，「失败比决策晚」这件事才判得准。
+#[derive(Default)]
+struct MessageEventOrder {
+    /// 每条消息最近一次投递失败 / 过期的活动序号。
+    last_failure: std::collections::HashMap<String, i64>,
+    /// 每条消息最近一次记录决策的活动序号。
+    last_decision: std::collections::HashMap<String, i64>,
+}
+
+/// 消息在记过决策之后又失败 / 过期了：需要重新拍板，之前那条决策不再算数。
+fn failed_again(order: &MessageEventOrder, message_id: &str) -> bool {
+    let Some(failure) = order.last_failure.get(message_id) else {
+        return false;
+    };
+    match order.last_decision.get(message_id) {
+        Some(decision) => failure > decision,
+        None => true,
+    }
+}
+
+/// 团队里消息相关的活动顺序（失败 / 过期与决策）。
+fn message_event_order(conn: &Connection, team_id: &str) -> Result<MessageEventOrder> {
+    let mut stmt = conn.prepare(
+        "SELECT seq, kind, data FROM events
+         WHERE team_id = ?1
+           AND kind IN ('message_delivery_failed', 'message_expired', 'decision_recorded')
+         ORDER BY seq",
+    )?;
+    let rows = stmt.query_map(params![team_id], |row| {
+        Ok((
+            row.get::<_, i64>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, String>(2)?,
+        ))
+    })?;
+    let mut order = MessageEventOrder::default();
+    for row in rows {
+        let (seq, kind, data) = row?;
+        let Some(message_id) = message_id_of(&data) else {
+            continue;
+        };
+        let target = match kind.as_str() {
+            "message_delivery_failed" | "message_expired" => &mut order.last_failure,
+            _ => &mut order.last_decision,
+        };
+        // 按 seq 升序读，后来的覆盖先前的 → 留下的是最近一次。
+        target.insert(message_id, seq);
+    }
+    Ok(order)
+}
+
+/// 活动数据里带的消息 id（失败 / 过期与决策的活动都带）。
+fn message_id_of(data: &str) -> Option<String> {
+    let data: serde_json::Value = serde_json::from_str(data).ok()?;
+    data.get("messageId")
+        .and_then(|v| v.as_str())
+        .map(str::to_owned)
 }
 
 // ---------------------------------------------------------------- Leader 越权记录
