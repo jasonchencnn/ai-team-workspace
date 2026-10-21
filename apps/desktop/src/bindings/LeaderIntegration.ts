@@ -25,6 +25,14 @@ binaryHint: string | null,
  */
 controlSocket: string, 
 /**
+ * 控制 socket 现在能不能连上（宿主应用监听失败时为 `false`）。
+ */
+controlSocketReady: boolean, 
+/**
+ * 控制 socket 不可用的原因（界面「接入 Leader」处提示 Leader 连不上）。
+ */
+controlSocketHint: string | null, 
+/**
  * 工作空间目录的绝对路径。
  */
 workspacePath: string, 

@@ -68,6 +68,15 @@ export function copyLabel(state: CopyState): string {
 /** 复制失败时的补充说明。 */
 export const COPY_FAILED_HINT = "无法写入剪贴板，请手动选中上面的文本复制。";
 
+/** 控制 socket 不可用时的提示：Leader 连不上本应用（应用本身照常可用）。 */
+export function socketNotice(integration: LeaderIntegration): string | null {
+  if (integration.controlSocketReady) {
+    return null;
+  }
+  const reason = integration.controlSocketHint ?? "控制 socket 没有就绪";
+  return `Leader 暂时连不上本应用：${reason}。Teamspace 应用本身照常可用。`;
+}
+
 /** Git 工作空间的提示：`.mcp.json` 会出现在 Git 改动里。 */
 export function gitNotice(gitWorkspace: boolean): string | null {
   return gitWorkspace ? "此文件会出现在 Git 改动中，可加入 .gitignore 或提交。" : null;

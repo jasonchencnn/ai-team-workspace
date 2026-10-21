@@ -154,6 +154,11 @@ impl HostConfig {
 /// drop 时（或调用 [`Teamspace::shutdown`]）终止所有执行中的 Agent 进程，并把这些执行标记为已中断。
 pub struct Teamspace {
     core: Arc<Core>,
+    /// 实例独占权：一个数据库同一时间只允许一个实例（见 [`crate::instance`]）。
+    ///
+    /// 放在实例上而不是内核上：实例结束（退出、重启）时立刻放开数据库，
+    /// 不受还在收尾的执行线程影响。
+    instance: Mutex<Option<crate::instance::InstanceLock>>,
 }
 
 /// 内核共享状态：命令与执行线程共用。
@@ -173,6 +178,10 @@ pub struct Core {
     pub(crate) review_git: RwLock<Arc<dyn ReviewGit>>,
     /// 验收的并发控制：正在验收的任务、正在合并的仓库（见 [`crate::review_api`]）。
     pub(crate) review_locks: crate::review_api::ReviewLocks,
+    /// 控制 socket 不可用的原因（宿主应用监听失败时记下，界面「接入 Leader」处提示）。
+    pub(crate) control_socket_error: RwLock<Option<String>>,
+    /// 应用正在退出：分发一律拒绝（退出窗口里不再接受任何命令，包括启动执行）。
+    pub(crate) exiting: std::sync::atomic::AtomicBool,
 }
 
 impl Deref for Teamspace {
@@ -242,6 +251,9 @@ impl Teamspace {
             .parent()
             .map(Path::to_path_buf)
             .unwrap_or_else(|| PathBuf::from("."));
+        // 先取得实例独占权：取不到就直接报错退出，不打开数据库、不碰任何执行。
+        // 否则第二个实例会把第一个实例正在跑的执行当成「上次退出残留的」标记为已中断。
+        let instance = crate::instance::InstanceLock::acquire(db_path)?;
         let core = Arc::new(Core {
             conn: Mutex::new(store::open(db_path)?),
             probe,
@@ -252,6 +264,8 @@ impl Teamspace {
             deliveries: crate::delivery::Deliveries::default(),
             review_git: RwLock::new(Arc::new(review_seam::RealGit)),
             review_locks: crate::review_api::ReviewLocks::default(),
+            control_socket_error: RwLock::new(None),
+            exiting: std::sync::atomic::AtomicBool::new(false),
         });
         core.recover_runs()?;
         // 上次合并之后、落库之前退出的验收：按 Git 事实补记或清除「合并中」标记。
@@ -262,7 +276,10 @@ impl Teamspace {
         if with_delivery {
             crate::delivery::start(Arc::clone(&core));
         }
-        Ok(Self { core })
+        Ok(Self {
+            core,
+            instance: Mutex::new(Some(instance)),
+        })
     }
 
     /// 设置执行事件的接收者（宿主程序把事件推给前端，见 [`RUN_EVENT`]）。回调在执行线程中调用，
@@ -280,6 +297,42 @@ impl Teamspace {
     pub fn shutdown(&self) {
         self.core.deliveries.stop();
         self.core.shutdown_runs();
+    }
+
+    /// 应用退出收尾的第一步：分发一律拒绝。
+    ///
+    /// 退出过程中（中断执行要跑 Git 提交，可能有几秒）不再接受任何命令，
+    /// 尤其不会再启动新的执行（否则会留下没人管的 Agent 进程）。
+    pub fn begin_exit(&self) {
+        self.core
+            .exiting
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// 应用是不是正在退出。
+    pub fn exiting(&self) -> bool {
+        self.core.exiting.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// 记录控制 socket 的状态：监听成功时传 `None`；监听失败时给出原因，
+    /// 界面「接入 Leader」处据此提示 Leader 连不上（D26：应用照常运行，只是 Leader 连不上）。
+    pub fn set_control_socket_error(&self, error: Option<String>) {
+        *self
+            .core
+            .control_socket_error
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = error;
+    }
+
+    /// 释放实例独占权：应用退出收尾时调用，之后别的实例可以打开同一个数据库。
+    ///
+    /// 释放后本实例不再独占这个数据库，不应再开始新的执行。
+    pub fn release_instance(&self) {
+        let mut slot = self
+            .instance
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        slot.take();
     }
 }
 

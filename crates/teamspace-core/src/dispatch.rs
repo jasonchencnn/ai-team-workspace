@@ -89,6 +89,10 @@ pub fn dispatch(
     if !COMMANDS.contains(&cmd) {
         return Err(bad(format!("未知命令：{cmd}")));
     }
+    // 应用正在退出：不再接受任何命令（退出窗口里不该再启动执行）。
+    if ts.exiting() {
+        return Err(bad("应用正在退出，请稍后再试".to_owned()));
+    }
     if caller == Caller::Leader && !leader_allowed(cmd, args) {
         return Err(deny(ts, cmd, args));
     }
@@ -151,7 +155,15 @@ pub fn dispatch(
         "list_runs" => out(ts.list_runs(&arg::<String>(args, "taskId")?)),
         "list_run_updates" => out(ts.list_run_updates(arg(args, "input")?)),
         "respond_permission" => out(ts.respond_permission(arg(args, "input")?)),
-        "get_review" => out(ts.get_review(&arg::<String>(args, "taskId")?)),
+        "get_review" => {
+            let task_id = arg::<String>(args, "taskId")?;
+            // Leader 轮询验收视图是只读的：不提交执行目录，也不跟 Human 的验收抢仓库锁。
+            out(if caller == Caller::Leader {
+                ts.get_review_readonly(&task_id)
+            } else {
+                ts.get_review(&task_id)
+            })
+        }
         "get_review_file_patch" => out(ts.get_review_file_patch(
             &arg::<String>(args, "runId")?,
             &arg::<String>(args, "path")?,
@@ -193,10 +205,15 @@ fn changes_to_done(args: &Value) -> bool {
 }
 
 /// 拒绝越权请求：返回中文错误，并记一条操作者为 Leader 的活动。
+///
+/// 留痕失败时（数据库忙、定位不到团队）错误里会带上「留痕失败」：拒绝本身一定生效，
+/// 但 Human 那边看不到这条记录，Leader 应当知道。
 fn deny(ts: &Teamspace, cmd: &str, args: &Value) -> ErrorPayload {
     let message = leader_denied_message(cmd);
-    record_denial(ts, cmd, args, &message);
-    Error::conflict(message).payload()
+    match record_denial(ts, cmd, args, &message) {
+        Some(reason) => Error::conflict(format!("{message}（{reason}）")).payload(),
+        None => Error::conflict(message).payload(),
+    }
 }
 
 /// 越权提示：说明是哪个操作被拒，并指向 Teamspace 应用。
@@ -248,13 +265,20 @@ fn operation_label(cmd: &str) -> String {
 }
 
 /// 记一条「越权被拒」活动：操作者为 Leader，挂在能定位到的团队上。
-fn record_denial(ts: &Teamspace, cmd: &str, args: &Value, message: &str) {
+///
+/// 留痕失败时写一条 stderr 日志，并返回失败原因（给 Leader 的错误里说明「留痕失败」）：
+/// 拒绝一定生效，但活动页上没有痕迹，事后无法追查，Leader 应当知道这件事。
+fn record_denial(ts: &Teamspace, cmd: &str, args: &Value, message: &str) -> Option<String> {
     let conn = ts.lock();
     let Some((team_id, task_id, role_id)) = resolve_context(&conn, args) else {
         // 一个团队都没有时无处留痕：还没有团队可挂。
-        return;
+        eprintln!(
+            "teamspace: Leader 请求{}被拒绝，但没能留痕（定位不到团队）：{message}",
+            operation_label(cmd)
+        );
+        return Some("留痕失败：定位不到团队，这条越权记录没能写进活动页".to_owned());
     };
-    let _ = event::record_as(
+    if let Err(err) = event::record_as(
         &conn,
         Actor::Leader,
         NewEvent {
@@ -265,7 +289,14 @@ fn record_denial(ts: &Teamspace, cmd: &str, args: &Value, message: &str) {
             summary: format!("Leader 请求{}被拒绝", operation_label(cmd)),
             data: json!({ "command": cmd, "message": message }),
         },
-    );
+    ) {
+        eprintln!(
+            "teamspace: Leader 请求{}被拒绝，但留痕失败：{err}",
+            operation_label(cmd)
+        );
+        return Some(format!("留痕失败：{err}"));
+    }
+    None
 }
 
 /// 从参数里定位这次操作涉及的团队、任务与岗位，用于把越权记录挂到正确的团队下。
@@ -454,6 +485,21 @@ mod tests {
             .expect("越权操作应留下活动");
         assert_eq!(denied.actor, Actor::Leader);
         assert_eq!(denied.data["command"], "bind_role_harness");
+    }
+
+    /// 定位不到团队时无处留痕：拒绝仍然生效，但错误里说明「留痕失败」。
+    #[test]
+    fn a_denial_that_cannot_be_recorded_says_so() {
+        let f = plain_fixture();
+        // 一个团队都没有：越权记录无处可挂。
+        let err = dispatch(&f.ts, Caller::Leader, "bind_role_harness", &json!({})).unwrap_err();
+        assert_eq!(err.kind, crate::error::ErrorKind::Conflict);
+        assert!(
+            err.message.starts_with("Leader 无权执行此操作："),
+            "{}",
+            err.message
+        );
+        assert!(err.message.contains("留痕失败"), "{}", err.message);
     }
 
     /// Leader 创建任务成功，活动记录的操作者是 Leader。

@@ -15,12 +15,14 @@
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::{Condvar, Mutex};
+use std::time::Duration;
 
 use crate::api::{Core, Teamspace};
 use crate::error::{Error, Result};
 use crate::model::*;
 use crate::run::Mode;
 use crate::run::review_seam::{self, Cleanup, ReviewGit};
+use crate::run::worktree::GIT_TIMEOUT;
 use crate::service::review::{self, Merging};
 use crate::service::run::{self as run_svc};
 use crate::service::task::FileCheck;
@@ -159,10 +161,14 @@ impl Core {
 
     /// 把 Git 执行目录里未提交的改动提交到执行分支。先校验执行目录当前检出的就是执行分支，不是时不提交
     /// 并返回说明；执行目录已不存在时什么也不做。返回新提交（没有改动时为 `None`）。
+    ///
+    /// `timeout` 是这次提交允许占用的时间：超时后 kill 掉 Git 子进程并报错，
+    /// 不让退出或启动被一个卡住的 Git 无限阻塞。
     pub(crate) fn commit_run_dir(
         &self,
         run: &Run,
         message: &str,
+        timeout: Duration,
     ) -> std::result::Result<Option<String>, String> {
         let Some(branch) = run.branch.as_deref() else {
             return Err("执行没有记录分支".to_owned());
@@ -174,7 +180,7 @@ impl Core {
         let git = self.review_git();
         let path_env = self.probe.command_path_env();
         git.check_on_branch(dir, branch, Some(&path_env))?;
-        git.commit_all(dir, message, Some(&path_env))
+        git.commit_all(dir, message, Some(&path_env), timeout)
     }
 
     /// 删除执行的 worktree 与分支；失败时记一条活动并返回说明。
@@ -380,6 +386,18 @@ impl Teamspace {
     /// 执行目录在执行分支上），预览即执行分支相对基线提交的 diff，`headCommit` 为执行分支当前 head。
     /// 普通文件夹：执行记录里的改动文件（多轮退回合在一起），没有 diff。
     pub fn get_review(&self, task_id: &str) -> Result<ReviewView> {
+        self.review_view(task_id, true)
+    }
+
+    /// 同 [`Teamspace::get_review`]，但不把执行目录里未提交的改动提交到执行分支（只读）。
+    ///
+    /// Leader 轮询验收视图时用它：查看不该在执行分支上留下提交，也不该跟 Human 的验收抢仓库锁。
+    pub fn get_review_readonly(&self, task_id: &str) -> Result<ReviewView> {
+        self.review_view(task_id, false)
+    }
+
+    /// 验收页数据。`commit` 为真时顺带把执行目录里未提交的改动提交到执行分支。
+    fn review_view(&self, task_id: &str, commit: bool) -> Result<ReviewView> {
         // 对账与提交都要在仓库锁内进行；验收进行中的任务跳过（由进行中的验收处理）。
         let latest = run_svc::latest_for_task(&self.lock(), task_id)?;
         let mut commit_problem = None;
@@ -397,12 +415,12 @@ impl Teamspace {
             let still_pending = pending.is_some_and(|p| p.id == run.id)
                 && review::merging(&self.lock(), &run.id)?.is_none()
                 && run_svc::get(&self.lock(), &run.id)?.review.is_none();
-            if still_pending {
+            if still_pending && commit {
                 let message = format!(
                     "teamspace: {} attempt {} (review)",
                     run.task_key, run.attempt
                 );
-                commit_problem = self.commit_run_dir(&run, &message).err();
+                commit_problem = self.commit_run_dir(&run, &message, GIT_TIMEOUT).err();
             }
         }
 

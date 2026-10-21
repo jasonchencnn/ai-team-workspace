@@ -15,8 +15,11 @@ use serde_json::{Value, json};
 /// 环境变量名：覆盖控制 socket 的路径（测试用）。
 pub const SOCKET_ENV: &str = "TEAMSPACE_CONTROL_SOCKET";
 
-/// 控制 socket 文件名（放在应用数据目录里）。
+/// 控制 socket 文件名（放在应用数据目录下的 `control/` 子目录里）。
 pub const SOCKET_NAME: &str = "teamspace-control.sock";
+
+/// 控制 socket 所在子目录（放在应用数据目录下，权限 0700：只有当前用户能进）。
+pub const SOCKET_DIR_NAME: &str = "control";
 
 /// 桌面应用标识（macOS 上是应用数据目录名）。
 pub const APP_IDENTIFIER: &str = "com.ai-team-workspace.desktop";
@@ -58,9 +61,9 @@ pub fn app_data_dir() -> PathBuf {
     PathBuf::from(APP_IDENTIFIER)
 }
 
-/// 控制 socket 的默认路径（应用数据目录下的 `teamspace-control.sock`）。
+/// 控制 socket 的默认路径（应用数据目录下的 `control/teamspace-control.sock`）。
 pub fn default_socket_path() -> PathBuf {
-    app_data_dir().join(SOCKET_NAME)
+    app_data_dir().join(SOCKET_DIR_NAME).join(SOCKET_NAME)
 }
 
 /// 与控制 socket 打交道时出的问题。
@@ -266,6 +269,12 @@ mod tests {
         assert!(path.ends_with(SOCKET_NAME), "{}", path.display());
         assert!(
             path.to_string_lossy().contains(APP_IDENTIFIER),
+            "{}",
+            path.display()
+        );
+        // 放在专用子目录里（权限 0700）。
+        assert!(
+            path.parent().unwrap().ends_with(SOCKET_DIR_NAME),
             "{}",
             path.display()
         );

@@ -7,6 +7,7 @@ pub mod control;
 pub mod delivery;
 pub mod dispatch;
 pub mod error;
+mod instance;
 pub mod leader;
 pub mod mock_agent;
 pub mod model;

@@ -194,8 +194,7 @@ fn reopening_marks_active_runs_interrupted() {
     assert!(err.to_string().contains("UNIQUE"), "{err}");
     drop(conn);
 
-    let ts =
-        Teamspace::open_with(&f.db_path(), Box::new(FakeProbe), HostConfig::default()).unwrap();
+    let ts = f.reopen();
     let run = ts.get_run(&a).unwrap();
     assert_eq!(run.status, RunStatus::Interrupted);
     assert!(run.can_resume);
@@ -235,8 +234,7 @@ fn resume_requires_session_and_load_support() {
     let f = plain_fixture();
     let (_, _, h, task) = setup(&f);
     let id = insert_active_run(&f, &task.task, &h, None);
-    let ts =
-        Teamspace::open_with(&f.db_path(), Box::new(FakeProbe), HostConfig::default()).unwrap();
+    let ts = f.reopen();
     let msg = assert_kind(ts.resume_run(&id), ErrorKind::Conflict);
     assert!(msg.contains("会话建立前"), "{msg}");
     let failed = ts.mark_run_failed(&id).unwrap();
@@ -305,8 +303,7 @@ fn editing_is_refused_only_while_a_run_is_active() {
     assert_eq!(ts.get_task(&task.task.id).unwrap().task.title, "登录页");
 
     // 重启后执行被标记为中断，任务仍为 DOING：允许编辑。
-    let ts =
-        Teamspace::open_with(&f.db_path(), Box::new(FakeProbe), HostConfig::default()).unwrap();
+    let ts = f.reopen();
     assert_eq!(ts.get_run(&a).unwrap().status, RunStatus::Interrupted);
     assert_eq!(edit(&ts).unwrap().task.title, "改名");
 

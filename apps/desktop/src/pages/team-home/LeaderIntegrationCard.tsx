@@ -15,6 +15,7 @@ import {
   configSections,
   copyLabel,
   gitNotice,
+  socketNotice,
   writeBlockedHint,
   writeConfirmText,
   writeDoneText,
@@ -76,6 +77,7 @@ export function LeaderIntegrationCard({ teamId }: { teamId: string }) {
   const notice = gitNotice(data.gitWorkspace);
   const writable = canWriteMcpConfig(data);
   const blocked = writeBlockedHint(data);
+  const socket = socketNotice(data);
 
   const copy = async (key: string, text: string) => {
     try {
@@ -118,6 +120,7 @@ export function LeaderIntegrationCard({ teamId }: { teamId: string }) {
       </div>
 
       {data.binaryHint === null ? null : <p className="li-warn">{data.binaryHint}</p>}
+      {socket === null ? null : <p className="li-warn">{socket}</p>}
 
       <div className="li-sections">
         {sections.map((section) => {
