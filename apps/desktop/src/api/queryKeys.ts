@@ -48,6 +48,15 @@ export const queryKeys = {
   roleTemplates: ["role-templates"] as const,
   acpPresets: ["acp-presets"] as const,
   taskStatuses: ["task-statuses"] as const,
+  /** 某岗位进行中的执行；挂在岗位查询之下，换绑流程与待生效提示共用。 */
+  roleActiveRuns: (teamId: string, roleId: string) =>
+    ["teams", teamId, "roles", "active-runs", roleId] as const,
+  /** 换绑期间待投递的消息；挂在岗位查询之下。 */
+  rolePendingMessages: (teamId: string, roleId: string) =>
+    ["teams", teamId, "roles", "pending-messages", roleId] as const,
+  /** 换绑时的启动包预览文本；挂在岗位查询之下。 */
+  roleHandoffPreview: (teamId: string, roleId: string) =>
+    ["teams", teamId, "roles", "handoff-preview", roleId] as const,
   /** 待我处理：按类别聚合需要 Human 判断的事项。 */
   inbox: (teamId: string) => ["teams", teamId, "inbox"] as const,
   /** 决策列表：按团队与任务（或消息）过滤。 */

@@ -17,7 +17,13 @@ import {
 } from "../../components/index.js";
 import type { TagTone } from "../../components/index.js";
 import { useRevealRoleFolder } from "../roles/roleFolder.js";
+import { rebindModeLabel } from "../roles/rebindUi.js";
 import { roleWorkbenchPath } from "../roles/rolesNav.js";
+import {
+  REBIND_POLL_INTERVAL_MS,
+  hasPendingBinding,
+  useRebindRefresh,
+} from "../roles/useRebindData.js";
 import { healthLabel, healthTone } from "../harness-detail/harnessFormat.js";
 import { LeaderIntegrationCard } from "./LeaderIntegrationCard.js";
 import { formatLocalDateTime } from "./formatLocalDateTime.js";
@@ -64,7 +70,13 @@ export function TeamHomePage() {
     queryKey: queryKeys.teamOverview(key),
     queryFn: () => getTeamOverview(key),
     enabled: teamId !== undefined,
+    // 有待生效换绑时轮询：席位上的「待生效」要跟着执行结束自动更新。
+    refetchInterval: (query) =>
+      hasPendingBinding(query.state.data?.roles ?? []) ? REBIND_POLL_INTERVAL_MS : false,
   });
+
+  // 换绑事件（待生效 / 已生效 / 已撤销）到达时刷新席位。
+  useRebindRefresh(key);
 
   const revealFolder = useRevealRoleFolder();
 
@@ -163,6 +175,14 @@ export function TeamHomePage() {
                 {item.openTaskCount > 0 ? (
                   <p className="th-note">未结束任务 {item.openTaskCount}</p>
                 ) : null}
+                {/* 待生效的换绑：当前绑定仍是旧实例，这里只标「待生效」，不写成已经换好。 */}
+                {item.pendingBinding === null ? null : (
+                  <p className="th-note th-role__pending">
+                    待生效：{item.harness?.name ?? "未绑定"} → {item.pendingBinding.harnessName}（
+                    {rebindModeLabel(item.pendingBinding.mode)} ·{" "}
+                    {formatLocalDateTime(item.pendingBinding.requestedAt)}）
+                  </p>
+                )}
                 {/* 「岗位文件夹」在卡片里是独立操作，叠在整卡链接之上，不跟着跳转到工作台。 */}
                 <div className="th-role__folder">
                   <Button

@@ -1,5 +1,7 @@
 import type { RoleView } from "../../bindings/RoleView.js";
 import { Button, EmptyState, ErrorBanner, Panel, Spinner } from "../../components/index.js";
+import { formatLocalDateTime } from "../team-home/formatLocalDateTime.js";
+import { pendingBindingSummary } from "./rebindUi.js";
 
 export interface RoleListProps {
   roles: RoleView[];
@@ -48,6 +50,14 @@ export function RoleList({
       <ul className="role-list__items">
         {roles.map((view) => {
           const selected = view.role.id === selectedRoleId;
+          const pending =
+            view.pendingBinding === null
+              ? null
+              : pendingBindingSummary(
+                  view.pendingBinding,
+                  view.harness?.name ?? null,
+                  formatLocalDateTime(view.pendingBinding.requestedAt),
+                );
           return (
             <li key={view.role.id} className="role-list__item">
               <button
@@ -63,7 +73,20 @@ export function RoleList({
                 <span className="role-chip__harness">
                   {view.harness === null ? "未绑定" : view.harness.name}
                 </span>
+                {/* 待生效的换绑：标出来但不写成已换，当前绑定仍是旧的。 */}
+                {pending === null ? null : (
+                  <span className="role-chip__pending" title={`${pending.title}${pending.detail}`}>
+                    待生效
+                  </span>
+                )}
               </button>
+
+              {selected && pending !== null ? (
+                <p className="role-list__pending">
+                  {pending.title}
+                  {pending.detail}
+                </p>
+              ) : null}
 
               {selected && view.harness === null ? (
                 <p className="role-list__unbound">未绑定 Harness · 暂不派工</p>

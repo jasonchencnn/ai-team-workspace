@@ -11,7 +11,12 @@ import {
 } from "../../components/index.js";
 import type { HarnessInstance } from "../../bindings/HarnessInstance.js";
 import type { RoleView } from "../../bindings/RoleView.js";
+import { HandoffPreviewPanel } from "./HandoffPreviewPanel.js";
+import { PendingBindingCard } from "./PendingBindingCard.js";
+import { PendingMessagesPanel } from "./PendingMessagesPanel.js";
+import { RebindHarnessDialog } from "./RebindHarnessDialog.js";
 import { RoleFolderLine } from "./roleFolder.js";
+import { useRoleActiveRuns, useRoleHandoffPreview } from "./useRebindData.js";
 import { useRoleMutations } from "./useRoleMutations.js";
 import {
   TEST_HARNESS_LABEL,
@@ -43,13 +48,24 @@ export function RoleDetail({
 }: RoleDetailProps) {
   const role = view.role;
   const harness = view.harness;
-  const { updateRole, archiveRole, bindRoleHarness, unbindRoleHarness } = useRoleMutations(teamId);
+  const {
+    updateRole,
+    archiveRole,
+    bindRoleHarness,
+    unbindRoleHarness,
+    rebindRole,
+    cancelPendingRebind,
+  } = useRoleMutations(teamId);
 
   const [name, setName] = useState(role.name);
   const [taskPrefix, setTaskPrefix] = useState(role.taskPrefix);
   const [description, setDescription] = useState(role.description);
   const [guidelines, setGuidelines] = useState(role.guidelines);
   const [pendingHarnessId, setPendingHarnessId] = useState("");
+  const [rebindOpen, setRebindOpen] = useState(false);
+
+  const activeRunsQuery = useRoleActiveRuns(teamId, role.id);
+  const handoffQuery = useRoleHandoffPreview(teamId, role.id);
 
   const dirty =
     name !== role.name ||
@@ -59,6 +75,7 @@ export function RoleDetail({
 
   const pendingHarness = harnesses.find((instance) => instance.id === pendingHarnessId);
   const pendingIsTestHarness = pendingHarness !== undefined && isTestHarness(pendingHarness.preset);
+  const hasPendingBinding = view.pendingBinding !== null;
 
   return (
     <article className="role-detail">
@@ -87,6 +104,18 @@ export function RoleDetail({
           )}
         </Card>
       )}
+
+      <PendingBindingCard
+        view={view}
+        isCancelling={cancelPendingRebind.isPending}
+        error={cancelPendingRebind.error}
+        onCancel={() => {
+          cancelPendingRebind.mutate(role.id);
+        }}
+        onShowPendingMessages={() => {
+          document.getElementById("pending-messages")?.scrollIntoView({ behavior: "smooth" });
+        }}
+      />
 
       <div className="role-detail__fields">
         <InputField
@@ -155,13 +184,21 @@ export function RoleDetail({
       {archiveRole.error === null ? null : <ErrorBanner error={archiveRole.error} />}
 
       <section className="role-detail__binding-actions">
-        <Button
-          variant={harness === null ? "primary" : "neutral"}
-          onClick={onPickToggle}
-          disabled={isHarnessPending && !picking}
-        >
-          {harness === null ? "绑定 Harness" : "更换 Harness"}
-        </Button>
+        {harness === null ? (
+          <Button onClick={onPickToggle} disabled={isHarnessPending && !picking}>
+            绑定 Harness
+          </Button>
+        ) : (
+          <Button
+            variant="neutral"
+            onClick={() => {
+              rebindRole.reset();
+              setRebindOpen(true);
+            }}
+          >
+            更换 Harness
+          </Button>
+        )}
         {harness === null ? null : (
           <Button
             variant="neutral"
@@ -231,6 +268,15 @@ export function RoleDetail({
         </div>
       ) : null}
 
+      <HandoffPreviewPanel
+        preview={handoffQuery.data ?? ""}
+        hasHarness={harness !== null}
+        isPending={handoffQuery.isPending}
+        error={handoffQuery.error}
+      />
+
+      <PendingMessagesPanel teamId={teamId} roleId={role.id} enabled={hasPendingBinding} />
+
       <RoleFolderLine teamId={teamId} view={view} />
 
       <p className="role-detail__hint">
@@ -239,6 +285,31 @@ export function RoleDetail({
       <p className="role-detail__counts">
         执行中任务 {view.doingTaskCount} 项 · 未结束任务 {view.openTaskCount} 项
       </p>
+
+      {rebindOpen ? (
+        <RebindHarnessDialog
+          role={role}
+          view={view}
+          harnesses={harnesses}
+          activeRuns={activeRunsQuery.data ?? []}
+          isRunsPending={activeRunsQuery.isPending}
+          isSubmitting={rebindRole.isPending}
+          error={rebindRole.error}
+          onClose={() => {
+            setRebindOpen(false);
+          }}
+          onConfirm={(harnessId, mode) => {
+            rebindRole.mutate(
+              { roleId: role.id, harnessId, mode },
+              {
+                onSuccess: () => {
+                  setRebindOpen(false);
+                },
+              },
+            );
+          }}
+        />
+      ) : null}
     </article>
   );
 }
