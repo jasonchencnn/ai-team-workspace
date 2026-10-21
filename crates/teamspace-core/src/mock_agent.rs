@@ -664,13 +664,41 @@ impl Mock<'_> {
             .cloned()
             .unwrap_or_else(|| PathBuf::from("."));
         let task = task_section(&text);
-        let has = |mark: &str| task.contains(&format!("[mock:{mark}]"));
+        // 标记的作用域：岗位消息说明包看「## 消息」一节，任务说明包看「## 任务」一节。
+        let scope = marker_scope(&text);
+        let has = |mark: &str| scope.contains(&format!("[mock:{mark}]"));
         let mut cancelled = false;
 
         if has("auth") {
             return self.write(&json!({ "jsonrpc": "2.0", "id": id,
                 "error": { "code": -32000, "message": "Authentication required",
                            "data": { "authMethods": [{ "id": "mock-login", "name": "Mock 登录" }] } } }));
+        }
+        // 岗位消息：只回答，不改文件（写入会被 Teamspace 的只读策略拒绝）。
+        if has("replyfail") {
+            self.say(&session, "收到消息，")?;
+            return self.write(&json!({ "jsonrpc": "2.0", "id": id,
+                "error": { "code": -32603, "message": "Mock 模拟的回复失败" } }));
+        }
+        if let Some(reply) = marker_arg(scope, "reply") {
+            // 回复内容就是标记里给的那句，便于断言。
+            self.say(&session, reply)?;
+            return self.finish(id, "end_turn");
+        }
+        if let Some(rel) = marker_arg(scope, "replywrite") {
+            self.say(&session, "收到消息，")?;
+            // 尝试写入：只读策略下权限请求与写入都会被拒绝，Agent 仍应给出文字回复。
+            let path = cwd.join(rel);
+            let _ = self.probe_write(
+                &session,
+                "mock-replywrite",
+                "尝试写入文件",
+                "edit",
+                &path,
+                &mut cancelled,
+            );
+            self.say(&session, "无法写入文件，我用文字回复。")?;
+            return self.finish(id, "end_turn");
         }
         self.say(&session, "收到任务，")?;
         self.say(&session, "开始处理。")?;
@@ -787,7 +815,7 @@ impl Mock<'_> {
         if has("outside") {
             scenarios.push(("outside", "edit", "写入 out.md", cwd.join("out.md")));
         }
-        if let Some(spec) = marker_arg(task, "readgrant") {
+        if let Some(spec) = marker_arg(scope, "readgrant") {
             let (kind, path) = spec.split_once('|').unwrap_or(("read", spec));
             let kind = if kind == "search" { "search" } else { "read" };
             let target = Path::new(if path.is_empty() { "out.md" } else { path });
@@ -814,7 +842,7 @@ impl Mock<'_> {
                 Probe::Done(result) => notes.push(note(name, &result)),
             }
         }
-        if let Some(rel) = marker_arg(task, "shellwrite") {
+        if let Some(rel) = marker_arg(scope, "shellwrite") {
             let target = cwd.join(rel);
             self.update(&session, json!({
                 "sessionUpdate": "tool_call", "toolCallId": "mock-shellwrite",
@@ -833,7 +861,7 @@ impl Mock<'_> {
             )?;
             notes.push(note("shellwrite", &result));
         }
-        if let Some(rel) = marker_arg(task, "shellrm") {
+        if let Some(rel) = marker_arg(scope, "shellrm") {
             let target = cwd.join(rel);
             self.update(
                 &session,
@@ -851,7 +879,7 @@ impl Mock<'_> {
             )?;
             notes.push(note("shellrm", &result));
         }
-        if let Some(rel) = marker_arg(task, "rmgrant") {
+        if let Some(rel) = marker_arg(scope, "rmgrant") {
             let target = cwd.join(rel);
             let shown = target.display().to_string();
             self.update(
@@ -905,7 +933,7 @@ impl Mock<'_> {
                 Probe::Done(result) => notes.push(note("editjournalfragment", &result)),
             }
         }
-        if let Some(arg) = marker_arg(task, "outsideread") {
+        if let Some(arg) = marker_arg(scope, "outsideread") {
             let target = cwd.join(arg);
             match self.outside_read(&session, &target, &mut cancelled)? {
                 Probe::Eof => return Ok(()),
@@ -916,8 +944,8 @@ impl Mock<'_> {
                 }),
             }
         }
-        if has("fsprobe") || marker_arg(task, "fsprobe").is_some() {
-            let outside = marker_arg(task, "fsprobe").map_or_else(
+        if has("fsprobe") || marker_arg(scope, "fsprobe").is_some() {
+            let outside = marker_arg(scope, "fsprobe").map_or_else(
                 || cwd.parent().unwrap_or(&cwd).join("fsprobe-outside.txt"),
                 |p| cwd.join(p),
             );
@@ -1143,12 +1171,21 @@ fn blocks(params: &Value) -> impl Iterator<Item = &Value> {
 /// 任务说明包中「## 任务」一节（标记只认这里，避免工作日志里旧任务的标题干扰）；
 /// 没有这一节时为全文。
 fn task_section(text: &str) -> &str {
-    let Some(start) = text.find("\n## 任务\n") else {
-        return text;
-    };
+    section_of(text, "\n## 任务\n").unwrap_or(text)
+}
+
+/// 标记的作用域：岗位消息说明包里的标记在「## 消息」一节，任务说明包里在「## 任务」一节；
+/// 两节都没有时是全文。
+fn marker_scope(text: &str) -> &str {
+    section_of(text, "\n## 消息\n").unwrap_or_else(|| task_section(text))
+}
+
+/// 说明包里某一节的内容（`heading` 形如 `"\n## 任务\n"`）；没有这一节时为 `None`。
+fn section_of<'a>(text: &'a str, heading: &str) -> Option<&'a str> {
+    let start = text.find(heading)?;
     let rest = &text[start + 1..];
     let end = rest[3..].find("\n## ").map_or(rest.len(), |i| i + 3);
-    &rest[..end]
+    Some(&rest[..end])
 }
 
 /// 提示中 resource_link / resource 指向的本地文件。

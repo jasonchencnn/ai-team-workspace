@@ -12,7 +12,7 @@ use time::OffsetDateTime;
 use crate::error::{Error, Result};
 
 /// 当前 schema 版本。
-pub(crate) const SCHEMA_VERSION: i64 = 12;
+pub(crate) const SCHEMA_VERSION: i64 = 13;
 
 const SCHEMA_V1: &str = r#"
 CREATE TABLE teams (
@@ -345,9 +345,52 @@ ALTER TABLE runs ADD COLUMN interrupted_commit TEXT;
 ALTER TABLE runs ADD COLUMN interrupted_problem TEXT;
 "#;
 
+/// v13：岗位通信的消息与线程（M5-01）。
+///
+/// 团队通信经 Teamspace 中转并持久化（不以 Harness 之间的点对点通信作为正式渠道）。
+/// - `message_threads`：一次往来的主题。`participants` 存参与方（JSON 数组），`updated_at` 随最近一条
+///   消息刷新，线程列表按它倒序。
+/// - `messages`：线程里的每一条消息。`sender_kind` 为 human / leader / role，`sender_role_id` 只在发送方
+///   是岗位时有；`status` 为 queued（排队）→ delivering（投递中）→ replied（已回复）/ failed（失败）/
+///   expired（过期），`failure_reason` 与 `reply_body` 分别记失败原因与回复正文。
+///   应用重启时残留的 delivering 会退回 queued（见 `service::message::requeue_delivering`）。
+const SCHEMA_V13: &str = r#"
+CREATE TABLE message_threads (
+    id           TEXT PRIMARY KEY,
+    team_id      TEXT NOT NULL REFERENCES teams (id),
+    task_id      TEXT REFERENCES tasks (id),
+    subject      TEXT NOT NULL CHECK (subject <> ''),
+    participants TEXT NOT NULL DEFAULT '[]',
+    created_at   TEXT NOT NULL,
+    updated_at   TEXT NOT NULL
+);
+CREATE INDEX message_threads_team ON message_threads (team_id, updated_at);
+
+CREATE TABLE messages (
+    id             TEXT PRIMARY KEY,
+    thread_id      TEXT NOT NULL REFERENCES message_threads (id),
+    team_id        TEXT NOT NULL REFERENCES teams (id),
+    task_id        TEXT REFERENCES tasks (id),
+    sender_kind    TEXT NOT NULL CHECK (sender_kind IN ('human', 'leader', 'role')),
+    sender_role_id TEXT REFERENCES roles (id),
+    to_role_id     TEXT NOT NULL REFERENCES roles (id),
+    body           TEXT NOT NULL CHECK (body <> ''),
+    status         TEXT NOT NULL
+                   CHECK (status IN ('queued', 'delivering', 'replied', 'failed', 'expired')),
+    failure_reason TEXT,
+    reply_body     TEXT,
+    created_at     TEXT NOT NULL,
+    delivered_at   TEXT,
+    replied_at     TEXT
+);
+CREATE INDEX messages_thread ON messages (thread_id, created_at);
+CREATE INDEX messages_to_role ON messages (to_role_id, status, created_at);
+CREATE INDEX messages_status ON messages (status, created_at);
+"#;
+
 const MIGRATIONS: &[&str] = &[
     SCHEMA_V1, SCHEMA_V2, SCHEMA_V3, SCHEMA_V4, SCHEMA_V5, SCHEMA_V6, SCHEMA_V7, SCHEMA_V8,
-    SCHEMA_V9, SCHEMA_V10, SCHEMA_V11, SCHEMA_V12,
+    SCHEMA_V9, SCHEMA_V10, SCHEMA_V11, SCHEMA_V12, SCHEMA_V13,
 ];
 
 /// 打开数据库：WAL 日志、synchronous=NORMAL、开启外键，并迁移到当前版本。
@@ -510,6 +553,47 @@ mod tests {
             .pragma_query_value(None, "synchronous", |r| r.get(0))
             .unwrap();
         assert_eq!(sync, 1, "NORMAL");
+    }
+
+    #[test]
+    fn v13_adds_message_tables_and_keeps_existing_rows() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("t.db");
+        {
+            // 先建到 v12：只跑前 12 段迁移。
+            let conn = Connection::open(&path).unwrap();
+            conn.pragma_update(None, "foreign_keys", false).unwrap();
+            for sql in MIGRATIONS.iter().take(12) {
+                conn.execute_batch(sql).unwrap();
+            }
+            conn.execute_batch(
+                "INSERT INTO teams (id, name, description, workspace_path, created_at, updated_at)
+                 VALUES ('t1', 'T', '', '/w', 'a', 'a');
+                 PRAGMA user_version = 12;",
+            )
+            .unwrap();
+        }
+        // 打开时迁移到 v13。
+        let conn = open(&path).unwrap();
+        let version: i64 = conn
+            .pragma_query_value(None, "user_version", |r| r.get(0))
+            .unwrap();
+        assert_eq!(version, SCHEMA_VERSION);
+        // 旧数据还在。
+        let name: String = conn
+            .query_row("SELECT name FROM teams WHERE id = 't1'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(name, "T");
+        // 新表在，旧版本没有它们。
+        let tables: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master
+                 WHERE type = 'table' AND name IN ('messages', 'message_threads')",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(tables, 2);
     }
 
     #[test]

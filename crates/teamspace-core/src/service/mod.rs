@@ -4,6 +4,7 @@ pub(crate) mod dependency;
 pub(crate) mod event;
 pub(crate) mod folder;
 pub(crate) mod harness;
+pub(crate) mod message;
 pub(crate) mod review;
 pub(crate) mod role;
 pub(crate) mod run;

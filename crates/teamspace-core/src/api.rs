@@ -34,7 +34,7 @@ use crate::run::review_seam::{self, ReviewGit};
 use crate::run::{Mode, Stop};
 use crate::service::run::{self as run_svc, Ending, NewRun};
 use crate::service::task::FileCheck;
-use crate::service::{event, folder, harness, role, task, team, workspace};
+use crate::service::{event, folder, harness, message, role, task, team, workspace};
 use crate::store;
 use crate::workspace_file;
 
@@ -99,6 +99,10 @@ pub const COMMANDS: &[&str] = &[
     "resolve_merge_manually",
     "rerun_after_conflict",
     "list_events",
+    "send_message",
+    "list_threads",
+    "get_thread",
+    "retry_message",
 ];
 
 /// 执行事件的 Tauri 事件名，载荷为 [`RunEvent`]（见 [`Teamspace::set_run_listener`]）。
@@ -161,6 +165,8 @@ pub struct Core {
     pub(crate) data_dir: PathBuf,
     /// 执行引擎状态。
     pub(crate) runs: crate::run::Runs,
+    /// 消息投递引擎状态（M5-01）。
+    pub(crate) deliveries: crate::delivery::Deliveries,
     /// 验收用的 Git 层（测试可替换，见 [`review_seam`]）。
     pub(crate) review_git: RwLock<Arc<dyn ReviewGit>>,
     /// 验收的并发控制：正在验收的任务、正在合并的仓库（见 [`crate::review_api`]）。
@@ -192,6 +198,7 @@ impl Teamspace {
 
 impl Drop for Teamspace {
     fn drop(&mut self) {
+        self.core.deliveries.stop();
         self.core.shutdown_runs();
     }
 }
@@ -210,6 +217,25 @@ impl Teamspace {
         probe: Box<dyn SystemProbe>,
         config: HostConfig,
     ) -> Result<Self> {
+        Self::open_inner(db_path, probe, config, true)
+    }
+
+    /// 同 [`Teamspace::open_with`]，但不启动消息投递线程（测试自己控制投递时机时用）。
+    #[cfg(test)]
+    pub(crate) fn open_without_delivery(
+        db_path: &Path,
+        probe: Box<dyn SystemProbe>,
+        config: HostConfig,
+    ) -> Result<Self> {
+        Self::open_inner(db_path, probe, config, false)
+    }
+
+    fn open_inner(
+        db_path: &Path,
+        probe: Box<dyn SystemProbe>,
+        config: HostConfig,
+        with_delivery: bool,
+    ) -> Result<Self> {
         let data_dir = db_path
             .parent()
             .map(Path::to_path_buf)
@@ -221,12 +247,19 @@ impl Teamspace {
             folder_io: Mutex::new(()),
             data_dir,
             runs: crate::run::Runs::default(),
+            deliveries: crate::delivery::Deliveries::default(),
             review_git: RwLock::new(Arc::new(review_seam::RealGit)),
             review_locks: crate::review_api::ReviewLocks::default(),
         });
         core.recover_runs()?;
         // 上次合并之后、落库之前退出的验收：按 Git 事实补记或清除「合并中」标记。
         core.reconcile_merges();
+        // 消息投递：上次退出时残留的「投递中」回到排队，打开应用时先做一次过期检查。
+        core.write(message::requeue_delivering)?;
+        crate::delivery::expire_stale(&core);
+        if with_delivery {
+            crate::delivery::start(Arc::clone(&core));
+        }
         Ok(Self { core })
     }
 
@@ -243,6 +276,7 @@ impl Teamspace {
 
     /// 终止所有执行中的 Agent 进程并把这些执行标记为已中断（应用退出时调用；drop 时也会调用）。
     pub fn shutdown(&self) {
+        self.core.deliveries.stop();
         self.core.shutdown_runs();
     }
 }
@@ -1178,6 +1212,41 @@ impl Teamspace {
     /// 按团队分页列出活动，时间倒序；每页默认 50 条、最多 200 条。
     pub fn list_events(&self, input: EventQuery) -> Result<EventPage> {
         event::page(&self.lock(), &input)
+    }
+
+    // ---------------------------------------------------------------- 岗位消息
+
+    /// 发送一条消息给岗位：消息进入「排队」，投递引擎交给该岗位绑定的 Harness 处理。
+    ///
+    /// `actor` 是发起者：Human 是在应用里操作的人，Leader 是经本机控制 socket 接入的外部会话
+    /// （D8：Leader 发起消息属正常编排）。
+    pub fn send_message_as(&self, actor: Actor, input: SendMessageInput) -> Result<Message> {
+        let message = self.write(|tx| message::send(tx, actor, &input))?;
+        // 唤醒投递线程：新消息入队。
+        self.core.deliveries.schedule();
+        Ok(message)
+    }
+
+    /// 发送一条消息给岗位（Human 发起）。
+    pub fn send_message(&self, input: SendMessageInput) -> Result<Message> {
+        self.send_message_as(Actor::Human, input)
+    }
+
+    /// 列出消息线程：按团队（必填）、任务与岗位筛选，按最近更新时间倒序。
+    pub fn list_threads(&self, input: ListThreadsQuery) -> Result<Vec<MessageThread>> {
+        message::threads(&self.lock(), &input)
+    }
+
+    /// 取一个线程及其中的消息（时间正序）。
+    pub fn get_thread(&self, thread_id: &str) -> Result<ThreadDetail> {
+        message::thread(&self.lock(), thread_id)
+    }
+
+    /// 重发一条失败或过期的消息：状态回到「排队」，等投递引擎再次接手。
+    pub fn retry_message(&self, message_id: &str) -> Result<Message> {
+        let message = self.write(|tx| message::retry(tx, message_id))?;
+        self.core.deliveries.schedule();
+        Ok(message)
     }
 }
 

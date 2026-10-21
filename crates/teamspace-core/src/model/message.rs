@@ -1,0 +1,182 @@
+//! 岗位通信的消息与线程（M5-01）。
+//!
+//! 团队通信经 Teamspace 中转并持久化：消息由 Human、Leader 或岗位发出，投递引擎把消息交给
+//! 接收岗位绑定的 Harness 处理，Agent 的最终文字作为回复写回同一线程。
+//!
+//! 约定：
+//! - 字段在 JSON / TS 中为 camelCase，枚举值为 snake_case 字符串。
+//! - ID 为 UUID v7 字符串；时间为 UTC RFC3339 字符串，界面按本地时间显示。
+//! - 消息不硬删除：失败与过期都保留原消息、失败原因与时间，便于重发与追溯。
+
+use serde::{Deserialize, Serialize};
+use ts_rs::TS;
+
+/// 消息的发送方。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export)]
+pub enum MessageSender {
+    /// 在 Teamspace 应用里操作的人。
+    Human,
+    /// Leader：外部会话（Claude Code / Codex 等）经本机控制 socket 发起（D8）。
+    Leader,
+    /// 岗位：回复岗位发出的消息时，发送方是目标岗位。
+    Role,
+}
+
+impl MessageSender {
+    /// 展示用的中文名。
+    pub fn label(self) -> &'static str {
+        match self {
+            MessageSender::Human => "Human",
+            MessageSender::Leader => "Leader",
+            MessageSender::Role => "岗位",
+        }
+    }
+}
+
+/// 消息的投递状态。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export)]
+pub enum MessageStatus {
+    /// 排队等待投递。
+    Queued,
+    /// 投递中：已交给接收岗位绑定的 Harness。
+    Delivering,
+    /// 已回复：Agent 的回复已写回消息。
+    Replied,
+    /// 失败：岗位未绑定 Harness、握手失败或 Agent 出错。
+    Failed,
+    /// 过期：超过 7 天仍未回复。
+    Expired,
+}
+
+impl MessageStatus {
+    /// 展示用的中文名。
+    pub fn label(self) -> &'static str {
+        match self {
+            MessageStatus::Queued => "排队中",
+            MessageStatus::Delivering => "投递中",
+            MessageStatus::Replied => "已回复",
+            MessageStatus::Failed => "失败",
+            MessageStatus::Expired => "已过期",
+        }
+    }
+
+    /// 是否是终态（不再变化，除非重发）。
+    pub fn is_terminal(self) -> bool {
+        matches!(
+            self,
+            MessageStatus::Replied | MessageStatus::Failed | MessageStatus::Expired
+        )
+    }
+}
+
+/// 线程参与方：发送方（Human / Leader / 岗位）与接收岗位。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct ThreadParticipant {
+    /// 岗位 id；Human 与 Leader 没有岗位，为 `null`。
+    pub role_id: Option<String>,
+    /// 参与方的身份。
+    pub kind: MessageSender,
+    /// 展示名：岗位名，或「Human」/「Leader」。
+    pub name: String,
+}
+
+/// 消息线程：围绕一个主题的往来。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct MessageThread {
+    pub id: String,
+    pub team_id: String,
+    /// 关联任务；可缺省。
+    pub task_id: Option<String>,
+    /// 主题。
+    pub subject: String,
+    /// 参与方。
+    pub participants: Vec<ThreadParticipant>,
+    pub created_at: String,
+    /// 最近一条消息的时间。
+    pub updated_at: String,
+}
+
+/// 一条消息。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct Message {
+    pub id: String,
+    pub thread_id: String,
+    pub team_id: String,
+    /// 关联任务；可缺省。
+    pub task_id: Option<String>,
+    /// 发送方。
+    pub sender: MessageSender,
+    /// 发送方是岗位时的岗位 id；Human 与 Leader 为 `null`。
+    pub sender_role_id: Option<String>,
+    /// 接收岗位。
+    pub to_role_id: String,
+    /// 消息正文。
+    pub body: String,
+    /// 投递状态。
+    pub status: MessageStatus,
+    /// 投递失败的原因；未失败时为 `null`。
+    pub failure_reason: Option<String>,
+    /// Agent 的回复正文；已回复时才有。
+    pub reply_body: Option<String>,
+    pub created_at: String,
+    /// 进入「投递中」的时间。
+    pub delivered_at: Option<String>,
+    /// 写回回复的时间。
+    pub replied_at: Option<String>,
+}
+
+/// 发送消息的入参。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct SendMessageInput {
+    /// 消息所属团队。
+    pub team_id: String,
+    /// 接收岗位；须是本团队未归档的岗位。
+    pub to_role_id: String,
+    /// 消息正文。
+    pub body: String,
+    /// 关联任务；可缺省。给了时须是本团队的任务。
+    #[ts(optional = nullable)]
+    pub task_id: Option<String>,
+    /// 续用已有线程时给出线程 id；缺省时按「接收岗位 + 关联任务」找最近的线程，没有则新建。
+    #[ts(optional = nullable)]
+    pub thread_id: Option<String>,
+    /// 主题；新建线程时用，缺省取正文第一行。
+    #[ts(optional = nullable)]
+    pub subject: Option<String>,
+}
+
+/// 线程列表的筛选条件。各项之间是「且」的关系，缺省表示不按该项过滤。
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct ListThreadsQuery {
+    /// 团队；必填。
+    pub team_id: String,
+    /// 只看关联某个任务的线程。
+    #[ts(optional = nullable)]
+    pub task_id: Option<String>,
+    /// 只看某岗位参与（发送或接收）的线程。
+    #[ts(optional = nullable)]
+    pub role_id: Option<String>,
+}
+
+/// 线程详情：线程与其中的消息（按时间正序）。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct ThreadDetail {
+    pub thread: MessageThread,
+    pub messages: Vec<Message>,
+}
