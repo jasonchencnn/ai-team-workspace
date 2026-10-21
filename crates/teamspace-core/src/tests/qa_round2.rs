@@ -1546,6 +1546,7 @@ fn k_task_009_cancelled_dependency_does_not_satisfy_ready() {
         f.ts.get_task_board(TaskBoardQuery {
             team_id: team.id.clone(),
             include_cancelled: Some(true),
+            limit: None,
         })
         .unwrap()
         .columns
@@ -1670,6 +1671,7 @@ fn k_task_013_board_order_and_per_column_recency() {
         f.ts.get_task_board(TaskBoardQuery {
             team_id: team.id.clone(),
             include_cancelled: None,
+            limit: None,
         })
         .unwrap();
     let order: Vec<_> = board.columns.iter().map(|c| c.status).collect();
@@ -1696,6 +1698,7 @@ fn k_task_013_board_order_and_per_column_recency() {
         f.ts.get_task_board(TaskBoardQuery {
             team_id: empty.id.clone(),
             include_cancelled: None,
+            limit: None,
         })
         .unwrap();
     assert_eq!(empty_board.columns.len(), 6);
@@ -1705,6 +1708,7 @@ fn k_task_013_board_order_and_per_column_recency() {
         f.ts.get_task_board(TaskBoardQuery {
             team_id: team.id.clone(),
             include_cancelled: Some(true),
+            limit: None,
         })
         .unwrap();
     let order: Vec<_> = full.columns.iter().map(|c| c.status).collect();

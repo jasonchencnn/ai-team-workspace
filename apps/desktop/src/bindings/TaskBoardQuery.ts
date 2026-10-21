@@ -7,4 +7,8 @@ export type TaskBoardQuery = { teamId: string,
 /**
  * 是否包含「已取消」列，默认不包含。
  */
-includeCancelled?: boolean | null, };
+includeCancelled?: boolean | null, 
+/**
+ * 每列最多返回多少条任务。缺省为 `None`，表示不限制（返回该列全部任务，与旧行为一致）。
+ */
+limit?: number | null, };

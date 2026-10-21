@@ -50,6 +50,8 @@ register_commands!(
     check_harness,
     list_task_statuses,
     get_task_board,
+    list_board_column,
+    list_task_options,
     get_task,
     create_task,
     update_task,

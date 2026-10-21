@@ -161,6 +161,59 @@ pub(crate) fn latest_for_task(conn: &Connection, task_id: &str) -> Result<Option
     .pop())
 }
 
+/// 任务最近一次执行里，待我处理聚合要用的几个字段。
+#[derive(Debug, Clone)]
+pub(crate) struct LatestRun {
+    pub id: String,
+    pub ended_at: Option<String>,
+    pub no_changes: bool,
+    pub base_branch: Option<String>,
+}
+
+/// 一批任务各自最近一次执行（一次查询查回，不逐个任务查）。
+///
+/// 与 [`latest_for_task`] 的区别：不读工作日志——工作日志要按执行逐条扫活动表，
+/// 任务多时逐个任务查会把聚合拖慢；待我处理只需要执行 id、结束时间与改动统计。
+pub(crate) fn latest_for_tasks(
+    conn: &Connection,
+    task_ids: &[String],
+) -> Result<std::collections::HashMap<String, LatestRun>> {
+    let mut latest = std::collections::HashMap::new();
+    // 一批的参数有上限，分批查。
+    for chunk in task_ids.chunks(400) {
+        if chunk.is_empty() {
+            continue;
+        }
+        let placeholders = vec!["?"; chunk.len()].join(", ");
+        let sql = format!(
+            "SELECT r.id, r.task_id, r.ended_at, r.no_changes, r.base_branch
+             FROM runs r
+             JOIN (SELECT task_id, MAX(attempt) AS attempt FROM runs
+                    WHERE task_id IN ({placeholders}) GROUP BY task_id) m
+               ON m.task_id = r.task_id AND m.attempt = r.attempt"
+        );
+        let mut stmt = conn.prepare(&sql)?;
+        let refs: Vec<&dyn rusqlite::ToSql> =
+            chunk.iter().map(|id| id as &dyn rusqlite::ToSql).collect();
+        let rows = stmt.query_map(refs.as_slice(), |row| {
+            Ok((
+                row.get::<_, String>(1)?,
+                LatestRun {
+                    id: row.get(0)?,
+                    ended_at: row.get(2)?,
+                    no_changes: row.get::<_, i64>(3)? != 0,
+                    base_branch: row.get(4)?,
+                },
+            ))
+        })?;
+        for row in rows {
+            let (task_id, run) = row?;
+            latest.insert(task_id, run);
+        }
+    }
+    Ok(latest)
+}
+
 /// 岗位最近的执行，最多 `limit` 条。
 pub(crate) fn recent_for_role(conn: &Connection, role_id: &str, limit: u32) -> Result<Vec<Run>> {
     query(

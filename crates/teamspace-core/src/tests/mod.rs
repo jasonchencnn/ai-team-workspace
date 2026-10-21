@@ -13,6 +13,7 @@ mod m6_04_queries;
 mod m6_04b_rebinds;
 mod messages;
 mod notifications;
+mod perf;
 #[cfg(unix)]
 mod qa_round2;
 #[cfg(unix)]

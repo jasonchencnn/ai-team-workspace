@@ -343,6 +343,7 @@ fn blocked_requires_reason_which_is_cleared_on_leave() {
         f.ts.get_task_board(TaskBoardQuery {
             team_id: team.id.clone(),
             include_cancelled: None,
+            limit: None,
         })
         .unwrap();
     let col = board.columns.iter().find(|c| c.status == Blocked).unwrap();
@@ -414,6 +415,7 @@ fn board_groups_by_status_and_hides_cancelled_by_default() {
         f.ts.get_task_board(TaskBoardQuery {
             team_id: team.id.clone(),
             include_cancelled: None,
+            limit: None,
         })
         .unwrap();
     let statuses: Vec<_> = board.columns.iter().map(|c| c.status).collect();
@@ -427,6 +429,7 @@ fn board_groups_by_status_and_hides_cancelled_by_default() {
         f.ts.get_task_board(TaskBoardQuery {
             team_id: team.id.clone(),
             include_cancelled: Some(true),
+            limit: None,
         })
         .unwrap();
     assert_eq!(board.columns.len(), 7);
@@ -455,6 +458,7 @@ fn summaries_count_open_dependencies() {
         f.ts.get_task_board(TaskBoardQuery {
             team_id: team.id,
             include_cancelled: None,
+            limit: None,
         })
         .unwrap();
     let card = board.columns[0]

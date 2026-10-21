@@ -1,8 +1,14 @@
 import { useQueries, useQuery } from "@tanstack/react-query";
-import { useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router";
 
-import { getRoleWorkbench, getTaskBoard, getTeamOverview, listRoles } from "../../api/commands.js";
+import {
+  getRoleWorkbench,
+  getTaskBoard,
+  getTeamOverview,
+  listBoardColumn,
+  listRoles,
+} from "../../api/commands.js";
 import { queryKeys } from "../../api/queryKeys.js";
 import {
   Button,
@@ -13,7 +19,6 @@ import {
   Spinner,
   Tag,
 } from "../../components/index.js";
-import type { BoardColumn } from "../../bindings/BoardColumn.js";
 import type { RoleView } from "../../bindings/RoleView.js";
 import type { Run } from "../../bindings/Run.js";
 import type { TaskStatus } from "../../bindings/TaskStatus.js";
@@ -29,54 +34,110 @@ import {
 } from "./taskUi.js";
 import "./tasks.css";
 
+/**
+ * 看板每列一次渲染的任务数。
+ *
+ * 任务多到上万时一次渲染上千张卡片会拖慢页面，所以每列先取这一页，剩下的用「加载更多」
+ * 按列往后取（内核接口 `list_board_column`，游标分页）。
+ */
+const COLUMN_PAGE = 200;
+
 /** 看板上展示的列：TODO 列合并 todo 与 ready。 */
 interface DisplayColumn {
   key: string;
   title: string;
   tone: "todo" | "doing" | "blocked" | "review" | "done" | "cancelled";
   tasks: TaskSummary[];
+  /** 这个展示列由哪些后端状态组成（TODO 列由 todo 与 ready 合并）。 */
+  statuses: TaskStatus[];
+  /** 展示列的任务总数（含还没加载的部分）。 */
+  total: number;
+  /** 已经取回的任务数（可能比显示的多，还没展开）。 */
+  pool: number;
+  /** 还有更多任务没取回。 */
+  hasMore: boolean;
+}
+
+/** 某个后端状态列在页面上的状态。 */
+interface StatusColumn {
+  label: string;
+  tasks: TaskSummary[];
+  total: number;
+  /** 已经取回的任务数（第一页 + 加载回来的）。 */
+  pool: number;
+  hasMore: boolean;
+}
+
+/** 某个状态列已加载的后续页。 */
+interface ColumnPage {
+  /** 已经加载回来的任务（不含看板第一页）。 */
+  tasks: TaskSummary[];
+  /** 下一页游标；`undefined` 表示没有更多了。 */
+  cursor: string | undefined;
 }
 
 function buildColumns(
-  columns: BoardColumn[],
+  byStatus: Map<TaskStatus, StatusColumn>,
   filter: FirstColumnFilter,
   showDone: boolean,
   showCancelled: boolean,
+  visible: Record<string, number>,
 ): DisplayColumn[] {
-  const byStatus = (status: TaskStatus) => columns.find((column) => column.status === status);
   const result: DisplayColumn[] = [];
 
-  const todoTasks = [
-    ...(filter === "ready" ? [] : (byStatus("todo")?.tasks ?? [])),
-    ...(filter === "todo" ? [] : (byStatus("ready")?.tasks ?? [])),
-  ].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
-  result.push({ key: "todo", title: "TODO", tone: "todo", tasks: todoTasks });
+  const todoStatuses: TaskStatus[] =
+    filter === "ready" ? ["ready"] : filter === "todo" ? ["todo"] : ["todo", "ready"];
+  const todoTasks = todoStatuses
+    .flatMap((status) => byStatus.get(status)?.tasks ?? [])
+    .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+  result.push({
+    key: "todo",
+    title: "TODO",
+    tone: "todo",
+    tasks: todoTasks.slice(0, visible["todo"] ?? COLUMN_PAGE),
+    statuses: todoStatuses,
+    total: todoStatuses.reduce((sum, status) => sum + (byStatus.get(status)?.total ?? 0), 0),
+    pool: todoStatuses.reduce((sum, status) => sum + (byStatus.get(status)?.pool ?? 0), 0),
+    hasMore: todoStatuses.some((status) => byStatus.get(status)?.hasMore ?? false),
+  });
 
   for (const status of ["doing", "blocked", "review"] as const) {
-    const column = byStatus(status);
+    const column = byStatus.get(status);
     result.push({
       key: status,
       title: column?.label ?? status,
       tone: status,
-      tasks: column?.tasks ?? [],
+      tasks: (column?.tasks ?? []).slice(0, visible[status] ?? COLUMN_PAGE),
+      statuses: [status],
+      total: column?.total ?? 0,
+      pool: column?.pool ?? 0,
+      hasMore: column?.hasMore ?? false,
     });
   }
   if (showDone) {
-    const column = byStatus("done");
+    const column = byStatus.get("done");
     result.push({
       key: "done",
       title: column?.label ?? "done",
       tone: "done",
-      tasks: column?.tasks ?? [],
+      tasks: (column?.tasks ?? []).slice(0, visible["done"] ?? COLUMN_PAGE),
+      statuses: ["done"],
+      total: column?.total ?? 0,
+      pool: column?.pool ?? 0,
+      hasMore: column?.hasMore ?? false,
     });
   }
   if (showCancelled) {
-    const column = byStatus("cancelled");
+    const column = byStatus.get("cancelled");
     result.push({
       key: "cancelled",
       title: column?.label ?? "cancelled",
       tone: "cancelled",
-      tasks: column?.tasks ?? [],
+      tasks: (column?.tasks ?? []).slice(0, visible["cancelled"] ?? COLUMN_PAGE),
+      statuses: ["cancelled"],
+      total: column?.total ?? 0,
+      pool: column?.pool ?? 0,
+      hasMore: column?.hasMore ?? false,
     });
   }
   return result;
@@ -191,12 +252,37 @@ export function TasksPage() {
   // 进任务详情时把面板参数一起带上，返回时才能恢复；别的页面的参数不带过去。
   const detailSearch = taskPanelSearch(params.toString());
 
-  const query = { teamId, includeCancelled: showCancelled };
+  // 看板每列先取一页（COLUMN_PAGE 条），更多用「加载更多」按列往后取。
+  const query = { teamId, includeCancelled: showCancelled, limit: COLUMN_PAGE };
   const board = useQuery({
     queryKey: queryKeys.taskBoard(teamId, query),
     queryFn: () => getTaskBoard(query),
     enabled: teamId !== "",
   });
+
+  // 「加载更多」取回来的任务与下一页游标，以及每个展示列已经显示多少条。
+  const [extraByStatus, setExtraByStatus] = useState<Record<string, ColumnPage>>({});
+  const [visibleByColumn, setVisibleByColumn] = useState<Record<string, number>>({});
+  const [loadingMore, setLoadingMore] = useState(false);
+  // 换团队或换「显示已取消」后看板数据变了，已加载的后续页不再对应当前看板。
+  useEffect(() => {
+    setExtraByStatus({});
+    setVisibleByColumn({});
+  }, [teamId, showCancelled]);
+  // 看板每列自带下一页游标：「加载更多」从那里接着往后取。
+  // 已经加载过后续页的列不再退回第一页的游标，否则会取到重复的任务。
+  useEffect(() => {
+    setExtraByStatus((previous) => {
+      const next = { ...previous };
+      for (const column of board.data?.columns ?? []) {
+        if (next[column.status] === undefined) {
+          next[column.status] = { tasks: [], cursor: column.nextCursor ?? undefined };
+        }
+      }
+      return next;
+    });
+  }, [board.data]);
+
   // 卡片上的「当前绑定」来自岗位卡片；失败时只是不显示该行。
   const roles = useQuery({
     queryKey: queryKeys.roles(teamId),
@@ -250,6 +336,79 @@ export function TasksPage() {
     <PageHeader title="任务面板" description="任务分派给岗位，详细要求保存在共享文件。" />
   );
 
+  // 每个后端状态列在页面上的状态：第一页 + 已加载的后续页。
+  const byStatus = useMemo(() => {
+    const map = new Map<TaskStatus, StatusColumn>();
+    for (const column of board.data?.columns ?? []) {
+      const extra = extraByStatus[column.status];
+      map.set(column.status, {
+        label: column.label,
+        tasks: [...column.tasks, ...(extra?.tasks ?? [])],
+        total: column.total,
+        pool: column.tasks.length + (extra?.tasks.length ?? 0),
+        // 还没加载过时听内核的；加载过之后看游标还在不在。
+        hasMore: extra === undefined ? column.hasMore : extra.cursor !== undefined,
+      });
+    }
+    return map;
+  }, [board.data, extraByStatus]);
+
+  /**
+   * 取某个展示列的后续页，并把这一列的可见条数加一页。
+   *
+   * 取回后如果已经全部取完，就只是把已取回但还没显示的任务展开出来。
+   */
+  const loadMore = async (column: DisplayColumn) => {
+    const targets = column.statuses.filter((status) => byStatus.get(status)?.hasMore ?? false);
+    setLoadingMore(true);
+    try {
+      if (targets.length > 0) {
+        const pages = await Promise.all(
+          targets.map((status) =>
+            listBoardColumn({
+              teamId,
+              status,
+              limit: COLUMN_PAGE,
+              cursor: cursorOf(status),
+            }),
+          ),
+        );
+        setExtraByStatus((previous) => {
+          const next = { ...previous };
+          pages.forEach((page, index) => {
+            const status = targets[index];
+            if (status === undefined) {
+              return;
+            }
+            const entry = next[status] ?? { tasks: [], cursor: undefined };
+            next[status] = {
+              tasks: [...entry.tasks, ...page.tasks],
+              cursor: page.nextCursor ?? undefined,
+            };
+          });
+          return next;
+        });
+      }
+      setVisibleByColumn((previous) => {
+        const next = { ...previous };
+        next[column.key] = (next[column.key] ?? COLUMN_PAGE) + COLUMN_PAGE;
+        return next;
+      });
+    } finally {
+      setLoadingMore(false);
+    }
+  };
+
+  /** 某个状态列的下一页游标：已加载过的用加载后的游标，没加载过的用看板带来的。 */
+  const cursorOf = (status: TaskStatus): string | null => {
+    const entry = extraByStatus[status];
+    if (entry !== undefined) {
+      return entry.cursor ?? null;
+    }
+    const column = board.data?.columns.find((item) => item.status === status);
+    return column?.nextCursor ?? null;
+  };
+
   if (board.isPending) {
     return (
       <>
@@ -277,7 +436,8 @@ export function TasksPage() {
   }
 
   const columns = board.data.columns;
-  const doneCount = columns.find((column) => column.status === "done")?.tasks.length ?? 0;
+  // 「显示已完成」后面是这一列的真实总数（分页后也准），不是当前这一页的条数。
+  const doneCount = byStatus.get("done")?.total ?? 0;
   const total = columns.reduce((sum, column) => sum + column.tasks.length, 0);
 
   const cancelledTotal =
@@ -307,8 +467,11 @@ export function TasksPage() {
     );
   }
 
-  const displayColumns = buildColumns(columns, filter, showDone, showCancelled);
+  const displayColumns = buildColumns(byStatus, filter, showDone, showCancelled, visibleByColumn);
   const listTasks = displayColumns.flatMap((column) => column.tasks);
+  const moreColumns = displayColumns.filter(
+    (column) => column.hasMore || column.pool > column.tasks.length,
+  );
 
   return (
     <>
@@ -398,6 +561,24 @@ export function TasksPage() {
                   badge={runBadge(runByTask.get(task.id))}
                 />
               ))}
+              {column.hasMore || column.pool > column.tasks.length ? (
+                <div className="task-board__more">
+                  {column.hasMore ? (
+                    <Button
+                      variant="neutral"
+                      disabled={loadingMore}
+                      onClick={() => {
+                        void loadMore(column);
+                      }}
+                    >
+                      加载更多
+                    </Button>
+                  ) : null}
+                  <span className="task-board__more-note">
+                    已显示 {column.tasks.length} / {column.total}
+                  </span>
+                </div>
+              ) : null}
             </section>
           ))}
         </div>
@@ -450,6 +631,23 @@ export function TasksPage() {
               })}
             </tbody>
           </table>
+          {moreColumns.length === 0 ? null : (
+            <div className="task-table__more">
+              <Button
+                variant="neutral"
+                disabled={loadingMore}
+                onClick={() => {
+                  void Promise.all(moreColumns.map((column) => loadMore(column)));
+                }}
+              >
+                加载更多
+              </Button>
+              <span className="task-board__more-note">
+                已显示 {listTasks.length} 条，共{" "}
+                {displayColumns.reduce((sum, column) => sum + column.total, 0)} 条
+              </span>
+            </div>
+          )}
         </div>
       )}
     </>

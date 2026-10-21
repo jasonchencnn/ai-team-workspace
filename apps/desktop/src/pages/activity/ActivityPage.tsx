@@ -2,7 +2,7 @@ import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
 import { useMemo } from "react";
 import { Link, useParams, useSearchParams } from "react-router";
 
-import { getTaskBoard, listEvents, listRoles } from "../../api/commands.js";
+import { listEvents, listRoles, listTaskOptions } from "../../api/commands.js";
 import { queryKeys } from "../../api/queryKeys.js";
 import {
   Button,
@@ -15,7 +15,7 @@ import {
   Tag,
 } from "../../components/index.js";
 import type { EventQuery } from "../../bindings/EventQuery.js";
-import type { TaskSummary } from "../../bindings/TaskSummary.js";
+import type { TaskOption } from "../../bindings/TaskOption.js";
 import {
   ACTOR_LABELS,
   EVENT_KINDS,
@@ -30,16 +30,21 @@ import {
 } from "./activityUi.js";
 import "./activity.css";
 
-/** 每页条数；与后端默认值一致，页面本身不做分页规则。 */
-const PAGE_SIZE = 50;
+/** 每页条数；与后端上限一致，页面本身不做分页规则。 */
+const PAGE_SIZE = 100;
 
 const RANGE_PARAM = "range";
 const TASK_PARAM = "task";
 const ROLE_PARAM = "role";
 const KIND_PARAM = "kind";
 
-/** 任务下拉的数据来自任务面板接口，避免另开一个接口只为填下拉框。 */
-const INCLUDE_CANCELLED = true;
+/**
+ * 下拉框里最多放多少个任务。
+ *
+ * 团队的任务可能有上万个，一次把全部任务渲染成下拉项会拖慢首屏；下拉只留最近更新的这些，
+ * 其余任务仍可用地址栏的 `task` 参数筛选。
+ */
+const TASK_OPTION_LIMIT = 500;
 
 /** 没有关联对象时表格里显示的占位。 */
 const DASH = "—";
@@ -91,10 +96,11 @@ export function ActivityPage() {
     enabled: teamId !== "",
   });
 
-  const boardQuery = { teamId, includeCancelled: INCLUDE_CANCELLED };
-  const board = useQuery({
-    queryKey: queryKeys.taskBoard(teamId, boardQuery),
-    queryFn: () => getTaskBoard(boardQuery),
+  // 任务下拉与「关联任务」列只需要编号与标题，用轻量接口：任务上万时不把每条任务的
+  // 计数、负责人、依赖都传过来。
+  const taskOptions = useQuery({
+    queryKey: queryKeys.taskOptions(teamId),
+    queryFn: () => listTaskOptions(teamId),
     enabled: teamId !== "",
   });
   const roleViews = useQuery({
@@ -104,14 +110,12 @@ export function ActivityPage() {
   });
 
   const tasks = useMemo(() => {
-    const map = new Map<string, TaskSummary>();
-    for (const column of board.data?.columns ?? []) {
-      for (const task of column.tasks) {
-        map.set(task.id, task);
-      }
+    const map = new Map<string, TaskOption>();
+    for (const task of taskOptions.data ?? []) {
+      map.set(task.id, task);
     }
     return map;
-  }, [board.data]);
+  }, [taskOptions.data]);
   const roles = useMemo(() => {
     const map = new Map<string, string>();
     for (const view of roleViews.data ?? []) {
@@ -119,11 +123,15 @@ export function ActivityPage() {
     }
     return map;
   }, [roleViews.data]);
-  const taskOptions = useMemo(
-    () => [...tasks.values()].sort((a, b) => a.key.localeCompare(b.key, "zh-CN")),
-    [tasks],
+  // 下拉框只放最近更新的这些任务，避免一次渲染上万个下拉项；其余任务仍能用地址栏筛选。
+  // 排列仍按任务编号，与之前一致。
+  const taskChoices = useMemo(
+    () =>
+      (taskOptions.data ?? [])
+        .slice(0, TASK_OPTION_LIMIT)
+        .sort((a, b) => a.key.localeCompare(b.key, "zh-CN")),
+    [taskOptions.data],
   );
-
   const header = (
     <PageHeader
       title="活动与审计"
@@ -142,11 +150,15 @@ export function ActivityPage() {
           }}
         >
           <option value="">全部任务</option>
-          {taskOptions.map((task) => (
+          {taskChoices.map((task) => (
             <option key={task.id} value={task.id}>
               {task.key} {task.title}
             </option>
           ))}
+          {/* 当前选中的任务不在下拉的前若干个里时，补一项，保证筛选状态显示正确。 */}
+          {taskId !== "" && !taskChoices.some((task) => task.id === taskId) ? (
+            <option value={taskId}>{taskId}</option>
+          ) : null}
         </SelectField>
         <SelectField
           label="岗位"

@@ -433,6 +433,7 @@ fn snapshot_over_the_file_limit_degrades_and_says_so() {
         e.ts.get_task_board(TaskBoardQuery {
             team_id: e.team.id.clone(),
             include_cancelled: None,
+            limit: None,
         })
         .unwrap();
     let card = board

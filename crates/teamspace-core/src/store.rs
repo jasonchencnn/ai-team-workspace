@@ -12,7 +12,7 @@ use time::OffsetDateTime;
 use crate::error::{Error, Result};
 
 /// 当前 schema 版本。
-pub(crate) const SCHEMA_VERSION: i64 = 17;
+pub(crate) const SCHEMA_VERSION: i64 = 18;
 
 const SCHEMA_V1: &str = r#"
 CREATE TABLE teams (
@@ -469,10 +469,32 @@ UPDATE role_pending_bindings SET
     );
 "#;
 
+/// v18：1 万条任务与事件时的查询索引（M7-03 性能）。
+///
+/// - `tasks_team_status_updated`：看板按状态分页（每列按更新时间倒序取一页）与团队概览的
+///   「进行中的任务」都按 `(团队, 状态, 更新时间, id)` 取，没有它每列都要扫全表再排序。
+/// - `tasks_team_updated`：轻量任务列表（活动页的任务下拉框）按更新时间倒序取，
+///   没有它要先把团队的全部任务排一遍。
+/// - `tasks_owner_updated`：岗位工作台取该岗位最近的任务，同样按更新时间倒序。
+/// - `events_team_kind_seq`：活动按种类筛选（团队 + 种类 + 序号），以及按种类找单条活动
+///   （工作日志、执行摘要、越权记录）。列顺序让「按种类倒序取一页」不用再排序，
+///   也不会为了找一个冷门种类把该团队的活动整张表扫一遍。
+/// - `events_team_task_seq`：活动按任务筛选（团队 + 任务）。
+/// - `message_threads_team` 加上 `id`：线程列表按 `(更新时间, id)` 倒序，取完不用再排序。
+const SCHEMA_V18: &str = r#"
+CREATE INDEX tasks_team_status_updated ON tasks (team_id, status, updated_at DESC, id DESC);
+CREATE INDEX tasks_team_updated ON tasks (team_id, updated_at DESC, id DESC);
+CREATE INDEX tasks_owner_updated ON tasks (owner_role_id, updated_at DESC, id DESC);
+CREATE INDEX events_team_kind_seq ON events (team_id, kind, seq);
+CREATE INDEX events_team_task_seq ON events (team_id, task_id, seq);
+DROP INDEX message_threads_team;
+CREATE INDEX message_threads_team ON message_threads (team_id, updated_at DESC, id DESC);
+"#;
+
 const MIGRATIONS: &[&str] = &[
     SCHEMA_V1, SCHEMA_V2, SCHEMA_V3, SCHEMA_V4, SCHEMA_V5, SCHEMA_V6, SCHEMA_V7, SCHEMA_V8,
     SCHEMA_V9, SCHEMA_V10, SCHEMA_V11, SCHEMA_V12, SCHEMA_V13, SCHEMA_V14, SCHEMA_V15, SCHEMA_V16,
-    SCHEMA_V17,
+    SCHEMA_V17, SCHEMA_V18,
 ];
 
 /// 打开数据库：WAL 日志、synchronous=NORMAL、开启外键，并迁移到当前版本。
@@ -1343,5 +1365,55 @@ mod tests {
         // 老记录没有「发起时的绑定」这个概念，按岗位当时的当前绑定回填。
         assert_eq!(previous_id.as_deref(), Some("h1"));
         assert_eq!(previous_name.as_deref(), Some("旧实例"));
+    }
+
+    /// v17 的库升到 v18：补上查询索引，看板与活动筛选不再扫全表。
+    #[test]
+    fn v17_migrates_to_v18_with_the_query_indexes() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("t.db");
+        {
+            let conn = Connection::open(&path).unwrap();
+            for sql in &MIGRATIONS[..17] {
+                conn.execute_batch(sql).unwrap();
+            }
+            conn.execute_batch("PRAGMA user_version = 17;").unwrap();
+        }
+        let conn = open(&path).unwrap();
+        let v: i64 = conn
+            .pragma_query_value(None, "user_version", |r| r.get(0))
+            .unwrap();
+        assert_eq!(v, SCHEMA_VERSION);
+
+        let names: Vec<String> = conn
+            .prepare("SELECT name FROM sqlite_master WHERE type = 'index'")
+            .unwrap()
+            .query_map([], |row| row.get::<_, String>(0))
+            .unwrap()
+            .map(|row| row.unwrap())
+            .collect();
+        for index in [
+            "tasks_team_status_updated",
+            "tasks_team_updated",
+            "tasks_owner_updated",
+            "events_team_kind_seq",
+            "events_team_task_seq",
+            // 线程索引重建过：带上了 id 这一列的次序键。
+            "message_threads_team",
+        ] {
+            assert!(
+                names.iter().any(|name| name == index),
+                "缺少索引 {index}：{names:?}"
+            );
+        }
+        // 重建后的线程索引列序是 (team_id, updated_at, id)。
+        let columns: Vec<String> = conn
+            .prepare("PRAGMA index_info(message_threads_team)")
+            .unwrap()
+            .query_map([], |row| row.get::<_, String>(2))
+            .unwrap()
+            .map(|row| row.unwrap())
+            .collect();
+        assert_eq!(columns, ["team_id", "updated_at", "id"]);
     }
 }

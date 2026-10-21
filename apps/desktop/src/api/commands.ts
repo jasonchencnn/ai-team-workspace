@@ -5,6 +5,9 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 
 import type { BackupExportResult } from "../bindings/BackupExportResult.js";
+import type { BoardColumnPage } from "../bindings/BoardColumnPage.js";
+import type { BoardColumnQuery } from "../bindings/BoardColumnQuery.js";
+import type { TaskOption } from "../bindings/TaskOption.js";
 import type { BackupRestoreResult } from "../bindings/BackupRestoreResult.js";
 import type { BackupSummary } from "../bindings/BackupSummary.js";
 import type { ExportBackupInput } from "../bindings/ExportBackupInput.js";
@@ -211,6 +214,14 @@ export const listTaskStatuses = () => invoke<TaskStatusInfo[]>("list_task_status
 /** 看板数据（按状态分组）。 */
 export const getTaskBoard = (input: TaskBoardQuery) =>
   invoke<TaskBoard>("get_task_board", { input });
+
+/** 看板单列的后续页（看板「加载更多」用）。 */
+export const listBoardColumn = (input: BoardColumnQuery) =>
+  invoke<BoardColumnPage>("list_board_column", { input });
+
+/** 团队的轻量任务列表（编号与标题），按更新时间倒序；给下拉框用。 */
+export const listTaskOptions = (teamId: string) =>
+  invoke<TaskOption[]>("list_task_options", { teamId });
 
 /** 任务详情。 */
 export const getTask = (taskId: string) => invoke<TaskDetail>("get_task", { taskId });

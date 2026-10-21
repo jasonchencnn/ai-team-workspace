@@ -12,6 +12,7 @@ mod instance;
 pub mod leader;
 pub mod mock_agent;
 pub mod model;
+pub mod perf_seed;
 pub mod probe;
 pub mod redact;
 mod review_api;

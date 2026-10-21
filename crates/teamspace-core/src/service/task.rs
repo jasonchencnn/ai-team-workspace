@@ -13,9 +13,10 @@ use super::{
 };
 use crate::error::{Error, Result};
 use crate::model::{
-    Actor, BoardColumn, ChangeTaskStatusInput, CheckTaskDependenciesInput, CreateTaskInput,
-    EventKind, FileRef, FileRefView, FileTaskRef, RoleRef, StatusCount, Task, TaskBoard,
-    TaskBoardQuery, TaskDependencyCheck, TaskDetail, TaskStatus, TaskSummary, UpdateTaskInput,
+    Actor, BoardColumn, BoardColumnPage, BoardColumnQuery, ChangeTaskStatusInput,
+    CheckTaskDependenciesInput, CreateTaskInput, EventKind, FileRef, FileRefView, FileTaskRef,
+    RoleRef, StatusCount, Task, TaskBoard, TaskBoardQuery, TaskDependencyCheck, TaskDetail,
+    TaskOption, TaskStatus, TaskSummary, UpdateTaskInput,
 };
 use crate::store::{enum_col, enum_str, new_id, non_blank, now};
 
@@ -23,6 +24,12 @@ use crate::store::{enum_col, enum_str, new_id, non_blank, now};
 pub(crate) const MAX_FILE_REFS: usize = 50;
 /// 每个任务的依赖上限。
 pub(crate) const MAX_DEPENDENCIES: usize = 20;
+/// 看板单列默认返回多少条任务（界面「加载更多」再往后取）。
+pub(crate) const BOARD_COLUMN_LIMIT: u32 = 200;
+/// 看板单列单次最多返回多少条任务。
+pub(crate) const BOARD_COLUMN_MAX: u32 = 500;
+/// 团队概览里「进行中的任务」最多列多少条。
+pub(crate) const ACTIVE_TASK_LIMIT: u32 = 50;
 const DEPENDENCY_NOTICE: &str = "前置完成后会自动变为 READY；须同时满足其他就绪条件：负责岗位有效，填写的引用文件存在（文件引用可选）。";
 
 // ---------------------------------------------------------------- 读取
@@ -143,10 +150,24 @@ pub(crate) fn referencing_file(
 }
 
 fn summaries(conn: &Connection, filter: &str, param: &str) -> Result<Vec<TaskSummary>> {
+    summaries_where(conn, filter, &[&param], None)
+}
+
+/// 按条件取任务摘要，条件里用 `?1`、`?2`… 依次对应 `args`；`limit` 限制条数（在 SQL 里限量，
+/// 不把整批任务读进内存）。
+fn summaries_where(
+    conn: &Connection,
+    filter: &str,
+    args: &[&dyn rusqlite::ToSql],
+    limit: Option<usize>,
+) -> Result<Vec<TaskSummary>> {
+    let limit_clause = limit
+        .map(|limit| format!(" LIMIT {limit}"))
+        .unwrap_or_default();
     let mut stmt = conn.prepare(&format!(
-        "{SUMMARY_SQL} WHERE {filter} ORDER BY t.updated_at DESC, t.id DESC"
+        "{SUMMARY_SQL} WHERE {filter} ORDER BY t.updated_at DESC, t.id DESC{limit_clause}"
     ))?;
-    let rows = stmt.query_map(params![param], |row| {
+    let rows = stmt.query_map(args, |row| {
         Ok(TaskSummary {
             id: row.get(0)?,
             key: row.get(1)?,
@@ -172,11 +193,7 @@ fn summaries(conn: &Connection, filter: &str, param: &str) -> Result<Vec<TaskSum
 
 /// 各状态任务数，按标准顺序，含全部状态。
 pub(crate) fn counts(conn: &Connection, team_id: &str) -> Result<Vec<StatusCount>> {
-    let mut stmt =
-        conn.prepare("SELECT status, COUNT(*) FROM tasks WHERE team_id = ?1 GROUP BY status")?;
-    let found: HashMap<TaskStatus, u32> = stmt
-        .query_map(params![team_id], |row| Ok((enum_col(row, 0)?, row.get(1)?)))?
-        .collect::<rusqlite::Result<_>>()?;
+    let found = status_counts(conn, team_id)?;
     Ok(TaskStatus::ALL
         .into_iter()
         .map(|status| StatusCount {
@@ -187,48 +204,236 @@ pub(crate) fn counts(conn: &Connection, team_id: &str) -> Result<Vec<StatusCount
         .collect())
 }
 
+/// 团队里每个状态的任务数。
+fn status_counts(conn: &Connection, team_id: &str) -> Result<HashMap<TaskStatus, u32>> {
+    let mut stmt =
+        conn.prepare("SELECT status, COUNT(*) FROM tasks WHERE team_id = ?1 GROUP BY status")?;
+    let found: HashMap<TaskStatus, u32> = stmt
+        .query_map(params![team_id], |row| Ok((enum_col(row, 0)?, row.get(1)?)))?
+        .collect::<rusqlite::Result<_>>()?;
+    Ok(found)
+}
+
 /// 岗位负责的最近任务（任何状态），按更新时间倒序，最多 `limit` 条；以及该岗位负责的任务总数。
 pub(crate) fn recent_for_owner(
     conn: &Connection,
     role_id: &str,
     limit: usize,
 ) -> Result<(Vec<TaskSummary>, u32)> {
-    let mut tasks = summaries(conn, "t.owner_role_id = ?1", role_id)?;
-    let total = u32::try_from(tasks.len()).unwrap_or(u32::MAX);
-    tasks.truncate(limit);
+    // 总数单独查（走 `tasks_owner` 索引），列表在 SQL 里限量，不把该岗位的全部任务读进内存。
+    let total: u32 = conn.query_row(
+        "SELECT COUNT(*) FROM tasks WHERE owner_role_id = ?1",
+        params![role_id],
+        |row| row.get(0),
+    )?;
+    let tasks = summaries_where(conn, "t.owner_role_id = ?1", &[&role_id], Some(limit))?;
     Ok((tasks, total))
 }
 
-/// 进行中的任务（执行中、受阻、待验收）。
+/// 进行中的任务（执行中、受阻、待验收），最多 [`ACTIVE_TASK_LIMIT`] 条。
 pub(crate) fn active(conn: &Connection, team_id: &str) -> Result<Vec<TaskSummary>> {
-    summaries(
+    summaries_where(
         conn,
         "t.team_id = ?1 AND t.status IN ('doing', 'blocked', 'review')",
-        team_id,
+        &[&team_id],
+        Some(ACTIVE_TASK_LIMIT as usize),
     )
 }
 
 pub(crate) fn board(conn: &Connection, query: &TaskBoardQuery) -> Result<TaskBoard> {
     team::get_active(conn, &query.team_id)?;
     let include_cancelled = query.include_cancelled.unwrap_or(false);
-    let mut all = summaries(conn, "t.team_id = ?1", &query.team_id)?;
+    let counts = status_counts(conn, &query.team_id)?;
     let columns = TaskStatus::ALL
         .into_iter()
         .filter(|s| include_cancelled || *s != TaskStatus::Cancelled)
         .map(|status| {
-            let (tasks, rest): (Vec<_>, Vec<_>) = all.drain(..).partition(|t| t.status == status);
-            all = rest;
-            BoardColumn {
+            let page = status_summaries(conn, &query.team_id, status, query.limit, None)?;
+            Ok(BoardColumn {
                 status,
                 label: status.label().to_owned(),
-                tasks,
-            }
+                total: counts.get(&status).copied().unwrap_or(0),
+                has_more: page.has_more,
+                next_cursor: page.next_cursor,
+                tasks: page.tasks,
+            })
         })
-        .collect();
+        .collect::<Result<Vec<_>>>()?;
     Ok(TaskBoard {
         team_id: query.team_id.clone(),
         columns,
     })
+}
+
+/// 团队的轻量任务列表（编号与标题），按更新时间倒序。
+///
+/// 给只需要编号与标题的地方用（活动页的任务下拉框）：任务上万时不把每条任务的计数、
+/// 负责人、依赖等一整套摘要都读出来。
+pub(crate) fn options(conn: &Connection, team_id: &str) -> Result<Vec<TaskOption>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, key, title FROM tasks WHERE team_id = ?1 ORDER BY updated_at DESC, id DESC",
+    )?;
+    let rows = stmt.query_map(params![team_id], |row| {
+        Ok(TaskOption {
+            id: row.get(0)?,
+            key: row.get(1)?,
+            title: row.get(2)?,
+        })
+    })?;
+    Ok(rows.collect::<rusqlite::Result<_>>()?)
+}
+
+/// 看板单列分页（界面「加载更多」用）：按更新时间倒序，游标是上一页最后一条的
+/// `updated_at` 与 `id`（对界面不透明）。
+pub(crate) fn board_column(conn: &Connection, query: &BoardColumnQuery) -> Result<BoardColumnPage> {
+    team::get_active(conn, &query.team_id)?;
+    let limit = query
+        .limit
+        .unwrap_or(BOARD_COLUMN_LIMIT)
+        .clamp(1, BOARD_COLUMN_MAX);
+    let cursor = query.cursor.as_deref().map(parse_cursor).transpose()?;
+    let page = status_summaries(
+        conn,
+        &query.team_id,
+        query.status,
+        Some(limit),
+        cursor.as_ref(),
+    )?;
+    let total = status_counts(conn, &query.team_id)?
+        .get(&query.status)
+        .copied()
+        .unwrap_or(0);
+    Ok(BoardColumnPage {
+        status: query.status,
+        label: query.status.label().to_owned(),
+        tasks: page.tasks,
+        total,
+        next_cursor: page.next_cursor,
+    })
+}
+
+/// 某个状态列取到的一页。
+struct StatusPage {
+    tasks: Vec<TaskSummary>,
+    /// 还有更多任务。
+    has_more: bool,
+    /// 下一页游标（没有更多时为 `None`）。
+    next_cursor: Option<String>,
+}
+
+/// 取某个状态的任务摘要（按更新时间倒序）。
+///
+/// `limit` 为 `None` 时取全部；给了上限就多取一条判断还有没有更多。
+/// `cursor` 为上一页最后一条的 `(updated_at, id)`，只取比它更早的。
+fn status_summaries(
+    conn: &Connection,
+    team_id: &str,
+    status: TaskStatus,
+    limit: Option<u32>,
+    cursor: Option<&(String, String)>,
+) -> Result<StatusPage> {
+    let status_text = enum_str(status);
+    match cursor {
+        None => {
+            let mut sql = format!("{SUMMARY_SQL} WHERE t.team_id = ?1 AND t.status = ?2");
+            let args: Vec<Box<dyn rusqlite::ToSql>> =
+                vec![Box::new(team_id.to_owned()), Box::new(status_text)];
+            if let Some(limit) = limit {
+                sql.push_str(&format!(
+                    " ORDER BY t.updated_at DESC, t.id DESC LIMIT {}",
+                    limit + 1
+                ));
+            } else {
+                sql.push_str(" ORDER BY t.updated_at DESC, t.id DESC");
+            }
+            let mut stmt = conn.prepare(&sql)?;
+            let refs: Vec<&dyn rusqlite::ToSql> = args.iter().map(|a| a.as_ref()).collect();
+            let mut rows = stmt
+                .query_map(refs.as_slice(), summary_row)?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            let has_more = limit.is_some_and(|limit| rows.len() > limit as usize);
+            if limit.is_some() {
+                rows.truncate(limit.unwrap_or(0) as usize);
+            }
+            let next_cursor = if has_more {
+                rows.last()
+                    .map(|task| format_cursor(&task.updated_at, &task.id))
+            } else {
+                None
+            };
+            Ok(StatusPage {
+                tasks: rows,
+                has_more,
+                next_cursor,
+            })
+        }
+        Some((updated_at, id)) => {
+            // 游标分页：`(updated_at, id)` 整体更早才算下一页，与排序口径一致。
+            let limit = limit.unwrap_or(BOARD_COLUMN_LIMIT);
+            let sql = format!(
+                "{SUMMARY_SQL} WHERE t.team_id = ?1 AND t.status = ?2
+                   AND (t.updated_at < ?3 OR (t.updated_at = ?3 AND t.id < ?4))
+                 ORDER BY t.updated_at DESC, t.id DESC LIMIT {}",
+                limit + 1
+            );
+            let mut stmt = conn.prepare(&sql)?;
+            let mut rows = stmt
+                .query_map(params![team_id, status_text, updated_at, id], summary_row)?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            let has_more = rows.len() > limit as usize;
+            rows.truncate(limit as usize);
+            let next_cursor = if has_more {
+                rows.last()
+                    .map(|task| format_cursor(&task.updated_at, &task.id))
+            } else {
+                None
+            };
+            Ok(StatusPage {
+                tasks: rows,
+                has_more,
+                next_cursor,
+            })
+        }
+    }
+}
+
+/// 摘要行 → [`TaskSummary`]。
+fn summary_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<TaskSummary> {
+    Ok(TaskSummary {
+        id: row.get(0)?,
+        key: row.get(1)?,
+        title: row.get(2)?,
+        status: enum_col(row, 3)?,
+        blocked_reason: row.get(4)?,
+        updated_at: row.get(5)?,
+        owner: crate::model::RoleRef {
+            id: row.get(6)?,
+            name: row.get(7)?,
+            code: row.get(8)?,
+            task_prefix: row.get(9)?,
+            archived: row.get(10)?,
+        },
+        file_ref_count: row.get(11)?,
+        dependency_count: row.get(12)?,
+        open_dependency_count: row.get(13)?,
+        change_incomplete: row.get(14)?,
+    })
+}
+
+/// 看板分页游标：`updated_at|id`（两者都不含 `|`，可原样拆开）。
+fn format_cursor(updated_at: &str, id: &str) -> String {
+    format!("{updated_at}|{id}")
+}
+
+/// 解析看板分页游标。
+fn parse_cursor(raw: &str) -> Result<(String, String)> {
+    let (updated_at, id) = raw
+        .split_once('|')
+        .ok_or_else(|| Error::invalid("看板分页游标无效"))?;
+    if updated_at.is_empty() || id.is_empty() {
+        return Err(Error::invalid("看板分页游标无效"));
+    }
+    Ok((updated_at.to_owned(), id.to_owned()))
 }
 
 /// 文件存在性检查结果；人工命令在锁外预检，自动依赖推进在事务内检查下游引用。

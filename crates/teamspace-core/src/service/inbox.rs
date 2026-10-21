@@ -17,9 +17,9 @@ use rusqlite::{Connection, params};
 use crate::error::Result;
 use crate::model::{
     Inbox, InboxCategory, InboxCounts, InboxItem, InboxTarget, Message, MessageSender,
-    MessageStatus, Task, TaskStatus,
+    MessageStatus, TaskStatus,
 };
-use crate::service::{decision, message, run as run_svc, task, team};
+use crate::service::{decision, message, run as run_svc, team};
 use crate::store::{enum_str, now};
 
 /// Leader 越权记录的时间窗：最近 7 天。
@@ -80,10 +80,14 @@ fn category_order(category: InboxCategory) -> u8 {
 // ---------------------------------------------------------------- 待验收
 
 fn review_items(conn: &Connection, team_id: &str, items: &mut Vec<InboxItem>) -> Result<()> {
-    for task in tasks_in_status(conn, team_id, TaskStatus::Review)? {
-        let run = run_svc::latest_for_task(conn, &task.id)?;
-        let no_changes = run.as_ref().is_some_and(|r| r.no_changes);
-        let impact = match run.as_ref().and_then(|r| r.base_branch.as_deref()) {
+    let tasks = tasks_in_status(conn, team_id, TaskStatus::Review)?;
+    // 最近一次执行一次查回（不逐个任务查），待验收要用的只有执行 id、结束时间与改动统计。
+    let ids: Vec<String> = tasks.iter().map(|task| task.id.clone()).collect();
+    let runs = run_svc::latest_for_tasks(conn, &ids)?;
+    for task in tasks {
+        let run = runs.get(&task.id);
+        let no_changes = run.is_some_and(|run| run.no_changes);
+        let impact = match run.and_then(|run| run.base_branch.as_deref()) {
             Some(branch) => format!("通过后将合并到 {branch}"),
             None => "通过后任务标记完成".to_owned(),
         };
@@ -101,10 +105,9 @@ fn review_items(conn: &Connection, team_id: &str, items: &mut Vec<InboxItem>) ->
             task_key: Some(task.key.clone()),
             message_id: None,
             thread_id: None,
-            run_id: run.as_ref().map(|r| r.id.clone()),
+            run_id: run.map(|run| run.id.clone()),
             occurred_at: run
-                .as_ref()
-                .and_then(|r| r.ended_at.clone())
+                .and_then(|run| run.ended_at.clone())
                 .unwrap_or_else(|| task.updated_at.clone()),
             impact,
             suggestion: "打开验收页查看改动，通过或退回".to_owned(),
@@ -355,6 +358,14 @@ fn leader_denied_items(conn: &Connection, team_id: &str, items: &mut Vec<InboxIt
             ))
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
+    // 关联任务的编号一次查回，不逐条查。
+    let keys = task_keys(
+        conn,
+        &rows
+            .iter()
+            .filter_map(|row| row.1.clone())
+            .collect::<Vec<_>>(),
+    );
     for (id, task_id, summary, data, created_at) in rows {
         let data: serde_json::Value =
             serde_json::from_str(&data).unwrap_or(serde_json::Value::Null);
@@ -369,7 +380,7 @@ fn leader_denied_items(conn: &Connection, team_id: &str, items: &mut Vec<InboxIt
             category_label: InboxCategory::LeaderDenied.label().to_owned(),
             title: summary,
             task_id: task_id.clone(),
-            task_key: task_id.as_deref().and_then(|t| task_key_of(conn, t)),
+            task_key: task_id.as_deref().and_then(|t| keys.get(t).cloned()),
             message_id: None,
             thread_id: None,
             run_id: None,
@@ -385,17 +396,29 @@ fn leader_denied_items(conn: &Connection, team_id: &str, items: &mut Vec<InboxIt
 
 // ---------------------------------------------------------------- 辅助
 
-/// 团队里处于某个状态的任务。
-fn tasks_in_status(conn: &Connection, team_id: &str, status: TaskStatus) -> Result<Vec<Task>> {
+/// 团队里处于某个状态的任务（只要聚合要用的几个字段，不把引用与依赖读进来）。
+fn tasks_in_status(conn: &Connection, team_id: &str, status: TaskStatus) -> Result<Vec<InboxTask>> {
     let mut stmt = conn.prepare(
-        "SELECT id FROM tasks WHERE team_id = ?1 AND status = ?2 ORDER BY updated_at DESC, id",
+        "SELECT id, key, blocked_reason, updated_at FROM tasks
+         WHERE team_id = ?1 AND status = ?2 ORDER BY updated_at DESC, id",
     )?;
-    let ids = stmt
-        .query_map(params![team_id, enum_str(status)], |row| {
-            row.get::<_, String>(0)
-        })?
-        .collect::<rusqlite::Result<Vec<_>>>()?;
-    ids.into_iter().map(|id| task::get(conn, &id)).collect()
+    let rows = stmt.query_map(params![team_id, enum_str(status)], |row| {
+        Ok(InboxTask {
+            id: row.get(0)?,
+            key: row.get(1)?,
+            blocked_reason: row.get(2)?,
+            updated_at: row.get(3)?,
+        })
+    })?;
+    Ok(rows.collect::<rusqlite::Result<_>>()?)
+}
+
+/// 待我处理里用到的任务字段。
+struct InboxTask {
+    id: String,
+    key: String,
+    blocked_reason: Option<String>,
+    updated_at: String,
 }
 
 /// 现在往前推若干天（UTC RFC3339，与 `created_at` 同格式，可直接比较）。
@@ -421,6 +444,32 @@ fn role_name_of(conn: &Connection, role_id: &str) -> String {
         |row| row.get::<_, String>(0),
     )
     .unwrap_or_default()
+}
+
+/// 一批任务的编号（一次查回，不逐条查）。
+fn task_keys(conn: &Connection, task_ids: &[String]) -> std::collections::HashMap<String, String> {
+    let mut keys = std::collections::HashMap::new();
+    for chunk in task_ids.chunks(400) {
+        if chunk.is_empty() {
+            continue;
+        }
+        let placeholders = vec!["?"; chunk.len()].join(", ");
+        let sql = format!("SELECT id, key FROM tasks WHERE id IN ({placeholders})");
+        let Ok(mut stmt) = conn.prepare(&sql) else {
+            continue;
+        };
+        let refs: Vec<&dyn rusqlite::ToSql> =
+            chunk.iter().map(|id| id as &dyn rusqlite::ToSql).collect();
+        let Ok(rows) = stmt.query_map(refs.as_slice(), |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        }) else {
+            continue;
+        };
+        for row in rows.flatten() {
+            keys.insert(row.0, row.1);
+        }
+    }
+    keys
 }
 
 fn task_key_of(conn: &Connection, task_id: &str) -> Option<String> {

@@ -7,6 +7,19 @@ import type { TaskSummary } from "./TaskSummary.js";
  */
 export type BoardColumn = { status: TaskStatus, label: string, 
 /**
- * 按更新时间倒序。
+ * 按更新时间倒序。分页时只有这一页，不是该列的全部任务。
  */
-tasks: Array<TaskSummary>, };
+tasks: Array<TaskSummary>, 
+/**
+ * 该列的任务总数（分页后仍然给出，界面据此显示「共 N 条」）。
+ */
+total: number, 
+/**
+ * 还有更多任务没取回（可继续「加载更多」）。
+ */
+hasMore: boolean, 
+/**
+ * 下一页的游标（没有更多时为 `null`）。界面「加载更多」时原样传给
+ * [`BoardColumnQuery::cursor`]。
+ */
+nextCursor: string | null, };

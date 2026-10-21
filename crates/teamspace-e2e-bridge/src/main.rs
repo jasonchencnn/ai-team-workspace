@@ -313,6 +313,38 @@ fn dispatch(
             }
             Ok(Value::Null)
         }
+        // 测试专用命令：给团队造一批任务与活动（性能用例用）。
+        //
+        // 直接写库，不走业务接口：2000 条任务要几千次 IPC，走接口太慢；这里要的是
+        // 「团队里已经有两千条任务」这个状态，不是「创建任务」这个流程。
+        "__seed_tasks" => {
+            let team_id = args["teamId"].as_str().unwrap_or_default().to_owned();
+            let task_count = args["taskCount"].as_u64().unwrap_or(2000) as usize;
+            if team_id.is_empty() {
+                return Err(bad("teamId 不能为空".to_owned()));
+            }
+            let conn = rusqlite::Connection::open(db)
+                .map_err(|err| bad(format!("打开数据库失败：{err}")))?;
+            let role_ids = {
+                let mut stmt = conn
+                    .prepare("SELECT id FROM roles WHERE team_id = ?1")
+                    .map_err(|err| bad(format!("查询岗位失败：{err}")))?;
+                let rows = stmt
+                    .query_map(rusqlite::params![team_id], |row| row.get::<_, String>(0))
+                    .map_err(|err| bad(format!("查询岗位失败：{err}")))?;
+                rows.collect::<rusqlite::Result<Vec<_>>>()
+                    .map_err(|err| bad(format!("查询岗位失败：{err}")))?
+            };
+            let seed = teamspace_core::perf_seed::seed_large_team(
+                &conn, &team_id, &role_ids, None, task_count,
+            )
+            .map_err(|err| err.payload())?;
+            Ok(json!({
+                "taskCount": seed.task_count,
+                "eventCount": seed.event_count,
+                "threadCount": seed.thread_count,
+            }))
+        }
         other => {
             let ts = current(shared)?;
             teamspace_core::dispatch::dispatch(&ts, Caller::Human, other, args)

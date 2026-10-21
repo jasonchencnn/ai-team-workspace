@@ -89,6 +89,8 @@ pub const COMMANDS: &[&str] = &[
     "check_harness",
     "list_task_statuses",
     "get_task_board",
+    "list_board_column",
+    "list_task_options",
     "get_task",
     "create_task",
     "update_task",
@@ -1201,8 +1203,21 @@ impl Teamspace {
     }
 
     /// 看板数据：按状态分组，始终包含 done 列，cancelled 列仅在 `includeCancelled` 时包含。
+    ///
+    /// `limit` 限制每列返回多少条任务（缺省不限制，返回该列全部任务）。任务多时界面用
+    /// `limit` 分页，再按列调用 [`Teamspace::list_board_column`] 继续加载。
     pub fn get_task_board(&self, input: TaskBoardQuery) -> Result<TaskBoard> {
         task::board(&self.lock(), &input)
+    }
+
+    /// 看板单列的分页（界面「加载更多」用）：按更新时间倒序，游标是上一页返回的 `nextCursor`。
+    pub fn list_board_column(&self, input: BoardColumnQuery) -> Result<BoardColumnPage> {
+        task::board_column(&self.lock(), &input)
+    }
+
+    /// 团队的轻量任务列表（编号与标题），按更新时间倒序。
+    pub fn list_task_options(&self, team_id: &str) -> Result<Vec<TaskOption>> {
+        task::options(&self.lock(), team_id)
     }
 
     /// 任务详情：依赖、下游、文件存在情况、相关活动、可执行的流转和就绪问题。

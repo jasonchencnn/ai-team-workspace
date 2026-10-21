@@ -132,6 +132,7 @@ fn restore_brings_back_the_state_at_export_time() {
         f.ts.get_task_board(TaskBoardQuery {
             team_id: team.id.clone(),
             include_cancelled: None,
+            limit: None,
         })
         .unwrap();
     let titles: Vec<String> = board

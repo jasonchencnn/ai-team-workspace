@@ -76,10 +76,16 @@ pub(crate) fn recent(conn: &Connection, team_id: &str, limit: u32) -> Result<Vec
     Ok(rows.collect::<rusqlite::Result<_>>()?)
 }
 
-/// 与某任务相关的全部活动，时间倒序。
+/// 任务详情里回填的活动条数上限。
+///
+/// 活动表在长期使用的团队里会到万级；任务详情只要最近的一批，
+/// 一次把某个任务的全部活动拉出来会拖慢打开速度。
+pub(crate) const TASK_EVENT_LIMIT: u32 = 200;
+
+/// 与某任务相关的活动，时间倒序（最多 [`TASK_EVENT_LIMIT`] 条）。
 pub(crate) fn for_task(conn: &Connection, task_id: &str) -> Result<Vec<Event>> {
     let mut stmt = conn.prepare(&format!(
-        "SELECT {COLS} FROM events WHERE task_id = ?1 ORDER BY seq DESC"
+        "SELECT {COLS} FROM events WHERE task_id = ?1 ORDER BY seq DESC LIMIT {TASK_EVENT_LIMIT}"
     ))?;
     let rows = stmt.query_map(params![task_id], from_row)?;
     Ok(rows.collect::<rusqlite::Result<_>>()?)
