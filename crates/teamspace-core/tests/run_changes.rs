@@ -114,19 +114,14 @@ fn shell_write_outside_scope_in_a_plain_folder_blocks_the_task() {
         "{journal}"
     );
     // 事件推送里的最终记录也带着范围外清单（最终的 run_changed 在岗位文件夹同步之后推送，稍等）。
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-    while !e.events.lock().unwrap().iter().any(|ev| {
-        matches!(
-            ev,
-            RunEvent::RunChanged { run: r } if r.id == run.id && r.out_of_scope == ["output.txt"]
-        )
-    }) {
-        assert!(
-            std::time::Instant::now() < deadline,
-            "没有收到带范围外清单的 run_changed"
-        );
-        std::thread::sleep(std::time::Duration::from_millis(20));
-    }
+    e.wait_event("run_changed(out_of_scope)", |events| {
+        events.iter().any(|ev| {
+            matches!(
+                ev,
+                RunEvent::RunChanged { run: r } if r.id == run.id && r.out_of_scope == ["output.txt"]
+            )
+        })
+    });
     // 结束后快照文件已清理。
     assert!(
         !e.dir
