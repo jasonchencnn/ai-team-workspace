@@ -3,6 +3,7 @@
 
 pub mod acp;
 pub mod api;
+pub mod backup;
 pub mod control;
 pub mod delivery;
 pub mod dispatch;

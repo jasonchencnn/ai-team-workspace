@@ -46,6 +46,13 @@
 | D33 | 岗位消息过期时限保持 7 天（Figma 画板写 24 小时，以内核为准）；画板中的消息类型、引用 / reply_to、改派、以岗位身份回复、投递时绑定快照本期不做，绑定快照随 M6-01 实现 | 总指挥按 D27 于 2026-10-21 裁定：先保证消息闭环可用，复杂编排留待使用中再加 |
 | D34 | 调整 D25/D27 的执行者：OpenCode 上的 MiniMax M3.1 已不免费，开发主力改为 MiniMax Code CLI（`mcode`，免费期内）；OpenCode 只用名称带 `free` 的模型（`opencode/minimax-m3.1-flash-free`、`opencode/deepseek-v4.1-flash-free`）做辅助开发与交叉审查；agy（Gemini 3.8 Flash）做校验与回归；总指挥只做分派、进度跟踪、答疑与验收。项目于 2026-10-21 迁到外置固态盘 `/Volumes/jasonchen/MyVault/协作工作` | Human 于 2026-10-21 迁移完成后以 /goal 指定 |
 
+## 2026-10-21 M7 打磨与发布
+
+| # | 决策 | 原因 |
+|---|---|---|
+| D35 | 数据备份（M7-04）的格式与恢复策略：备份目录为 `manifest.json`（版本、schema、导出时间、团队与工作空间路径、文件清单）+ `database/teamspace.db`（`VACUUM INTO` 生成的一致性快照，不复制正在写的库文件）+ `workspaces/<团队标识>/<岗位文件夹>/`（各团队工作空间下 `Teamspace/` 的岗位文件夹副本）；恢复前先自动导出一份「恢复前备份」；备份的 schema 比当前程序新时拒绝恢复、比旧时恢复后自动迁移；恢复数据库按「WAL 检查点 → 关旧连接 → 覆盖主库文件 → 重新打开并迁移」执行，恢复后提示重启应用；岗位文件夹按清单写回原工作空间，工作空间不存在时跳过并在结果里逐条列出。覆盖主库前先另存一份原库：新库打不开时放回原库并报错。备份与恢复只由 Human 在应用里发起，Leader 经控制 socket 调用一律拒绝并留 `leader_denied` 痕迹 | 备份要能自证完整（清单 + 可独立打开的快照），恢复要能退回去（恢复前备份），且不能给 Leader 覆盖数据的口子（D8）。用 `VACUUM INTO` 而不是复制库文件，是因为后者可能拷到写了一半的 WAL 状态 |
+| D36 | 本地打包走 Tauri 官方 bundle：`bundle.active` 打开、目标为 `app` 与 `dmg`、不做代码签名（自用），图标由仓库已有的 `apps/desktop/src-tauri/icons/icon.png` 生成整套（`tauri icon`）；根 `package.json` 增加 `package` 脚本只打包不发布 | 里程碑目标就是「本地未签名 `.dmg`（自用）」；官方 bundle 产出最省事，签名与公证不在本期范围 |
+
 ## 沿用的原始产品原则
 
 以下原则来自 `docs/product/PRD-V1.md` 和 `docs/product/V2-愿景与重启基线.md`，继续有效：

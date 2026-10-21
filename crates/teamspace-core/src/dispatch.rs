@@ -4,8 +4,9 @@
 //! [`Caller::Human`]，经控制 socket 进来的是 [`Caller::Leader`]。调用者身份随参数一路传到写活动
 //! 的地方（[`Teamspace`] 的 `*_as` 方法），不依赖全局可变状态。
 //!
-//! Leader 只能执行 [`LEADER_ALLOWED`] 里的命令，其余一律拒绝：返回中文错误，并记一条
-//! `leader_denied` 活动（操作者为 Leader），让越权尝试在活动页里留痕。
+//! Leader 只能执行 [`LEADER_ALLOWED`] 里的命令，且不得执行 [`LEADER_DENIED`] 里点名的操作；
+//! 其余一律拒绝：返回中文错误，并记一条 `leader_denied` 活动（操作者为 Leader），
+//! 让越权尝试在活动页里留痕。
 
 use rusqlite::Connection;
 use serde::de::DeserializeOwned;
@@ -77,6 +78,12 @@ pub const LEADER_ALLOWED: &[&str] = &[
     // 待我处理（只读：Leader 可以看，但不能记录决策、也不能改通知订阅）
     "get_inbox",
 ];
+
+/// Leader 明确无权执行的操作：即便将来有人误把它加进白名单，这里也会挡住。
+///
+/// 数据备份（M7-04）在这张名单上：备份里含整个数据库与各团队工作空间的岗位说明与工作日志，
+/// 恢复还会覆盖当前数据——这类操作只能由 Human 在应用里发起。
+pub const LEADER_DENIED: &[&str] = &["export_backup", "inspect_backup", "restore_backup"];
 
 /// 分发一条命令：按 `cmd` 找到内核方法，参数取自 `args`。
 ///
@@ -197,12 +204,19 @@ pub fn dispatch(
         "list_decisions" => out(ts.list_decisions(arg(args, "input")?)),
         "get_notification_settings" => out(ts.get_notification_settings(arg(args, "input")?)),
         "update_notification_settings" => out(ts.update_notification_settings(arg(args, "input")?)),
+        "export_backup" => out(ts.export_backup(arg(args, "input")?)),
+        "inspect_backup" => out(ts.inspect_backup(arg(args, "input")?)),
+        "restore_backup" => out(ts.restore_backup(arg(args, "input")?)),
         other => Err(bad(format!("未知命令：{other}"))),
     }
 }
 
-/// Leader 能否执行该命令：命令须在白名单内；变更任务状态时还不能置为已完成。
+/// Leader 能否执行该命令：命令须在白名单内、且不在明确拒绝名单里；
+/// 变更任务状态时还不能置为已完成。
 fn leader_allowed(cmd: &str, args: &Value) -> bool {
+    if LEADER_DENIED.contains(&cmd) {
+        return false;
+    }
     if !LEADER_ALLOWED.contains(&cmd) {
         return false;
     }
@@ -282,6 +296,9 @@ fn operation_label(cmd: &str) -> String {
         "list_decisions" => "查看决策记录",
         "get_notification_settings" => "查看通知订阅设置",
         "update_notification_settings" => "修改通知订阅设置",
+        "export_backup" => "导出数据备份",
+        "inspect_backup" => "查看数据备份摘要",
+        "restore_backup" => "恢复数据备份",
         other => other,
     }
     .to_owned()
@@ -392,11 +409,23 @@ mod tests {
         }
     }
 
+    /// 明确拒绝名单里的每一条都必须是真实存在的命令，且不能与白名单重叠。
+    #[test]
+    fn denied_list_only_contains_known_commands() {
+        for cmd in LEADER_DENIED {
+            assert!(COMMANDS.contains(cmd), "拒绝名单里的 {cmd} 不是内核命令");
+            assert!(
+                !LEADER_ALLOWED.contains(cmd),
+                "{cmd} 同时在白名单和拒绝名单里"
+            );
+        }
+    }
+
     /// 白名单逐条覆盖：允许的命令判定为允许，其余命令判定为拒绝。
     #[test]
     fn whitelist_decides_every_command() {
         for cmd in COMMANDS {
-            let allowed = LEADER_ALLOWED.contains(cmd);
+            let allowed = LEADER_ALLOWED.contains(cmd) && !LEADER_DENIED.contains(cmd);
             assert_eq!(
                 leader_allowed(cmd, &Value::Null),
                 allowed,
@@ -429,6 +458,9 @@ mod tests {
             "open_run_file",
             "open_role_path",
             "reveal_role_folder",
+            "export_backup",
+            "inspect_backup",
+            "restore_backup",
         ];
         for cmd in denied {
             assert!(
