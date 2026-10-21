@@ -1,0 +1,130 @@
+/* 「接入 Leader」卡片：配置文本块与说明。颜色、圆角、字号只使用 theme.css 的变量。 */
+
+.li-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  min-width: 0;
+}
+
+.li-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+}
+
+.li-title {
+  font-size: var(--font-size-section-title);
+  font-weight: 700;
+  line-height: var(--line-height-section-title);
+}
+
+.li-note {
+  color: var(--color-muted);
+  font-size: var(--font-size-caption);
+  line-height: var(--line-height-caption);
+  overflow-wrap: anywhere;
+}
+
+.li-warn {
+  padding: 12px 16px;
+  border-radius: var(--radius-control);
+  background: var(--color-warning-surface);
+  color: var(--color-warning);
+  font-size: var(--font-size-body);
+  line-height: var(--line-height-body);
+  overflow-wrap: anywhere;
+}
+
+.li-done {
+  color: var(--color-success);
+  font-size: var(--font-size-body);
+  line-height: var(--line-height-body);
+  overflow-wrap: anywhere;
+}
+
+/* 能做 / 不能做：两列排布，窄屏下竖排。 */
+.li-lists {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 16px;
+}
+
+@media (min-width: 1080px) {
+  .li-lists {
+    grid-template-columns: 1fr 1fr;
+  }
+}
+
+.li-list {
+  min-width: 0;
+}
+
+.li-list__title {
+  font-size: var(--font-size-body);
+  font-weight: 600;
+  line-height: var(--line-height-body);
+}
+
+.li-list__items {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 6px 0 0;
+  padding-left: 20px;
+  color: var(--color-muted);
+  font-size: var(--font-size-caption);
+  line-height: var(--line-height-caption);
+}
+
+/* 三段配置 */
+.li-sections {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.li-section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+
+.li-section__head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.li-section__title {
+  font-size: var(--font-size-body);
+  font-weight: 600;
+  line-height: var(--line-height-body);
+}
+
+/* 配置文本：等宽字体，长路径按任意位置折行，不撑破面板。 */
+.li-code {
+  margin: 0;
+  padding: 12px 16px;
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius-control);
+  background: var(--color-canvas);
+  color: var(--color-ink);
+  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  font-size: var(--font-size-caption);
+  line-height: var(--line-height-caption);
+  overflow-x: auto;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.li-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+}

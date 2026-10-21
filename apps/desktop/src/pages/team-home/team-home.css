@@ -131,6 +131,11 @@
   }
 }
 
+/* 「接入 Leader」卡片独占一行，放在两个面板下面。 */
+.th-leader {
+  min-width: 0;
+}
+
 .th-panel {
   display: flex;
   flex-direction: column;

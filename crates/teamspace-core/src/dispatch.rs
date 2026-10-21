@@ -165,6 +165,10 @@ pub fn dispatch(
         "list_threads" => out(ts.list_threads(arg(args, "input")?)),
         "get_thread" => out(ts.get_thread(&arg::<String>(args, "threadId")?)),
         "retry_message" => out(ts.retry_message(&arg::<String>(args, "messageId")?)),
+        "leader_integration" => out(ts.leader_integration(&arg::<String>(args, "teamId")?)),
+        "write_workspace_mcp_config" => {
+            out(ts.write_workspace_mcp_config(&arg::<String>(args, "teamId")?))
+        }
         other => Err(bad(format!("未知命令：{other}"))),
     }
 }
@@ -236,6 +240,8 @@ fn operation_label(cmd: &str) -> String {
         "resolve_merge_manually" => "已手动合并并标记完成",
         "rerun_after_conflict" => "合并冲突后重新执行",
         "retry_message" => "重发消息",
+        "leader_integration" => "生成 Leader 接入配置",
+        "write_workspace_mcp_config" => "写入工作空间 .mcp.json",
         other => other,
     }
     .to_owned()

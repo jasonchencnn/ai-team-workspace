@@ -103,6 +103,8 @@ pub const COMMANDS: &[&str] = &[
     "list_threads",
     "get_thread",
     "retry_message",
+    "leader_integration",
+    "write_workspace_mcp_config",
 ];
 
 /// 执行事件的 Tauri 事件名，载荷为 [`RunEvent`]（见 [`Teamspace::set_run_listener`]）。

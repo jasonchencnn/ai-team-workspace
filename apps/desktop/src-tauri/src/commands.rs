@@ -262,6 +262,24 @@ pub fn list_events(ts: State<'_, Arc<Teamspace>>, input: EventQuery) -> Result<E
     ts.list_events(input)
 }
 
+/// Leader 接入配置：`teamspace-mcp` 路径、控制 socket 路径与三段可复制的配置文本。
+#[tauri::command(async)]
+pub fn leader_integration(
+    ts: State<'_, Arc<Teamspace>>,
+    team_id: &str,
+) -> Result<LeaderIntegration, Error> {
+    ts.leader_integration(team_id)
+}
+
+/// 把 `mcpServers.teamspace` 合并进工作空间的 `.mcp.json`（只在用户确认后调用）。
+#[tauri::command(async)]
+pub fn write_workspace_mcp_config(
+    ts: State<'_, Arc<Teamspace>>,
+    team_id: &str,
+) -> Result<McpConfigWrite, Error> {
+    ts.write_workspace_mcp_config(team_id)
+}
+
 #[tauri::command(async)]
 pub fn start_run(ts: State<'_, Arc<Teamspace>>, task_id: &str) -> Result<Run, Error> {
     ts.start_run(task_id)
