@@ -52,6 +52,16 @@ function summary(partial: Partial<BackupSummary> = {}): BackupSummary {
     teams: [team()],
     needsMigration: false,
     databaseFile: "database/teamspace.db",
+    validation: {
+      databaseReadable: true,
+      databaseIntegrity: "ok",
+      databaseSchemaVersion: 15,
+      schemaMatches: true,
+      filesMatch: true,
+      skippedFolders: 0,
+      restorable: true,
+      problems: [],
+    },
     ...partial,
   };
 }
