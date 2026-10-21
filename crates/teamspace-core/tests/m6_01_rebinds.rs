@@ -11,6 +11,8 @@ use std::time::{Duration, Instant};
 
 use common::*;
 use teamspace_core::model::*;
+use teamspace_core::system_probe::LocalProbe;
+use teamspace_core::{AgentCommand, HostConfig, Teamspace};
 
 /// 团队里的第二个 Harness 实例（Mock）。
 fn second_harness(e: &Env, name: &str) -> HarnessInstance {
@@ -54,9 +56,14 @@ fn wait_message(
 
 /// 等到岗位的绑定换成目标 Harness（最多 30 秒）。
 fn wait_binding(e: &Env, harness_id: &str) -> RoleView {
+    wait_binding_of(&e.ts, &e.role.id, harness_id)
+}
+
+/// 等到（任意实例里的）岗位绑定换成目标 Harness（最多 30 秒）。
+fn wait_binding_of(ts: &Teamspace, role_id: &str, harness_id: &str) -> RoleView {
     let deadline = Instant::now() + Duration::from_secs(30);
     loop {
-        let view = e.ts.get_role_workbench(&e.role.id).unwrap().view;
+        let view = ts.get_role_workbench(role_id).unwrap().view;
         if view.role.harness_id.as_deref() == Some(harness_id) {
             return view;
         }
@@ -212,9 +219,11 @@ fn cancel_and_rerun_cancels_the_run_and_reruns_on_the_new_harness() {
     assert_eq!(rerun.attempt, 2);
 }
 
-/// 「人工接管」：取消进行中的执行，任务转为受阻并注明「人工接管」，立即换绑。
+/// 「人工接管」：复用现有人工接管——执行记为已被接管，任务留在执行中，立即换绑（D35①）。
+///
+/// 与现有人工接管一致：Human 改完可以直接提交验收，任务不转受阻。
 #[test]
-fn manual_takeover_blocks_the_task_and_binds_immediately() {
+fn manual_takeover_marks_the_run_as_taken_over_and_keeps_the_task_doing() {
     let e = env(false);
     let b = second_harness(&e, "Mock B");
     let task = e.task("构建 [mock:perm]");
@@ -227,20 +236,132 @@ fn manual_takeover_blocks_the_task_and_binds_immediately() {
     assert_eq!(view.role.harness_id.as_deref(), Some(b.id.as_str()));
     assert!(view.pending_binding.is_none(), "{view:?}");
 
-    // 旧执行被取消，任务转为受阻并注明「人工接管」。
+    // 旧执行记为已被接管（已取消 + takenOver）。
     let old = e.ts.get_run(&run.id).unwrap();
     assert_eq!(old.status, RunStatus::Cancelled, "{old:#?}");
+    assert!(old.taken_over, "{old:#?}");
+
+    // 任务留在执行中，不转受阻。
     let detail = e.ts.get_task(&task.id).unwrap();
-    assert_eq!(detail.task.status, TaskStatus::Blocked, "{detail:#?}");
+    assert_eq!(detail.task.status, TaskStatus::Doing, "{detail:#?}");
+    assert_eq!(detail.task.blocked_reason, None, "{detail:#?}");
+}
+
+/// 「取消并重新执行」：两个执行同时在跑时，两个任务都在新 Harness 上重跑（D35 严重项 3）。
+#[test]
+fn cancel_and_rerun_reruns_every_cancelled_task() {
+    // Git 仓库：两个执行各自一个 worktree，可以同时在跑。
+    let e = env(true);
+    let b = second_harness(&e, "Mock B");
+    let first = e.task("构建一 [mock:perm]");
+    let second = e.task("构建二 [mock:perm]");
+    let run1 = e.ts.start_run(&first.id).unwrap();
+    let run2 = e.ts.start_run(&second.id).unwrap();
+    wait_permission(&e, &run1.id);
+    wait_permission(&e, &run2.id);
+
+    let view =
+        e.ts.rebind_role(&e.role.id, &b.id, RebindMode::CancelAndRerun)
+            .unwrap();
+    assert_eq!(view.role.harness_id.as_deref(), Some(b.id.as_str()));
+
+    // 两个旧执行都被取消。
+    let old1 = e.ts.get_run(&run1.id).unwrap();
+    let old2 = e.ts.get_run(&run2.id).unwrap();
+    assert_eq!(old1.status, RunStatus::Cancelled, "{old1:#?}");
+    assert_eq!(old2.status, RunStatus::Cancelled, "{old2:#?}");
+
+    // 两个任务都在新 Harness 上重跑了。
+    let rerun1 = e.ts.get_task(&first.id).unwrap().latest_run.unwrap();
+    assert_ne!(rerun1.id, run1.id);
+    assert_eq!(rerun1.harness.harness_id, b.id);
+    let rerun2 = e.ts.get_task(&second.id).unwrap().latest_run.unwrap();
+    assert_ne!(rerun2.id, run2.id);
+    assert_eq!(rerun2.harness.harness_id, b.id);
+}
+
+/// 「取消并重新执行」重跑失败：换绑不回滚，命令成功返回，失败的任务留在待执行（D35⑤）。
+#[test]
+fn a_failed_rerun_keeps_the_rebind_and_reports_it() {
+    let e = env(false);
+    let b = second_harness(&e, "Mock B");
+    let task = e.task("构建 [mock:perm]");
+    let run = e.ts.start_run(&task.id).unwrap();
+    wait_permission(&e, &run.id);
+
+    // 引用的文件没了：重跑必然失败（就绪条件不满足）。
+    std::fs::remove_file(e.ws.join("docs/spec.md")).unwrap();
+
+    // 命令成功返回，不报冲突。
+    let view =
+        e.ts.rebind_role(&e.role.id, &b.id, RebindMode::CancelAndRerun)
+            .unwrap();
+    // 换绑生效了，没有回滚。
+    assert_eq!(view.role.harness_id.as_deref(), Some(b.id.as_str()));
+    assert!(view.pending_binding.is_none(), "{view:?}");
+
+    // 失败的任务留在待执行。
+    let detail = e.ts.get_task(&task.id).unwrap();
+    assert_eq!(detail.task.status, TaskStatus::Ready, "{detail:#?}");
+
+    // 记了一条「重跑失败」活动。
+    let events =
+        e.ts.list_events(EventQuery {
+            team_id: e.team.id.clone(),
+            ..Default::default()
+        })
+        .unwrap();
     assert!(
-        detail
-            .task
-            .blocked_reason
-            .as_deref()
-            .is_some_and(|reason| reason.contains("人工接管")),
-        "{:?}",
-        detail.task.blocked_reason
+        events
+            .events
+            .iter()
+            .any(|event| event.kind == EventKind::RoleRebindRerunFailed),
+        "{events:?}"
     );
+}
+
+/// 应用重启把残留执行标为中断后，该岗位的待生效换绑随之生效（D35 严重项 2）。
+#[test]
+fn a_pending_rebind_applies_after_a_restart_recovers_the_runs() {
+    let e = env(false);
+    let b = second_harness(&e, "Mock B");
+    let task = e.task("构建 [mock:perm]");
+    let run = e.ts.start_run(&task.id).unwrap();
+    wait_permission(&e, &run.id);
+
+    // 登记待生效换绑：当前绑定不变。
+    e.ts.rebind_role(&e.role.id, &b.id, RebindMode::AfterCurrent)
+        .unwrap();
+    assert_eq!(
+        e.ts.get_role_workbench(&e.role.id)
+            .unwrap()
+            .view
+            .role
+            .harness_id
+            .as_deref(),
+        Some(e.harness.id.as_str())
+    );
+
+    // 模拟应用重启：新实例把残留执行标为中断，待生效换绑随之生效。
+    e.ts.release_instance();
+    let config = HostConfig {
+        mock_agent: Some(AgentCommand {
+            program: mock_agent(),
+            args: vec![],
+        }),
+    };
+    let restarted = Teamspace::open_with(
+        &e.dir.path().join("data/t.db"),
+        Box::new(LocalProbe::new()),
+        config,
+    )
+    .unwrap();
+
+    let view = wait_binding_of(&restarted, &e.role.id, &b.id);
+    assert!(view.pending_binding.is_none(), "{view:?}");
+    // 恢复后的执行是已中断。
+    let recovered = restarted.get_run(&run.id).unwrap();
+    assert_eq!(recovered.status, RunStatus::Interrupted, "{recovered:#?}");
 }
 
 /// 投递按岗位「当前有效」绑定解析：消息入队时记的快照只是留痕。

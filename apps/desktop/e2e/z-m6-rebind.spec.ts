@@ -30,7 +30,12 @@ interface RunSnapshot {
   taskId: string;
   attempt: number;
   status: string;
+  takenOver: boolean;
   harness: { id: string; name: string };
+}
+
+interface TaskSnapshot {
+  task: { id: string; status: string; blockedReason: string | null };
 }
 
 interface RoleSnapshot {
@@ -241,6 +246,40 @@ test("待生效可以撤销：当前绑定保持不变", async ({ page }) => {
   await invoke("cancel_run", { runId: run.id });
 });
 
+test("选「立即人工接管」：执行记为已被接管，任务留在执行中", async ({ page }) => {
+  const { task, run } = await startHangingTask(page, "长任务人工接管 [mock:hang]");
+  expect(run.harness.name).toBe(HARNESS_OLD);
+
+  await openRole(page);
+  await openRebindDialog(page, HARNESS_NEW);
+  const dialog = page.getByRole("dialog");
+  await dialog.getByRole("radio", { name: /立即人工接管，暂不自动执行/ }).check();
+  // 后果写明：执行记为已被接管，任务留在执行中（不转受阻）。
+  await expect(
+    dialog
+      .getByText("立即换绑；当前执行记为已被接管，任务留在执行中，你改完可以直接提交验收。")
+      .first(),
+  ).toBeVisible();
+
+  await dialog.getByRole("button", { name: "确认更换" }).click();
+
+  // 立即换绑：没有待生效卡片。
+  await expect(page.getByText(`当前绑定 ${HARNESS_NEW}`)).toBeVisible();
+  await expect(page.getByText("换绑待生效")).toHaveCount(0);
+
+  // 执行记为已被接管（已取消 + takenOver）。
+  await expect
+    .poll(async () => (await runSnapshots(task.id))[0]?.status, { timeout: TIMEOUT })
+    .toBe("cancelled");
+  const runs = await runSnapshots(task.id);
+  expect(runs[0]?.takenOver).toBe(true);
+
+  // 任务留在执行中，不转受阻。
+  const detail = await invoke<TaskSnapshot>("get_task", { taskId: task.id });
+  expect(detail.task.status).toBe("doing");
+  expect(detail.task.blockedReason).toBeNull();
+});
+
 test("选「取消当前执行，由新 Harness 重新执行」：任务在新 Harness 上重新执行", async ({ page }) => {
   const { task, run } = await startHangingTask(page, "长任务取消重跑 [mock:hang]");
   expect(run.harness.name).toBe(HARNESS_OLD);
@@ -319,7 +358,9 @@ test("启动包预览：当前实例已执行过时提示不会附加交接，�
   await openRole(page);
   const panel = page.locator(".handoff-preview");
   await expect(panel).toBeVisible();
-  await expect(panel.getByText("当前 Harness 已在此岗位执行过，不会附加交接")).toBeVisible();
+  await expect(
+    panel.getByText("该岗位在当前 Harness 上没有需要交接的内容，不会附加交接"),
+  ).toBeVisible();
   // 默认收起，展开后还是这段说明。
   await expect(panel.locator(".handoff-preview__body")).toHaveCount(0);
   await panel.getByRole("button", { name: "展开" }).click();
@@ -329,5 +370,7 @@ test("启动包预览：当前实例已执行过时提示不会附加交接，�
   await openRebindDialog(page, HARNESS_NEW);
   await page.getByRole("dialog").getByRole("button", { name: "确认更换" }).click();
   await expect(page.getByText(`当前绑定 ${HARNESS_NEW}`)).toBeVisible();
-  await expect(panel.getByText("当前 Harness 已在此岗位执行过，不会附加交接")).toHaveCount(0);
+  await expect(
+    panel.getByText("该岗位在当前 Harness 上没有需要交接的内容，不会附加交接"),
+  ).toHaveCount(0);
 });

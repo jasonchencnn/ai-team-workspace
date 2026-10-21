@@ -10,6 +10,7 @@ import type { BackupSummary } from "../bindings/BackupSummary.js";
 import type { ExportBackupInput } from "../bindings/ExportBackupInput.js";
 import type { InspectBackupInput } from "../bindings/InspectBackupInput.js";
 import type { AcpPresetInfo } from "../bindings/AcpPresetInfo.js";
+import type { ActiveRunSummary } from "../bindings/ActiveRunSummary.js";
 import type { ApproveReviewInput } from "../bindings/ApproveReviewInput.js";
 import type { ApproveReviewResult } from "../bindings/ApproveReviewResult.js";
 import type { ChangeTaskStatusInput } from "../bindings/ChangeTaskStatusInput.js";
@@ -31,6 +32,7 @@ import type { GetNotificationSettingsInput } from "../bindings/GetNotificationSe
 import type { HarnessInstance } from "../bindings/HarnessInstance.js";
 import type { Inbox } from "../bindings/Inbox.js";
 import type { ListDecisionsQuery } from "../bindings/ListDecisionsQuery.js";
+import type { ListRoleMessagesQuery } from "../bindings/ListRoleMessagesQuery.js";
 import type { Message } from "../bindings/Message.js";
 import type { MessageThread } from "../bindings/MessageThread.js";
 import type { ListThreadsQuery } from "../bindings/ListThreadsQuery.js";
@@ -53,6 +55,7 @@ import type { ReviewView } from "../bindings/ReviewView.js";
 import type { Role } from "../bindings/Role.js";
 import type { RestoreBackupInput } from "../bindings/RestoreBackupInput.js";
 import type { RoleFolder } from "../bindings/RoleFolder.js";
+import type { RoleMessage } from "../bindings/RoleMessage.js";
 import type { RoleTemplate } from "../bindings/RoleTemplate.js";
 import type { RoleView } from "../bindings/RoleView.js";
 import type { RoleWorkbench } from "../bindings/RoleWorkbench.js";
@@ -282,6 +285,10 @@ export const getRun = (runId: string) => invoke<Run>("get_run", { runId });
 /** 任务的全部执行，最近的在前。 */
 export const listRuns = (taskId: string) => invoke<Run[]>("list_runs", { taskId });
 
+/** 岗位进行中的执行：「有没有在跑的活」由后端判定，含任务编号与标题、次数、状态与 Harness 实例。 */
+export const listActiveRuns = (roleId: string) =>
+  invoke<ActiveRunSummary[]>("list_active_runs", { roleId });
+
 /** 执行进度增量读取：按 id 合并、按 seq 排序；用 nextCursor 继续读取。 */
 export const listRunUpdates = (input: RunUpdateQuery) =>
   invoke<RunUpdatePage>("list_run_updates", { input });
@@ -330,6 +337,10 @@ export const listThreads = (input: ListThreadsQuery) =>
 
 /** 取一个线程及其中的消息。 */
 export const getThread = (threadId: string) => invoke<ThreadDetail>("get_thread", { threadId });
+
+/** 发往某个岗位的消息：默认只返回「排队中 + 投递中」，含线程主题与入队时的绑定实例名。 */
+export const listRoleMessages = (input: ListRoleMessagesQuery) =>
+  invoke<RoleMessage[]>("list_role_messages", { input });
 
 /** 重发一条失败或过期的消息。 */
 export const retryMessage = (messageId: string) => invoke<Message>("retry_message", { messageId });

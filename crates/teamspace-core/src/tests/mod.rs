@@ -9,6 +9,8 @@ mod folders;
 mod handoff;
 mod harnesses;
 mod inbox;
+mod m6_04_queries;
+mod m6_04b_rebinds;
 mod messages;
 mod notifications;
 #[cfg(unix)]

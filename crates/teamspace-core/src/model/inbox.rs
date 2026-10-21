@@ -558,6 +558,31 @@ pub(crate) fn rebind_applied_spec(
     }
 }
 
+/// 「取消并重跑」换绑已生效但重跑失败的通知素材。
+///
+/// 换绑不回滚：失败的任务留在待执行，等 Human 重新派工（D35⑤）。
+pub(crate) fn rebind_rerun_failed_spec(
+    team_id: &str,
+    role_id: &str,
+    role_name: &str,
+    harness_name: &str,
+    detail: &str,
+) -> NotificationSpec {
+    NotificationSpec {
+        team_id: team_id.to_owned(),
+        category: NotificationCategory::RoleRebind,
+        title: format!("岗位「{role_name}」已换绑，但部分任务重跑失败"),
+        body: format!("已切换到 Harness「{harness_name}」；重跑失败：{detail}"),
+        task_id: None,
+        task_key: None,
+        message_id: None,
+        thread_id: None,
+        run_id: None,
+        role_id: Some(role_id.to_owned()),
+        occurred_at: None,
+    }
+}
+
 /// 换绑已撤销的通知素材。
 pub(crate) fn rebind_cancelled_spec(
     team_id: &str,

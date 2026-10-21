@@ -57,6 +57,7 @@ pub const LEADER_ALLOWED: &[&str] = &[
     "check_task_dependencies",
     "get_run",
     "list_runs",
+    "list_active_runs",
     "list_run_updates",
     "list_events",
     "get_review",
@@ -75,6 +76,7 @@ pub const LEADER_ALLOWED: &[&str] = &[
     "send_message",
     "list_threads",
     "get_thread",
+    "list_role_messages",
     // 待我处理（只读：Leader 可以看，但不能记录决策、也不能改通知订阅）
     "get_inbox",
 ];
@@ -171,6 +173,7 @@ pub fn dispatch(
         )),
         "get_run" => out(ts.get_run(&arg::<String>(args, "runId")?)),
         "list_runs" => out(ts.list_runs(&arg::<String>(args, "taskId")?)),
+        "list_active_runs" => out(ts.list_active_runs(&arg::<String>(args, "roleId")?)),
         "list_run_updates" => out(ts.list_run_updates(arg(args, "input")?)),
         "respond_permission" => out(ts.respond_permission(arg(args, "input")?)),
         "get_review" => {
@@ -194,6 +197,7 @@ pub fn dispatch(
         "send_message" => out(ts.send_message_as(actor, arg(args, "input")?)),
         "list_threads" => out(ts.list_threads(arg(args, "input")?)),
         "get_thread" => out(ts.get_thread(&arg::<String>(args, "threadId")?)),
+        "list_role_messages" => out(ts.list_role_messages(arg(args, "input")?)),
         "retry_message" => out(ts.retry_message(&arg::<String>(args, "messageId")?)),
         "leader_integration" => out(ts.leader_integration(&arg::<String>(args, "teamId")?)),
         "write_workspace_mcp_config" => {
@@ -623,6 +627,25 @@ mod tests {
         let role = f.role(&team.id, "role_frontend");
         let harness = f.harness(&team.id, "Mock", crate::model::AcpPreset::Mock);
         f.ts.bind_role_harness(&role.id, &harness.id).unwrap();
+        // 岗位在这个 Harness 上跑过一次，才有历史可交底
+        // （从未执行过的新岗位不附加交接节，D35③）。
+        let task = f.task(&team.id, &role, "任务");
+        f.raw_sql(&format!(
+            "UPDATE tasks SET status = 'doing' WHERE id = '{task_id}';
+             INSERT INTO runs (id, team_id, task_id, role_id, harness_id, harness_name,
+                               harness_preset, harness_command, attempt, status, session_id,
+                               workspace_path, exec_dir, isolation, started_at)
+             VALUES ('run-1', '{team}', '{task_id}', '{role}', '{harness}', 'Mock', 'mock', 'x', 1,
+                     'failed', 's-1', '{ws}', '{ws}', 'in_place', '2026-10-13T00:00:00.000Z');",
+            task_id = task.task.id,
+            team = team.id,
+            role = role.id,
+            harness = harness.id,
+            ws = f.ws.display(),
+        ));
+        // 换到另一个 Harness：换了环境才交底。
+        let other = f.harness(&team.id, "Mock 二号", crate::model::AcpPreset::Mock);
+        f.ts.bind_role_harness(&role.id, &other.id).unwrap();
         let preview = dispatch(
             &f.ts,
             Caller::Human,

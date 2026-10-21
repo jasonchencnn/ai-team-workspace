@@ -1,5 +1,6 @@
 import { useState } from "react";
 
+import type { ActiveRunSummary } from "../../bindings/ActiveRunSummary.js";
 import type { HarnessInstance } from "../../bindings/HarnessInstance.js";
 import type { RebindMode } from "../../bindings/RebindMode.js";
 import type { Role } from "../../bindings/Role.js";
@@ -19,14 +20,13 @@ import {
   isTestHarness,
 } from "../harness-detail/harnessFormat.js";
 import { DEFAULT_REBIND_MODE, REBIND_MODE_OPTIONS, rebindCandidates } from "./rebindUi.js";
-import type { ActiveRunEntry } from "./useRebindData.js";
 
 export interface RebindHarnessDialogProps {
   role: Role;
   view: RoleView;
   harnesses: HarnessInstance[];
   /** 该岗位进行中的执行；空数组表示没有在跑的活。 */
-  activeRuns: ActiveRunEntry[];
+  activeRuns: ActiveRunSummary[];
   isRunsPending: boolean;
   onClose: () => void;
   onConfirm: (harnessId: string, mode: RebindMode) => void;
@@ -141,12 +141,12 @@ export function RebindHarnessDialog({
           <>
             <h3 className="rebind__section-title">有 {String(activeRuns.length)} 个任务正在执行</h3>
             <ul className="rebind__runs">
-              {activeRuns.map((entry) => (
-                <li key={entry.run.id} className="rebind__run">
-                  <span className="rebind__run-key">{entry.taskKey}</span>
-                  <span className="rebind__run-title">{entry.taskTitle}</span>
-                  <span className="rebind__run-attempt">第 {String(entry.run.attempt)} 次执行</span>
-                  <span className="rebind__run-status">{entry.run.statusLabel}</span>
+              {activeRuns.map((run) => (
+                <li key={run.runId} className="rebind__run">
+                  <span className="rebind__run-key">{run.taskKey}</span>
+                  <span className="rebind__run-title">{run.taskTitle}</span>
+                  <span className="rebind__run-attempt">第 {String(run.attempt)} 次执行</span>
+                  <span className="rebind__run-status">{run.statusLabel}</span>
                 </li>
               ))}
             </ul>
