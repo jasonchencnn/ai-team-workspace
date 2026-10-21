@@ -683,6 +683,60 @@ fn restart_marks_runs_interrupted_and_resume_continues_the_session() {
 }
 
 #[test]
+fn handoff_is_attached_once_per_harness() {
+    let e = env(false);
+    // 第一次执行：这个 Harness 在本岗位上是第一次，交底内容里没有历史执行。
+    let first = e.task("登录页");
+    let run = e.ts.start_run(&first.id).unwrap();
+    let run = e.wait_end(&run.id);
+    assert_eq!(run.status, RunStatus::Succeeded, "{run:#?}");
+    let brief = messages(&e.updates(&run.id), MessageRole::User).remove(0);
+    assert!(brief.contains("## 岗位交接"), "{brief}");
+    assert!(brief.contains("### 岗位说明"), "{brief}");
+    assert!(brief.contains("### 未完成任务"), "{brief}");
+    assert!(brief.contains("### 相关文件引用"), "{brief}");
+    // 第一次还没有历史执行结果。
+    assert!(brief.contains("### 近期执行结果\n\n（无）"), "{brief}");
+
+    // 同一个 Harness 再执行：不重复交底。
+    let second = e.task("注册页");
+    let run = e.ts.start_run(&second.id).unwrap();
+    let run = e.wait_end(&run.id);
+    assert_eq!(run.status, RunStatus::Succeeded, "{run:#?}");
+    let brief = messages(&e.updates(&run.id), MessageRole::User).remove(0);
+    assert!(!brief.contains("岗位交接"), "{brief}");
+
+    // 换绑到新的 Harness：新环境第一次执行，交底内容里带上之前的执行结果。
+    let other =
+        e.ts.create_harness(CreateHarnessInput {
+            team_id: e.team.id.clone(),
+            name: "Mock 二号".into(),
+            preset: AcpPreset::Mock,
+            command: None,
+            args: None,
+            env_profile: None,
+        })
+        .unwrap();
+    e.ts.bind_role_harness(&e.role.id, &other.id).unwrap();
+    let third = e.task("找回密码");
+    let run = e.ts.start_run(&third.id).unwrap();
+    let run = e.wait_end(&run.id);
+    assert_eq!(run.status, RunStatus::Succeeded, "{run:#?}");
+    let brief = messages(&e.updates(&run.id), MessageRole::User).remove(0);
+    assert!(brief.contains("## 岗位交接"), "{brief}");
+    assert!(brief.contains("### 近期执行结果"), "{brief}");
+    assert!(brief.contains("FE-001 · 成功"), "{brief}");
+    assert!(brief.contains("### 工作日志（最近部分）"), "{brief}");
+    // 交接内容在说明包的最后。
+    assert!(
+        brief.trim_end().ends_with("岗位交接") || brief.contains("岗位交接"),
+        "{brief}"
+    );
+    let section = brief.find("## 岗位交接").unwrap();
+    assert!(section > brief.find("## 工作要求").unwrap(), "{brief}");
+}
+
+#[test]
 fn interrupted_runs_can_be_marked_failed_or_rerun() {
     let e = env(false);
     let a = e.task("[mock:hang] A");

@@ -4,6 +4,7 @@ pub(crate) mod decision;
 pub(crate) mod dependency;
 pub(crate) mod event;
 pub(crate) mod folder;
+pub(crate) mod handoff;
 pub(crate) mod harness;
 pub(crate) mod inbox;
 pub(crate) mod message;

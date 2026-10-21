@@ -23,19 +23,21 @@ use std::ops::Deref;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard, RwLock};
 
-use rusqlite::Connection;
+use rusqlite::{Connection, OptionalExtension};
 
 use crate::acp::AgentLaunch;
 use crate::error::{Error, Result};
 use crate::model::*;
 use crate::probe::{FILE_SEARCH_LIMIT, MARKDOWN_FILE_LIMIT, SystemProbe};
 use crate::role_folder;
+use crate::run::handoff as run_handoff;
 use crate::run::review_seam::{self, ReviewGit};
 use crate::run::{Mode, Stop};
 use crate::service::run::{self as run_svc, Ending, NewRun};
 use crate::service::task::FileCheck;
 use crate::service::{
-    decision, event, folder, harness, inbox, message, notification, role, task, team, workspace,
+    decision, event, folder, handoff, harness, inbox, message, notification, role, task, team,
+    workspace,
 };
 use crate::store;
 use crate::workspace_file;
@@ -64,6 +66,7 @@ pub const COMMANDS: &[&str] = &[
     "get_role_folder",
     "reveal_role_folder",
     "get_role_workbench",
+    "get_role_handoff_preview",
     "open_role_path",
     "list_acp_presets",
     "list_harnesses",
@@ -718,6 +721,66 @@ impl Teamspace {
             recent_files,
             recent_runs,
         })
+    }
+
+    /// 岗位启动包预览：该岗位下一次执行会附上的交接内容。
+    ///
+    /// 岗位换绑到新的 Harness 后，新环境第一次执行时会把接手前的上下文（岗位说明、未完成任务、
+    /// 最近几次执行结果、工作日志末尾与相关文件引用）附在任务说明包里；同一个 Harness 再次执行
+    /// 时不再附加。以岗位当前绑定的 Harness 为准；岗位没有绑定 Harness 时返回空字符串。
+    ///
+    /// 只读命令，不改动任何数据。岗位不存在（已归档或所属团队已归档）为 not_found。
+    pub fn get_role_handoff_preview(&self, role_id: &str) -> Result<String> {
+        let (workspace, relative, _problem) = folder::location(&self.lock(), role_id)?;
+        let (description, guidelines, harness_id) = {
+            let conn = self.lock();
+            let row = conn
+                .query_row(
+                    "SELECT description, guidelines, harness_id FROM roles
+                     WHERE id = ?1 AND archived_at IS NULL",
+                    rusqlite::params![role_id],
+                    |row| -> rusqlite::Result<_> {
+                        Ok((
+                            row.get::<_, String>(0)?,
+                            row.get::<_, String>(1)?,
+                            row.get::<_, Option<String>>(2)?,
+                        ))
+                    },
+                )
+                .optional()?;
+            match row {
+                Some(row) => row,
+                None => return Err(Error::not_found("岗位不存在")),
+            }
+        };
+        // 没有绑定 Harness 就不会有新的执行，也谈不上交接。
+        let Some(harness_id) = harness_id else {
+            return Ok(String::new());
+        };
+        let data = {
+            let conn = self.lock();
+            if !handoff::needs_handoff(&conn, role_id, &harness_id, None)? {
+                return Ok(String::new());
+            }
+            handoff::collect(&conn, role_id, None)?
+        };
+        // 工作日志在文件系统里，在数据库锁之外读取。
+        let journal = relative
+            .as_deref()
+            .map(|rel| role_folder::absolute(&workspace, rel))
+            .and_then(|dir| role_folder::read_journal_tail(&dir, run_handoff::JOURNAL_LINES).ok())
+            .unwrap_or_default();
+        Ok(run_handoff::render(
+            &run_handoff::HandoffInput {
+                role_description: description,
+                role_guidelines: guidelines,
+                open_tasks: data.open_tasks,
+                recent_runs: data.recent_runs,
+                journal,
+                files: data.files,
+            },
+            run_handoff::HANDOFF_LIMIT,
+        ))
     }
 
     /// 在 Finder 中打开岗位文件夹内的文件或目录（如 `工作日志.md`、`过程文件/素材清单.md`）；

@@ -37,6 +37,7 @@ register_commands!(
     get_role_folder,
     reveal_role_folder,
     get_role_workbench,
+    get_role_handoff_preview,
     open_role_path,
     list_acp_presets,
     list_harnesses,

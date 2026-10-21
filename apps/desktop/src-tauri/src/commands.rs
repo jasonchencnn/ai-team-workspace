@@ -113,6 +113,15 @@ pub fn get_role_workbench(
     ts.get_role_workbench(role_id)
 }
 
+/// 岗位启动包预览：该岗位下一次执行会附上的交接内容；不会附加时为空字符串。
+#[tauri::command(async)]
+pub fn get_role_handoff_preview(
+    ts: State<'_, Arc<Teamspace>>,
+    role_id: &str,
+) -> Result<String, Error> {
+    ts.get_role_handoff_preview(role_id)
+}
+
 #[tauri::command(async)]
 pub fn open_role_path(
     ts: State<'_, Arc<Teamspace>>,

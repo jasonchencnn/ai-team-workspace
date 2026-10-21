@@ -140,6 +140,13 @@ export const revealRoleFolder = (roleId: string) => invoke<null>("reveal_role_fo
 export const getRoleWorkbench = (roleId: string) =>
   invoke<RoleWorkbench>("get_role_workbench", { roleId });
 
+/**
+ * 岗位启动包预览：该岗位下一次执行会附上的交接内容（换了 Harness 后新环境第一次执行时带上）。
+ * 不会附加时返回空字符串。
+ */
+export const getRoleHandoffPreview = (roleId: string) =>
+  invoke<string>("get_role_handoff_preview", { roleId });
+
 /** 在 Finder 中打开岗位文件夹内的文件或目录（相对岗位文件夹；缺省为文件夹本身）；越界路径被拒绝。 */
 export const openRolePath = (roleId: string, relativePath?: string) =>
   invoke<null>("open_role_path", { roleId, relativePath: relativePath ?? null });
