@@ -209,13 +209,13 @@ test("FILE-008 打开已被删掉的文件时提示「文件已被移动或删�
 
 test("FILE-009 侧边栏「共享文件」是可用入口并高亮", async ({ page }) => {
   await gotoFiles(page);
-  await expect(page.locator(".sidebar__nav .nav-item")).toHaveText([
+  await expect(page.locator(".sidebar__nav .nav-item .nav-item__label")).toHaveText([
     "团队空间",
     "任务面板",
     "共享文件",
     "岗位与绑定",
     "活动与审计",
-    "待我处理M5 提供",
+    "待我处理",
   ]);
   await page.locator(".sidebar__nav a", { hasText: "共享文件" }).click();
   await expect(page.locator(".sidebar__nav .nav-item--active")).toHaveText("共享文件");
