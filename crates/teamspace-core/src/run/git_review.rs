@@ -4,9 +4,10 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::time::Duration;
 
 use crate::model::FileChangeKind;
-use crate::run::worktree::git;
+use crate::run::worktree::{GIT_TIMEOUT, git, git_with_timeout};
 
 /// 单个文件补丁的最大字节数。
 pub const MAX_PATCH_BYTES: usize = 256 * 1024;
@@ -69,10 +70,15 @@ fn resolve_commit(dir: &Path, revision: &str, path_env: Option<&OsStr>) -> Resul
     .map_err(|err| format!("无法读取提交 {revision}：{err}"))
 }
 
-fn with_identity(dir: &Path, args: &[&str], path_env: Option<&OsStr>) -> Result<String, String> {
+fn with_identity(
+    dir: &Path,
+    args: &[&str],
+    path_env: Option<&OsStr>,
+    timeout: Duration,
+) -> Result<String, String> {
     let mut configured = IDENTITY.to_vec();
     configured.extend_from_slice(args);
-    git(dir, &configured, path_env)
+    git_with_timeout(dir, &configured, path_env, timeout)
 }
 
 fn branch_ref(branch: &str) -> String {
@@ -87,18 +93,23 @@ fn valid_branch(dir: &Path, branch: &str, path_env: Option<&OsStr>) -> bool {
 }
 
 /// 提交全部已跟踪与未被忽略的未跟踪改动；无改动时不创建空提交。
+///
+/// `timeout` 是这次提交允许占用的时间：超时后 kill 掉 Git 子进程并报错，
+/// 不让退出或启动被一个卡住的 Git 无限阻塞。
 pub fn commit_all(
     dir: &Path,
     message: &str,
     path_env: Option<&OsStr>,
+    timeout: Duration,
 ) -> Result<Option<String>, String> {
     let root = repo_root(dir, path_env)?;
-    git(&root, &["add", "--all", "--", "."], path_env)
+    git_with_timeout(&root, &["add", "--all", "--", "."], path_env, timeout)
         .map_err(|err| format!("暂存执行改动失败：{err}"))?;
-    let staged = git(
+    let staged = git_with_timeout(
         &root,
         &["diff", "--cached", "--name-only", "-z", "--"],
         path_env,
+        timeout,
     )
     .map_err(|err| format!("读取暂存改动失败：{err}"))?;
     if staged.is_empty() {
@@ -113,6 +124,7 @@ pub fn commit_all(
             message,
         ],
         path_env,
+        timeout,
     )
     .map_err(|err| format!("提交执行改动失败：{err}"))?;
     resolve_commit(&root, "HEAD", path_env).map(Some)
@@ -468,6 +480,7 @@ pub fn merge_into_base(
             &root,
             &["commit-tree", &tree, "-p", &base, "-p", &run, "-m", message],
             path_env,
+            GIT_TIMEOUT,
         ) {
             Ok(commit) => commit.trim().to_owned(),
             Err(err) => return Ok(blocked(format!("创建合并提交失败，基线保持不变：{err}"))),
@@ -533,6 +546,7 @@ pub fn merge_into_base(
             &run,
         ],
         path_env,
+        GIT_TIMEOUT,
     ) {
         let files = git(
             &root,
@@ -705,7 +719,9 @@ mod tests {
     }
 
     fn save(dir: &Path) -> String {
-        commit_all(dir, "Save run", None).unwrap().unwrap()
+        commit_all(dir, "Save run", None, GIT_TIMEOUT)
+            .unwrap()
+            .unwrap()
     }
 
     fn merged(outcome: MergeOutcome) -> String {
@@ -718,7 +734,10 @@ mod tests {
     #[test]
     fn commit_all_returns_none_without_changes() {
         let repo = Repo::new();
-        assert_eq!(commit_all(&repo.root, "Empty", None).unwrap(), None);
+        assert_eq!(
+            commit_all(&repo.root, "Empty", None, GIT_TIMEOUT).unwrap(),
+            None
+        );
         assert_eq!(repo.main_head(), repo.base);
     }
 
@@ -748,7 +767,10 @@ mod tests {
         assert!(
             !checked(&repo.root, &["ls-tree", "-r", "--name-only", "HEAD"]).contains("ignored.txt")
         );
-        assert_eq!(commit_all(&repo.root, "Empty", None).unwrap(), None);
+        assert_eq!(
+            commit_all(&repo.root, "Empty", None, GIT_TIMEOUT).unwrap(),
+            None
+        );
     }
 
     #[test]

@@ -14,6 +14,7 @@ import {
   configSections,
   copyLabel,
   gitNotice,
+  socketNotice,
   writeConfirmText,
   writeDoneText,
 } from "./leaderIntegrationUi.js";
@@ -72,6 +73,7 @@ export function LeaderIntegrationCard({ teamId }: { teamId: string }) {
   const data = integration.data;
   const sections = configSections(data);
   const notice = gitNotice(data.gitWorkspace);
+  const socket = socketNotice(data);
 
   const copy = async (key: string, text: string) => {
     try {
@@ -114,6 +116,7 @@ export function LeaderIntegrationCard({ teamId }: { teamId: string }) {
       </div>
 
       {data.binaryHint === null ? null : <p className="li-warn">{data.binaryHint}</p>}
+      {socket === null ? null : <p className="li-warn">{socket}</p>}
 
       <div className="li-sections">
         {sections.map((section) => {

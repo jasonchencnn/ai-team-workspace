@@ -19,6 +19,10 @@ pub struct LeaderIntegration {
     pub binary_hint: Option<String>,
     /// 本机控制 socket 的绝对路径。
     pub control_socket: String,
+    /// 控制 socket 现在能不能连上（宿主应用监听失败时为 `false`）。
+    pub control_socket_ready: bool,
+    /// 控制 socket 不可用的原因（界面「接入 Leader」处提示 Leader 连不上）。
+    pub control_socket_hint: Option<String>,
     /// 工作空间目录的绝对路径。
     pub workspace_path: String,
     /// 工作空间是不是 Git 仓库（决定要不要提示「会出现在 Git 改动中」）。

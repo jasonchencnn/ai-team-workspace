@@ -12,6 +12,7 @@ import {
   configSections,
   copyLabel,
   gitNotice,
+  socketNotice,
   writeConfirmText,
   writeDoneText,
 } from "../src/pages/team-home/leaderIntegrationUi.js";
@@ -26,7 +27,9 @@ function integration(overrides: Partial<LeaderIntegration> = {}): LeaderIntegrat
     binaryPath: "/repo/target/release/teamspace-mcp",
     binaryFound: true,
     binaryHint: null,
-    controlSocket: "/data/teamspace-control.sock",
+    controlSocket: "/data/control/teamspace-control.sock",
+    controlSocketReady: true,
+    controlSocketHint: null,
     workspacePath: "/repo",
     gitWorkspace: false,
     claudeCommand: "claude mcp add teamspace -- /repo/target/release/teamspace-mcp",
@@ -92,6 +95,20 @@ describe("提示文案", () => {
     const text = writeConfirmText(integration({ workspacePath: "/repo" }));
     expect(text).toContain("/repo/.mcp.json");
     expect(text).toContain("保留");
+  });
+
+  it("控制 socket 不可用时提示 Leader 连不上（应用本身照常可用）", () => {
+    expect(socketNotice(integration())).toBeNull();
+    const notice = socketNotice(
+      integration({
+        controlSocketReady: false,
+        controlSocketHint:
+          "控制 socket 不可用（/data/control/teamspace-control.sock 不是 socket 文件）",
+      }),
+    );
+    expect(notice).toContain("Leader 暂时连不上本应用");
+    expect(notice).toContain("照常可用");
+    expect(notice).toContain("teamspace-control.sock");
   });
 
   it("写入完成后区分新建与合并", () => {

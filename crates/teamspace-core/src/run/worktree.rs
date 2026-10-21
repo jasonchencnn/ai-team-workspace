@@ -5,12 +5,21 @@
 
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::{Child, Command, ExitStatus, Stdio};
+use std::time::{Duration, Instant};
 
 use crate::model::{ChangedFile, FileChangeKind};
 
 /// 同名分支或目录已存在时最多尝试的后缀数。
 const MAX_SUFFIX: usize = 20;
+
+/// 普通 Git 命令的超时：不让应用被一个卡住的 Git 无限阻塞。
+pub(crate) const GIT_TIMEOUT: Duration = Duration::from_secs(120);
+
+/// 保全提交（退出、启动时的中断保全）的超时：更短。
+///
+/// 保全失败只是记一条问题，不能让应用关不掉、也等不到窗口出现。
+pub(crate) const COMMIT_TIMEOUT: Duration = Duration::from_secs(20);
 
 /// 新建好的 worktree。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -27,26 +36,93 @@ pub struct Worktree {
 }
 
 pub(crate) fn git(dir: &Path, args: &[&str], path_env: Option<&OsStr>) -> Result<String, String> {
+    git_with_timeout(dir, args, path_env, GIT_TIMEOUT)
+}
+
+/// 同 [`git`]，但带超时：超时后 kill 掉子进程并报错（不让调用方无限等下去）。
+pub(crate) fn git_with_timeout(
+    dir: &Path,
+    args: &[&str],
+    path_env: Option<&OsStr>,
+    timeout: Duration,
+) -> Result<String, String> {
     let mut command = Command::new("git");
     command.arg("-C").arg(dir).args(args);
     if let Some(path) = path_env {
         command.env("PATH", path);
     }
     crate::system_probe::git_env(&mut command);
-    let output = command
+    let mut child = command
         .stdin(Stdio::null())
-        .output()
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
         .map_err(|err| format!("无法运行 git：{err}"))?;
-    if output.status.success() {
-        Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+    // 输出用单独的线程读：管道写满时子进程会卡住，等待与超时都会失灵。
+    let mut stdout = child.stdout.take();
+    let mut stderr = child.stderr.take();
+    let out = std::thread::spawn(move || {
+        let mut buf = Vec::new();
+        if let Some(stream) = stdout.as_mut() {
+            use std::io::Read;
+            let _ = stream.read_to_end(&mut buf);
+        }
+        buf
+    });
+    let err_out = std::thread::spawn(move || {
+        let mut buf = Vec::new();
+        if let Some(stream) = stderr.as_mut() {
+            use std::io::Read;
+            let _ = stream.read_to_end(&mut buf);
+        }
+        buf
+    });
+    let status = match wait_with_timeout(&mut child, timeout, args) {
+        Ok(status) => status,
+        Err(err) => {
+            let _ = child.kill();
+            let _ = child.wait();
+            let _ = out.join();
+            let _ = err_out.join();
+            return Err(err);
+        }
+    };
+    let out = out.join().unwrap_or_default();
+    let err = err_out.join().unwrap_or_default();
+    if status.success() {
+        Ok(String::from_utf8_lossy(&out).into_owned())
     } else {
-        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stderr = String::from_utf8_lossy(&err);
         Err(stderr
             .lines()
             .map(str::trim)
             .rfind(|l| !l.is_empty())
             .unwrap_or("git 执行失败")
             .to_owned())
+    }
+}
+
+/// 等 Git 子进程结束，最多等 `timeout`；超时返回错误（调用方负责 kill）。
+fn wait_with_timeout(
+    child: &mut Child,
+    timeout: Duration,
+    args: &[&str],
+) -> Result<ExitStatus, String> {
+    let deadline = Instant::now() + timeout;
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => return Ok(status),
+            Ok(None) => {}
+            Err(err) => return Err(format!("等待 git 结束失败：{err}")),
+        }
+        if Instant::now() >= deadline {
+            return Err(format!(
+                "git 命令超时（{} 秒）：git {}",
+                timeout.as_secs(),
+                args.join(" ")
+            ));
+        }
+        std::thread::sleep(Duration::from_millis(20));
     }
 }
 
@@ -197,6 +273,23 @@ mod tests {
         run(dir, &["config", "user.email", "t@example.com"]);
         run(dir, &["config", "user.name", "t"]);
         run(dir, &["config", "commit.gpgsign", "false"]);
+    }
+
+    /// 超时的 Git 子进程会被 kill 掉：不让退出或启动被一个卡住的 Git 无限阻塞。
+    #[cfg(unix)]
+    #[test]
+    fn a_git_command_that_takes_too_long_is_killed() {
+        let mut child = Command::new("sh")
+            .args(["-c", "sleep 5"])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        let err =
+            wait_with_timeout(&mut child, Duration::from_millis(200), &["sleep", "5"]).unwrap_err();
+        assert!(err.contains("超时"), "{err}");
+        let _ = child.kill();
+        let _ = child.wait();
     }
 
     #[test]

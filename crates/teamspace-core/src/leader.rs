@@ -25,8 +25,10 @@ pub const MCP_SERVER_NAME: &str = "teamspace";
 pub const MCP_BINARY_NAME: &str = "teamspace-mcp";
 /// 工作空间里的 MCP 配置文件名（Claude Code 项目级配置）。
 pub const MCP_CONFIG_FILE: &str = ".mcp.json";
-/// 控制 socket 的文件名（放在应用数据目录里）。
+/// 控制 socket 的文件名（放在应用数据目录下的 `control/` 子目录里）。
 pub const SOCKET_FILE_NAME: &str = "teamspace-control.sock";
+/// 控制 socket 所在子目录（放在应用数据目录下，权限 0700：只有当前用户能进）。
+pub const SOCKET_DIR_NAME: &str = "control";
 /// 环境变量名：覆盖控制 socket 的路径。
 pub const SOCKET_ENV: &str = "TEAMSPACE_CONTROL_SOCKET";
 /// 找不到可执行文件时的提示。
@@ -62,7 +64,7 @@ pub fn app_data_dir() -> PathBuf {
 
 /// 控制 socket 的默认路径（应用数据目录下的 `teamspace-control.sock`）。
 pub fn default_socket_path() -> PathBuf {
-    app_data_dir().join(SOCKET_FILE_NAME)
+    app_data_dir().join(SOCKET_DIR_NAME).join(SOCKET_FILE_NAME)
 }
 
 /// `teamspace-mcp` 可执行文件的位置。
@@ -252,7 +254,7 @@ struct LeaderContext {
 impl Teamspace {
     fn leader_context(&self, team_id: &str) -> Result<LeaderContext> {
         let team = team::get_active(&self.lock(), team_id)?;
-        let socket = self.data_dir.join(SOCKET_FILE_NAME);
+        let socket = self.data_dir.join(SOCKET_DIR_NAME).join(SOCKET_FILE_NAME);
         let socket_override =
             (socket != default_socket_path()).then(|| socket.display().to_string());
         let binary = locate_binary(std::env::current_exe().ok().as_deref());
@@ -274,12 +276,20 @@ impl Teamspace {
         let context = self.leader_context(team_id)?;
         let binary_path = context.binary.path.display().to_string();
         let socket = context.socket_override.as_deref();
+        // 控制 socket 起不来时（宿主应用监听失败）：应用照常运行，只是 Leader 连不上。
+        let socket_error = self
+            .control_socket_error
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone();
         Ok(LeaderIntegration {
             team_id: context.team.id,
             binary_found: context.binary.found,
             binary_hint: (!context.binary.found).then(|| BUILD_HINT.to_owned()),
             binary_path: binary_path.clone(),
             control_socket: context.socket.display().to_string(),
+            control_socket_ready: socket_error.is_none(),
+            control_socket_hint: socket_error,
             workspace_path: context.team.workspace_path.clone(),
             git_workspace: self.is_git_workspace(&context.team.workspace_path),
             claude_command: claude_command(&binary_path, socket),
@@ -502,6 +512,39 @@ mod tests {
         assert!(integration.codex_toml.contains("[mcp_servers.teamspace]"));
         // 测试用的数据目录不是默认位置，所以配置里要带 socket 环境变量。
         assert!(integration.claude_command.contains(SOCKET_ENV));
+    }
+
+    /// 控制 socket 不可用时（宿主应用监听失败），接入配置里带上原因：
+    /// 界面「接入 Leader」处据此提示 Leader 连不上（应用本身照常运行）。
+    #[test]
+    fn leader_integration_reports_an_unavailable_control_socket() {
+        let fixture = plain_fixture();
+        let team = fixture.team("接入团队");
+        let ok = fixture.ts.leader_integration(&team.id).unwrap();
+        assert!(ok.control_socket_ready, "{ok:?}");
+        assert!(ok.control_socket_hint.is_none(), "{ok:?}");
+        // socket 在应用数据目录下的专用子目录里。
+        assert!(
+            Path::new(&ok.control_socket)
+                .parent()
+                .unwrap()
+                .ends_with(SOCKET_DIR_NAME),
+            "{}",
+            ok.control_socket
+        );
+
+        fixture
+            .ts
+            .set_control_socket_error(Some("控制 socket 不可用（路径被普通文件占用）".into()));
+        let bad = fixture.ts.leader_integration(&team.id).unwrap();
+        assert!(!bad.control_socket_ready, "{bad:?}");
+        assert!(
+            bad.control_socket_hint
+                .as_deref()
+                .unwrap_or_default()
+                .contains("不可用"),
+            "{bad:?}"
+        );
     }
 
     /// 写入 `.mcp.json`：新建后再合并，其他内容不丢。

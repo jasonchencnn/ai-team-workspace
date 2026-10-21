@@ -7,16 +7,18 @@
 //! 所有请求都以 Leader 身份走 [`crate::dispatch`]：权限边界（白名单）在那里统一把守，
 //! 越权请求被拒绝并留一条操作者为 Leader 的活动。
 //!
-//! socket 只监听本机 Unix domain socket，文件权限 0600（只有当前用户能连）。
-//! 路径已存在时：已有进程在监听就报错，不覆盖；没人监听（上次退出留下的残留）就删掉重建。
+//! socket 只监听本机 Unix domain socket，文件权限 0600（只有当前用户能连），
+//! 放在应用数据目录下一个 0700 的专用子目录里（其他本机用户连目录都进不去）。
+//! 路径已存在时：已有进程在监听就报错，不覆盖；没人监听（上次退出留下的残留）就删掉重建；
+//! 路径上不是 socket 文件时报错并给出可操作的中文提示（宿主应用据此提示用户，应用本身照常运行）。
 
 #[cfg(unix)]
 mod imp {
-    use std::io::{BufRead, BufReader, Write};
-    use std::os::unix::fs::{FileTypeExt, PermissionsExt};
+    use std::io::{BufRead, BufReader, ErrorKind, Write};
+    use std::os::unix::fs::{DirBuilderExt, FileTypeExt, PermissionsExt};
     use std::os::unix::net::{UnixListener, UnixStream};
     use std::path::{Path, PathBuf};
-    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
     use std::thread::JoinHandle;
     use std::time::Duration;
@@ -25,6 +27,17 @@ mod imp {
 
     use crate::dispatch::{self, Caller};
     use crate::{Error, Teamspace};
+
+    /// 单行请求的上限（1 MiB）：本机失控的客户端不能靠一行把内存吃光。
+    pub(super) const MAX_LINE_BYTES: usize = 1024 * 1024;
+    /// 读请求的超时：对端不发数据也不断开时，不长期占着一条连接。
+    const READ_TIMEOUT: Duration = Duration::from_secs(30);
+    /// 同时在线的控制连接上限。
+    pub(super) const MAX_CONNECTIONS: usize = 32;
+    /// socket 所在专用子目录的权限（只有当前用户能进）。
+    const DIR_MODE: u32 = 0o700;
+    /// socket 文件的权限（只有当前用户能连）。
+    const SOCKET_MODE: u32 = 0o600;
 
     /// 控制服务：监听本机 socket，接受 Leader 的请求。
     ///
@@ -65,21 +78,30 @@ mod imp {
 
     /// 在 `path` 上监听本机控制 socket。
     ///
-    /// socket 文件权限为 0600。路径已存在时：已有进程在监听就报错（不覆盖）；没人监听
-    /// （上次退出留下的残留文件）就删掉重建。
+    /// socket 放在应用数据目录下的专用子目录里（目录 0700、socket 文件 0600，只有当前用户能连）。
+    /// 路径已存在时：已有进程在监听就报错（不覆盖）；没人监听（上次退出留下的残留文件）就删掉重建；
+    /// 路径上不是 socket 文件时报错（不覆盖用户的数据），由宿主应用提示用户处理。
     pub fn serve(ts: Arc<Teamspace>, path: &Path) -> std::io::Result<ControlServer> {
         if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
+            ensure_private_dir(parent)?;
         }
         prepare_path(path)?;
         let listener = UnixListener::bind(path)?;
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
+        if let Err(err) =
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(SOCKET_MODE))
+        {
+            // 权限没设成功：删掉残留的 socket 文件，不在盘上留一个谁都能连的文件。
+            let _ = std::fs::remove_file(path);
+            return Err(err);
+        }
         listener.set_nonblocking(true)?;
         let stop = Arc::new(AtomicBool::new(false));
         let worker_stop = Arc::clone(&stop);
+        let live = Arc::new(AtomicUsize::new(0));
+        let worker_live = Arc::clone(&live);
         let worker = std::thread::Builder::new()
             .name("teamspace-control".to_owned())
-            .spawn(move || accept_loop(&listener, ts, &worker_stop))?;
+            .spawn(move || accept_loop(&listener, ts, &worker_stop, &worker_live))?;
         Ok(ControlServer {
             path: path.to_path_buf(),
             stop,
@@ -87,9 +109,25 @@ mod imp {
         })
     }
 
+    /// 建立 socket 所在的专用子目录，权限 0700（只有当前用户能进）。
+    fn ensure_private_dir(dir: &Path) -> std::io::Result<()> {
+        std::fs::DirBuilder::new()
+            .recursive(true)
+            .mode(DIR_MODE)
+            .create(dir)?;
+        // 目录已存在时 `create` 不会改权限，这里补一次；失败不致命（socket 文件本身是 0600）。
+        if let Err(err) = std::fs::set_permissions(dir, std::fs::Permissions::from_mode(DIR_MODE)) {
+            eprintln!(
+                "teamspace: 无法把控制 socket 目录 {} 的权限设为 0700：{err}",
+                dir.display()
+            );
+        }
+        Ok(())
+    }
+
     /// 准备 socket 路径：有人监听就报错（不覆盖），没人监听的残留 socket 文件删掉重建。
     ///
-    /// 路径上不是 socket 文件（普通文件、目录等）时报错，不动用户的数据。
+    /// 路径上不是 socket 文件（普通文件、目录等）时报错，不动用户的数据，并给出可操作的中文提示。
     fn prepare_path(path: &Path) -> std::io::Result<()> {
         let meta = match std::fs::symlink_metadata(path) {
             Ok(meta) => meta,
@@ -100,7 +138,8 @@ mod imp {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::AlreadyExists,
                 format!(
-                    "控制 socket 路径已被占用（不是 socket 文件）：{}",
+                    "控制 socket 路径被占用（不是 socket 文件）：{}；\
+                     请删除该文件（或改名）后重新启动 Teamspace",
                     path.display()
                 ),
             ));
@@ -125,18 +164,36 @@ mod imp {
     }
 
     /// 接受连接：每个连接一个线程，连接处理期间不影响其他连接。
-    fn accept_loop(listener: &UnixListener, ts: Arc<Teamspace>, stop: &AtomicBool) {
+    ///
+    /// 同时在线的连接数有上限，超了的直接回一句「连接过多」后断开，不无限开线程。
+    fn accept_loop(
+        listener: &UnixListener,
+        ts: Arc<Teamspace>,
+        stop: &AtomicBool,
+        live: &Arc<AtomicUsize>,
+    ) {
         while !stop.load(Ordering::SeqCst) {
             match listener.accept() {
                 Ok((stream, _)) => {
+                    if live.load(Ordering::SeqCst) >= MAX_CONNECTIONS {
+                        let _ = refuse(stream);
+                        continue;
+                    }
                     // 监听 socket 是非阻塞的，接过来的连接恢复为阻塞模式。
                     let _ = stream.set_nonblocking(false);
                     let ts = Arc::clone(&ts);
-                    let _ = std::thread::Builder::new()
+                    let counter = Arc::clone(live);
+                    live.fetch_add(1, Ordering::SeqCst);
+                    let spawned = std::thread::Builder::new()
                         .name("teamspace-control-conn".to_owned())
                         .spawn(move || {
                             let _ = serve_connection(stream, ts);
+                            counter.fetch_sub(1, Ordering::SeqCst);
                         });
+                    if spawned.is_err() {
+                        // 线程没起来：连接数要还回去。
+                        live.fetch_sub(1, Ordering::SeqCst);
+                    }
                 }
                 Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
                     std::thread::sleep(Duration::from_millis(20));
@@ -146,21 +203,89 @@ mod imp {
         }
     }
 
+    /// 连接数超限时回一句说明再断开。
+    fn refuse(mut stream: UnixStream) -> std::io::Result<()> {
+        let reply = error_reply(
+            Value::Null,
+            &Error::conflict(format!(
+                "控制连接数已达上限（{MAX_CONNECTIONS}），请稍后重试"
+            )),
+        );
+        stream.write_all(reply.as_bytes())?;
+        stream.write_all(b"\n")?;
+        stream.flush()
+    }
+
     /// 按行读请求、按行写响应。
+    ///
+    /// 读请求有超时（对端不发数据也不断开时不当成一直占着连接），单行有长度上限。
     fn serve_connection(stream: UnixStream, ts: Arc<Teamspace>) -> std::io::Result<()> {
+        let _ = stream.set_read_timeout(Some(READ_TIMEOUT));
         let mut writer = stream.try_clone()?;
-        let reader = BufReader::new(stream);
-        for line in reader.lines() {
-            let line = line?;
-            if line.trim().is_empty() {
-                continue;
+        let mut reader = BufReader::new(stream);
+        let mut buf = Vec::new();
+        loop {
+            match read_line(&mut reader, &mut buf) {
+                // 对端关掉了连接。
+                Ok(false) => return Ok(()),
+                Ok(true) => {
+                    let line = String::from_utf8_lossy(&buf);
+                    if line.trim().is_empty() {
+                        continue;
+                    }
+                    let reply = handle_line(&ts, &line);
+                    writer.write_all(reply.as_bytes())?;
+                    writer.write_all(b"\n")?;
+                    writer.flush()?;
+                }
+                // 超长的一行：回一句错误后断开，不再往下读。
+                Err(err) if err.kind() == ErrorKind::InvalidData => {
+                    let reply = error_reply(Value::Null, &Error::invalid(err.to_string()));
+                    let _ = writer.write_all(reply.as_bytes());
+                    let _ = writer.write_all(b"\n");
+                    let _ = writer.flush();
+                    return Ok(());
+                }
+                Err(err) => return Err(err),
             }
-            let reply = handle_line(&ts, &line);
-            writer.write_all(reply.as_bytes())?;
-            writer.write_all(b"\n")?;
-            writer.flush()?;
         }
-        Ok(())
+    }
+
+    /// 读一行（到换行符为止）。单行超过 [`MAX_LINE_BYTES`] 时报错。
+    ///
+    /// 返回 `false` 表示对端已经关闭（没有读到任何内容）。
+    fn read_line(reader: &mut BufReader<UnixStream>, buf: &mut Vec<u8>) -> std::io::Result<bool> {
+        buf.clear();
+        loop {
+            let available = reader.fill_buf()?;
+            if available.is_empty() {
+                return Ok(!buf.is_empty());
+            }
+            match available.iter().position(|byte| *byte == b'\n') {
+                Some(at) => {
+                    buf.extend_from_slice(&available[..=at]);
+                    reader.consume(at + 1);
+                    if buf.len() > MAX_LINE_BYTES {
+                        return Err(std::io::Error::new(
+                            ErrorKind::InvalidData,
+                            format!("请求超过 {MAX_LINE_BYTES} 字节上限"),
+                        ));
+                    }
+                    return Ok(true);
+                }
+                None => {
+                    let len = available.len();
+                    buf.extend_from_slice(available);
+                    reader.consume(len);
+                    if buf.len() > MAX_LINE_BYTES {
+                        return Err(std::io::Error::new(
+                            ErrorKind::InvalidData,
+                            format!("请求超过 {MAX_LINE_BYTES} 字节上限"),
+                        ));
+                    }
+                }
+            }
+        }
     }
 
     /// 处理一行请求，返回一行响应。
@@ -225,6 +350,23 @@ mod imp {
 
 pub use imp::{ControlServer, serve};
 
+use crate::Teamspace;
+
+/// 应用退出收尾：**先**停控制 socket（Leader 连不上了，不会再有新请求进来），
+/// **再**中断执行（终止 Agent 进程、把执行标记为已中断）。
+///
+/// 顺序很重要：中断执行要跑 Git 提交，可能有几秒；这段时间里 socket 还在监听的话，
+/// Leader 就能在退出窗口里再启动一个执行，退出后留下没人管的 Agent 进程。
+/// 控制 socket 没起来时（`None`）直接跳过那一步。
+pub fn shutdown_on_exit(control: Option<&ControlServer>, teamspace: &Teamspace) {
+    if let Some(control) = control {
+        control.shutdown();
+    }
+    // 退出中一律拒绝分发：即使还有别的东西在连 socket，也不会再启动新的执行。
+    teamspace.begin_exit();
+    teamspace.shutdown();
+}
+
 #[cfg(all(test, unix))]
 mod tests {
     use std::io::{BufRead, BufReader, Write};
@@ -232,10 +374,12 @@ mod tests {
     use std::os::unix::net::{UnixListener, UnixStream};
     use std::path::{Path, PathBuf};
     use std::sync::Arc;
+    use std::time::Duration;
 
     use serde_json::{Value, json};
 
     use super::*;
+    use crate::dispatch;
     use crate::model::{AcpPreset, Actor, EventKind, TaskStatus};
     use crate::tests::{FakeProbe, MOCK_HOST, templates};
     use crate::{AgentCommand, HostConfig, Teamspace};
@@ -251,9 +395,14 @@ mod tests {
         let ts = Arc::new(
             Teamspace::open_with(&dir.join("teamspace.db"), Box::new(FakeProbe), config).unwrap(),
         );
-        let path = dir.join("teamspace-control.sock");
+        let path = socket_path_in(dir);
         let server = serve(Arc::clone(&ts), &path).unwrap();
         (ts, path, server)
+    }
+
+    /// 控制 socket 的路径：应用数据目录下的 `control/` 子目录里。
+    fn socket_path_in(dir: &Path) -> PathBuf {
+        dir.join("control").join("teamspace-control.sock")
     }
 
     /// 用标准库 `UnixStream` 发一条请求，读取一行响应。
@@ -338,11 +487,12 @@ mod tests {
         drop(server);
     }
 
-    /// 路径上是普通文件时报错，不覆盖用户的数据。
+    /// 路径上是普通文件时报错，不覆盖用户的数据，并给出可操作的中文提示。
     #[test]
     fn a_regular_file_at_the_socket_path_is_not_replaced() {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("teamspace-control.sock");
+        let path = socket_path_in(dir.path());
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(&path, b"not a socket").unwrap();
         let config = HostConfig::default();
         let ts = Arc::new(
@@ -356,6 +506,83 @@ mod tests {
         let err = serve(Arc::clone(&ts), &path).unwrap_err();
         assert_eq!(err.kind(), std::io::ErrorKind::AlreadyExists, "{err}");
         assert_eq!(std::fs::read(&path).unwrap(), b"not a socket");
+        // 提示要能照着做：说清是哪个文件、要怎么处理。
+        let message = err.to_string();
+        assert!(
+            message.contains(path.to_string_lossy().as_ref()),
+            "{message}"
+        );
+        assert!(message.contains("请删除该文件"), "{message}");
+    }
+
+    /// socket 在应用数据目录下的 0700 专用子目录里，socket 文件本身是 0600。
+    #[test]
+    fn the_socket_lives_in_a_private_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let (_ts, path, _server) = serve_in(dir.path());
+        let parent = path.parent().unwrap();
+        let mode = std::fs::metadata(parent).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o700, "socket 目录权限应为 0700，实际 {mode:o}");
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "socket 权限应为 0600，实际 {mode:o}");
+    }
+
+    /// 超过单行上限（1 MiB）的请求被拒绝，连接随即断开。
+    #[test]
+    fn an_oversized_request_is_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        let (_ts, path, _server) = serve_in(dir.path());
+        let stream = UnixStream::connect(&path).unwrap();
+        // 写入在另一个线程里：服务端拒绝后会断开连接，这里的写入可能失败。
+        let writer = std::thread::spawn(move || {
+            let mut stream = stream;
+            let mut line = vec![b'x'; 1024 * 1024 + 32];
+            line.push(b'\n');
+            let _ = stream.write_all(&line);
+            let _ = stream.flush();
+            stream
+        });
+        let mut reader = BufReader::new(writer.join().unwrap());
+        let mut reply = String::new();
+        reader.read_line(&mut reply).unwrap();
+        let value: Value = serde_json::from_str(&reply).unwrap();
+        let message = value["err"]["message"].as_str().unwrap_or_default();
+        assert!(message.contains("上限"), "{value}");
+    }
+
+    /// 同时在线的连接数有上限：超了的连接收到一句「连接过多」。
+    #[test]
+    fn too_many_connections_are_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let (_ts, path, _server) = serve_in(dir.path());
+        let mut held = Vec::new();
+        for _ in 0..super::imp::MAX_CONNECTIONS {
+            let stream = UnixStream::connect(&path).unwrap();
+            held.push(stream);
+        }
+        // 稍等服务把连接都收下。
+        std::thread::sleep(Duration::from_millis(200));
+        let stream = UnixStream::connect(&path).unwrap();
+        let mut reader = BufReader::new(stream.try_clone().unwrap());
+        let mut reply = String::new();
+        reader.read_line(&mut reply).unwrap();
+        let value: Value = serde_json::from_str(&reply).unwrap();
+        let message = value["err"]["message"].as_str().unwrap_or_default();
+        assert!(message.contains("上限"), "{value}");
+    }
+
+    /// 退出收尾：先停控制 socket，再中断执行——退出窗口里不再接受任何命令。
+    #[test]
+    fn exit_stops_the_control_socket_and_rejects_further_commands() {
+        let dir = tempfile::tempdir().unwrap();
+        let (ts, path, server) = serve_in(dir.path());
+        assert!(path.exists());
+        shutdown_on_exit(Some(&server), &ts);
+        assert!(!path.exists(), "退出时控制 socket 应被停掉、文件被删除");
+        // 退出中一律拒绝：不会再启动新的执行。
+        let err = dispatch::dispatch(&ts, dispatch::Caller::Leader, "list_teams", &json!({}))
+            .unwrap_err();
+        assert!(err.message.contains("正在退出"), "{:?}", err.message);
     }
 
     /// Leader 经 socket 查询团队成功。

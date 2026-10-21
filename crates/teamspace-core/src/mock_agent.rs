@@ -45,6 +45,7 @@
 //! - `[mock:fsprobe=<范围外文件>]`：不申请权限，直接依次：`fs/read_text_file` 读取范围外文件，
 //!   `fs/write_text_file` 写岗位过程文件夹内的 `fsprobe-ok.md`、写范围外文件、写 `工作日志.md`；省略参数时范围外
 //!   文件为工作目录上一级的 `fsprobe-outside.txt`；每一步的结果写进总结；
+//! - `[mock:gitcheckout=<分支名>]`：模拟 Agent 自己 `git checkout -b <分支名>`（切走执行分支）。
 //! - `[mock:shellwrite=<相对路径>]`：模拟 Agent 用 shell（如 `printf … > 路径`）直接写文件：不申请权限、不经 ACP 的
 //!   `fs/write_text_file`，只报一次「执行命令」工具调用，然后由 Mock 自己把文件写到工作目录下的该路径
 //!   （目录不存在时创建）；结果记入总结（`[shellwrite:ok]`）。用来测试改动统计的快照兜底；
@@ -860,6 +861,25 @@ impl Mock<'_> {
                 "status": if result.is_ok() { "completed" } else { "failed" } }),
             )?;
             notes.push(note("shellwrite", &result));
+        }
+        if let Some(branch) = marker_arg(scope, "gitcheckout") {
+            // 模拟 Agent 自己切了分支（`git checkout -b`）：执行目录不再在执行分支上，
+            // 执行结束时的提交会被拒（用来验证「提交失败时不能误判成没有改动」）。
+            let result = std::process::Command::new("git")
+                .args(["checkout", "-b", branch])
+                .current_dir(&cwd)
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::piped())
+                .output()
+                .map(|out| {
+                    if out.status.success() {
+                        Ok(())
+                    } else {
+                        Err(String::from_utf8_lossy(&out.stderr).trim().to_owned())
+                    }
+                })
+                .unwrap_or_else(|err| Err(err.to_string()));
+            notes.push(note("gitcheckout", &result));
         }
         if let Some(rel) = marker_arg(scope, "shellrm") {
             let target = cwd.join(rel);

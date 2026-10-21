@@ -83,8 +83,10 @@ register_commands!(
     retry_message,
 );
 
-/// 本机控制 socket 的文件名（放在应用数据目录里）。
+/// 本机控制 socket 的文件名（放在应用数据目录下的 `control/` 子目录里）。
 const CONTROL_SOCKET_NAME: &str = teamspace_core::leader::SOCKET_FILE_NAME;
+/// 本机控制 socket 所在子目录（放在应用数据目录下，权限 0700）。
+const CONTROL_SOCKET_DIR: &str = teamspace_core::leader::SOCKET_DIR_NAME;
 
 /// Starts the native host.
 pub fn run() -> tauri::Result<()> {
@@ -107,21 +109,38 @@ pub fn run() -> tauri::Result<()> {
                 let _ = handle.emit(RUN_EVENT, event);
             });
             // 本机控制 socket：外部会话（Leader）经它操作 Teamspace，权限边界在内核里把守。
-            let socket_path = dir.join(CONTROL_SOCKET_NAME);
-            let control = teamspace_core::control::serve(Arc::clone(&teamspace), &socket_path)
-                .map_err(|err| format!("无法监听控制 socket {}：{err}", socket_path.display()))?;
+            let socket_path = dir.join(CONTROL_SOCKET_DIR).join(CONTROL_SOCKET_NAME);
+            // 控制 socket 起不来时应用照常运行：只是 Leader 连不上，界面「接入 Leader」处提示。
+            let control = match teamspace_core::control::serve(Arc::clone(&teamspace), &socket_path)
+            {
+                Ok(control) => Some(control),
+                Err(err) => {
+                    let message = format!(
+                        "控制 socket 不可用（{}）：{err}；Leader 暂时连不上本应用",
+                        socket_path.display()
+                    );
+                    eprintln!("teamspace: {message}");
+                    teamspace.set_control_socket_error(Some(message));
+                    None
+                }
+            };
             app.manage(Arc::clone(&teamspace));
-            app.manage(control);
+            if let Some(control) = control {
+                app.manage(control);
+            }
             Ok(())
         })
         .invoke_handler(handler())
         .build(tauri::generate_context!())?
         .run(|app, event| {
-            // 退出时终止执行中的 Agent 进程，执行标记为已中断（下次打开可续接或重新执行），
-            // 并停止控制 socket（关闭监听、删除 socket 文件）。
+            // 退出时先停控制 socket（Leader 连不上了），再终止执行中的 Agent 进程，
+            // 执行标记为已中断（下次打开可续接或重新执行）。
             if let tauri::RunEvent::Exit = event {
-                app.state::<Arc<Teamspace>>().shutdown();
-                app.state::<ControlServer>().shutdown();
+                let control = app.try_state::<ControlServer>();
+                teamspace_core::control::shutdown_on_exit(
+                    control.as_ref().map(|state| state.inner()),
+                    &app.state::<Arc<Teamspace>>(),
+                );
             }
         });
     Ok(())

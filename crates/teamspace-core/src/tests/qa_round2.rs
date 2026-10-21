@@ -2104,8 +2104,7 @@ fn k_evt_004_harness_and_resume_activities() {
     assert_eq!(events(&f, &team.id)[0].summary, "编辑 Harness「实例B」");
 
     // 重新打开数据库：残留的执行被标为 interrupted，再续接。
-    let ts =
-        Teamspace::open_with(&f.db_path(), Box::new(FakeProbe), HostConfig::default()).unwrap();
+    let ts = f.reopen();
     let run_id = format!("run-{}", task.task.id);
     assert_eq!(ts.get_run(&run_id).unwrap().status, RunStatus::Interrupted);
     ts.resume_run(&run_id).unwrap();
@@ -2158,8 +2157,7 @@ fn k_evt_004_rerun_of_interrupted_run_leaves_an_activity_for_the_old_run() {
     f.ts.bind_role_harness(&fe.id, &h.id).unwrap();
     let task = f.readyable(&team.id, &fe, "任务");
     insert_run_row(&f, &task.task, &h, "running");
-    let ts =
-        Teamspace::open_with(&f.db_path(), Box::new(FakeProbe), HostConfig::default()).unwrap();
+    let ts = f.reopen();
     let old = format!("run-{}", task.task.id);
     assert_eq!(ts.get_run(&old).unwrap().status, RunStatus::Interrupted);
     let list = |ts: &Teamspace| {
