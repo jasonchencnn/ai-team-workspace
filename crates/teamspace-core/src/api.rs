@@ -34,7 +34,9 @@ use crate::run::review_seam::{self, ReviewGit};
 use crate::run::{Mode, Stop};
 use crate::service::run::{self as run_svc, Ending, NewRun};
 use crate::service::task::FileCheck;
-use crate::service::{event, folder, harness, message, role, task, team, workspace};
+use crate::service::{
+    decision, event, folder, harness, inbox, message, notification, role, task, team, workspace,
+};
 use crate::store;
 use crate::workspace_file;
 
@@ -105,10 +107,20 @@ pub const COMMANDS: &[&str] = &[
     "retry_message",
     "leader_integration",
     "write_workspace_mcp_config",
+    "get_inbox",
+    "record_decision",
+    "list_decisions",
+    "get_notification_settings",
+    "update_notification_settings",
 ];
 
 /// 执行事件的 Tauri 事件名，载荷为 [`RunEvent`]（见 [`Teamspace::set_run_listener`]）。
 pub const RUN_EVENT: &str = "teamspace:run";
+
+/// 应用内通知的 Tauri 事件名，载荷为 [`NotifyEvent`]（见 [`Teamspace::set_notify_listener`]）。
+///
+/// 与执行事件分开：执行事件只讲「执行」，这里讲「需要你知道的事」——通知与消息状态变化。
+pub const NOTIFY_EVENT: &str = "teamspace:notify";
 
 /// 岗位工作台「最近执行」的条数。
 pub const WORKBENCH_RUN_LIMIT: u32 = 5;
@@ -154,6 +166,11 @@ impl HostConfig {
 /// drop 时（或调用 [`Teamspace::shutdown`]）终止所有执行中的 Agent 进程，并把这些执行标记为已中断。
 pub struct Teamspace {
     core: Arc<Core>,
+    /// 实例独占权：一个数据库同一时间只允许一个实例（见 [`crate::instance`]）。
+    ///
+    /// 放在实例上而不是内核上：实例结束（退出、重启）时立刻放开数据库，
+    /// 不受还在收尾的执行线程影响。
+    instance: Mutex<Option<crate::instance::InstanceLock>>,
 }
 
 /// 内核共享状态：命令与执行线程共用。
@@ -173,7 +190,16 @@ pub struct Core {
     pub(crate) review_git: RwLock<Arc<dyn ReviewGit>>,
     /// 验收的并发控制：正在验收的任务、正在合并的仓库（见 [`crate::review_api`]）。
     pub(crate) review_locks: crate::review_api::ReviewLocks,
+    /// 控制 socket 不可用的原因（宿主应用监听失败时记下，界面「接入 Leader」处提示）。
+    pub(crate) control_socket_error: RwLock<Option<String>>,
+    /// 应用正在退出：分发一律拒绝（退出窗口里不再接受任何命令，包括启动执行）。
+    pub(crate) exiting: std::sync::atomic::AtomicBool,
+    /// 通知事件的接收者（宿主程序把事件推给前端，见 [`NOTIFY_EVENT`]）。
+    notify_listener: RwLock<Option<Arc<NotifyListener>>>,
 }
+
+/// 通知事件的接收者。
+pub(crate) type NotifyListener = dyn Fn(&NotifyEvent) + Send + Sync;
 
 impl Deref for Teamspace {
     type Target = Core;
@@ -242,6 +268,9 @@ impl Teamspace {
             .parent()
             .map(Path::to_path_buf)
             .unwrap_or_else(|| PathBuf::from("."));
+        // 先取得实例独占权：取不到就直接报错退出，不打开数据库、不碰任何执行。
+        // 否则第二个实例会把第一个实例正在跑的执行当成「上次退出残留的」标记为已中断。
+        let instance = crate::instance::InstanceLock::acquire(db_path)?;
         let core = Arc::new(Core {
             conn: Mutex::new(store::open(db_path)?),
             probe,
@@ -252,6 +281,9 @@ impl Teamspace {
             deliveries: crate::delivery::Deliveries::default(),
             review_git: RwLock::new(Arc::new(review_seam::RealGit)),
             review_locks: crate::review_api::ReviewLocks::default(),
+            control_socket_error: RwLock::new(None),
+            exiting: std::sync::atomic::AtomicBool::new(false),
+            notify_listener: RwLock::new(None),
         });
         core.recover_runs()?;
         // 上次合并之后、落库之前退出的验收：按 Git 事实补记或清除「合并中」标记。
@@ -262,13 +294,26 @@ impl Teamspace {
         if with_delivery {
             crate::delivery::start(Arc::clone(&core));
         }
-        Ok(Self { core })
+        Ok(Self {
+            core,
+            instance: Mutex::new(Some(instance)),
+        })
     }
 
     /// 设置执行事件的接收者（宿主程序把事件推给前端，见 [`RUN_EVENT`]）。回调在执行线程中调用，
     /// 应尽快返回。
     pub fn set_run_listener(&self, listener: impl Fn(&RunEvent) + Send + Sync + 'static) {
         self.core.runs.set_listener(Arc::new(listener));
+    }
+
+    /// 设置通知事件的接收者（宿主程序把事件推给前端，见 [`NOTIFY_EVENT`]）。回调在产生事件的后台
+    /// 线程中调用，应尽快返回。
+    pub fn set_notify_listener(&self, listener: impl Fn(&NotifyEvent) + Send + Sync + 'static) {
+        *self
+            .core
+            .notify_listener
+            .write()
+            .unwrap_or_else(|p| p.into_inner()) = Some(Arc::new(listener));
     }
 
     /// 调整执行引擎的超时设置（宿主程序与测试用）。
@@ -280,6 +325,42 @@ impl Teamspace {
     pub fn shutdown(&self) {
         self.core.deliveries.stop();
         self.core.shutdown_runs();
+    }
+
+    /// 应用退出收尾的第一步：分发一律拒绝。
+    ///
+    /// 退出过程中（中断执行要跑 Git 提交，可能有几秒）不再接受任何命令，
+    /// 尤其不会再启动新的执行（否则会留下没人管的 Agent 进程）。
+    pub fn begin_exit(&self) {
+        self.core
+            .exiting
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// 应用是不是正在退出。
+    pub fn exiting(&self) -> bool {
+        self.core.exiting.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// 记录控制 socket 的状态：监听成功时传 `None`；监听失败时给出原因，
+    /// 界面「接入 Leader」处据此提示 Leader 连不上（D26：应用照常运行，只是 Leader 连不上）。
+    pub fn set_control_socket_error(&self, error: Option<String>) {
+        *self
+            .core
+            .control_socket_error
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = error;
+    }
+
+    /// 释放实例独占权：应用退出收尾时调用，之后别的实例可以打开同一个数据库。
+    ///
+    /// 释放后本实例不再独占这个数据库，不应再开始新的执行。
+    pub fn release_instance(&self) {
+        let mut slot = self
+            .instance
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        slot.take();
     }
 }
 
@@ -300,12 +381,84 @@ impl Core {
         Ok(value)
     }
 
+    /// 推送一个通知事件（没有接收者时什么都不做）。
+    pub(crate) fn emit_notify(&self, event: &NotifyEvent) {
+        let listener = self
+            .notify_listener
+            .read()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone();
+        if let Some(listener) = listener {
+            listener(event);
+        }
+    }
+
+    /// 生成一条通知并按订阅设置推送：该类别（或该岗位）关掉时不推。
+    ///
+    /// 调用时不得持有数据库锁：这里自己加锁读订阅设置，事务已提交后才推送。
+    pub(crate) fn push_notification(&self, spec: NotificationSpec) {
+        let built = {
+            let conn = self.lock();
+            notification::build(&conn, &spec)
+        };
+        if let Ok(Some(notification)) = built {
+            self.emit_notify(&NotifyEvent::Notification {
+                notification: Box::new(notification),
+            });
+        }
+    }
+
+    /// 推送消息状态变化（排队 → 投递中 → 已回复 / 失败 / 过期）。
+    ///
+    /// 页面据此实时更新消息状态，不必轮询。
+    pub(crate) fn emit_message_status(&self, message: &Message, previous: Option<MessageStatus>) {
+        self.emit_notify(&NotifyEvent::MessageStatus {
+            message: Box::new(message.clone()),
+            previous_status: previous,
+        });
+    }
+
+    /// 改消息状态：事务提交后推送状态变化。
+    ///
+    /// 消息状态的每一次变化都走这里，页面因此不必轮询就能看到回复；
+    /// 需要 Human 知道的状态（已回复 / 失败 / 过期）同时按订阅设置推一条通知。
+    pub(crate) fn update_message_status(
+        &self,
+        previous: MessageStatus,
+        f: impl FnOnce(&Connection) -> Result<Message>,
+    ) -> Result<Message> {
+        let message = self.write(f)?;
+        self.emit_message_status(&message, Some(previous));
+        let category = match message.status {
+            MessageStatus::Replied => Some(NotificationCategory::MessageReplied),
+            MessageStatus::Failed | MessageStatus::Expired => {
+                Some(NotificationCategory::MessageAction)
+            }
+            MessageStatus::Queued | MessageStatus::Delivering => None,
+        };
+        if let Some(category) = category {
+            self.push_notification(crate::model::message_spec(&message, category));
+        }
+        Ok(message)
+    }
+
     pub(crate) fn dependent_file_checks(
         &self,
         task_id: &str,
     ) -> Result<crate::service::dependency::FileChecks> {
         let plan = crate::service::dependency::file_check_plan(&self.lock(), task_id)?;
         Ok(plan.scan())
+    }
+
+    /// 某个任务的文件存在情况（就绪条件校验用）；没有任务时给一个空检查。
+    ///
+    /// 文件存在性要在锁外查（工作区可能很大），因此这里先取引用再扫描。
+    pub(crate) fn files_of(&self, task_id: Option<&str>) -> Result<FileCheck> {
+        let Some(task_id) = task_id else {
+            return Ok(FileCheck::scan(Path::new(""), &[]));
+        };
+        let (workspace, refs) = task::workspace_and_refs(&self.lock(), task_id)?;
+        Ok(FileCheck::scan(Path::new(&workspace), &refs))
     }
 
     /// 同步团队全部岗位的文件夹（见模块说明）。调用时不得持有数据库锁：读计划和写回结果各短暂
@@ -779,6 +932,15 @@ impl Teamspace {
         let detail = self
             .write(|tx| task::change_status(tx, input, &files, dependent_files.as_ref(), actor))?;
         self.sync_role_folders(&detail.task.team_id);
+        // 通知：任务受阻时要 Human 处理（订阅关了就不推）。
+        if detail.task.status == TaskStatus::Blocked {
+            let reason = detail.task.blocked_reason.clone().unwrap_or_default();
+            self.core.push_notification(crate::model::task_blocked_spec(
+                &detail.task,
+                &reason,
+                false,
+            ));
+        }
         Ok(detail)
     }
 
@@ -1224,6 +1386,8 @@ impl Teamspace {
     /// （D8：Leader 发起消息属正常编排）。
     pub fn send_message_as(&self, actor: Actor, input: SendMessageInput) -> Result<Message> {
         let message = self.write(|tx| message::send(tx, actor, &input))?;
+        // 消息状态变化：排队（M5-01 遗留，页面据此实时显示，不必轮询）。
+        self.core.emit_message_status(&message, None);
         // 唤醒投递线程：新消息入队。
         self.core.deliveries.schedule();
         Ok(message)
@@ -1246,9 +1410,62 @@ impl Teamspace {
 
     /// 重发一条失败或过期的消息：状态回到「排队」，等投递引擎再次接手。
     pub fn retry_message(&self, message_id: &str) -> Result<Message> {
-        let message = self.write(|tx| message::retry(tx, message_id))?;
+        let previous = message::get(&self.lock(), message_id)?.status;
+        let message = self
+            .core
+            .update_message_status(previous, |tx| message::retry(tx, message_id))?;
         self.core.deliveries.schedule();
         Ok(message)
+    }
+
+    // ---------------------------------------------------------------- 待我处理
+
+    /// 待我处理：按类别聚合需要 Human 处理的事项（待验收、执行失败或受阻、待答复的权限请求、
+    /// 需要拍板的消息、最近 7 天的 Leader 越权记录）。
+    ///
+    /// 不存「已读」：每次按真实状态重算，处理完的事项自然消失。
+    pub fn get_inbox(&self, input: GetInboxInput) -> Result<Inbox> {
+        inbox::collect(&self.lock(), &input.team_id)
+    }
+
+    // ---------------------------------------------------------------- 决策记录
+
+    /// 记录一条决策：写入决策表，并在关联岗位的工作日志追加一行「决策：…」（D14）。
+    ///
+    /// 可选把受阻任务恢复到 READY：走现有的就绪条件校验，不满足时整个决策一起回滚。
+    pub fn record_decision(&self, input: RecordDecisionInput) -> Result<Decision> {
+        let files = self.files_of(input.task_id.as_deref())?;
+        let decision = self.write(|tx| decision::record(tx, &input, &files))?;
+        // 工作日志追加（岗位文件夹同步在事务提交后进行）。
+        self.sync_role_folders(&decision.team_id);
+        Ok(decision)
+    }
+
+    /// 决策列表：按团队（必填）、任务与消息筛选，最近的在前。
+    pub fn list_decisions(&self, input: ListDecisionsQuery) -> Result<Vec<Decision>> {
+        decision::list(&self.lock(), &input)
+    }
+
+    // ---------------------------------------------------------------- 通知订阅
+
+    /// 通知订阅设置：按类别与岗位开关，默认全部开启。
+    pub fn get_notification_settings(
+        &self,
+        input: GetNotificationSettingsInput,
+    ) -> Result<NotificationSettings> {
+        let conn = self.lock();
+        team::get_active(&conn, &input.team_id)?;
+        notification::settings(&conn, &input.team_id)
+    }
+
+    /// 修改通知订阅设置，返回修改后的设置。
+    pub fn update_notification_settings(
+        &self,
+        input: UpdateNotificationSettingsInput,
+    ) -> Result<NotificationSettings> {
+        let conn = self.lock();
+        team::get_active(&conn, &input.team_id)?;
+        notification::update(&conn, &input)
     }
 }
 

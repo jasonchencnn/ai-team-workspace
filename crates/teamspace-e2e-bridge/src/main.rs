@@ -7,6 +7,7 @@
 //! 执行事件（Tauri 中由 `app.emit` 推送）在这里缓存在内存里，浏览器端用桥接专用命令
 //! `__poll_run_events`（参数 `{ after: number }`，返回 `{ events: [{ seq, event }], next }`）轮询，
 //! 再交给 mock 的事件系统分发给 `listen` 的订阅者，前端代码无需区分。
+//! 通知事件（应用内通知与消息状态变化）另有一份缓存，命令是 `__poll_notify_events`，参数与返回同上。
 //! 测试专用命令 `__simulate_restart`：等同应用退出时的收尾（终止所有 Agent 进程，把进行中的执行标记为
 //! 已中断），用来验证「已中断」状态与续接、重新执行、标记为失败。
 //! 不属于正式应用。
@@ -84,6 +85,9 @@ struct EventLog {
 
 type Events = Arc<Mutex<EventLog>>;
 
+/// 通知事件（应用内通知与消息状态变化）缓存：与执行事件分开，页面各自订阅。
+type NotifyEvents = Arc<Mutex<EventLog>>;
+
 type CmdResult = Result<Value, ErrorPayload>;
 
 fn main() {
@@ -118,19 +122,37 @@ fn main() {
         }
     });
     let ts = Arc::new(ts);
+    let notify_events: NotifyEvents = Arc::default();
+    let notify_sink = Arc::clone(&notify_events);
+    ts.set_notify_listener(move |event| {
+        let mut log = notify_sink.lock().unwrap_or_else(|p| p.into_inner());
+        log.next += 1;
+        let seq = log.next;
+        log.events
+            .push_back((seq, serde_json::to_value(event).unwrap_or(Value::Null)));
+        while log.events.len() > EVENT_BUFFER {
+            log.events.pop_front();
+        }
+    });
     let listener = TcpListener::bind(format!("127.0.0.1:{port}"))
         .unwrap_or_else(|err| panic!("bind port {port}: {err}"));
     println!("bridge listening on 127.0.0.1:{port}");
     for stream in listener.incoming().flatten() {
         let ts = Arc::clone(&ts);
         let events = Arc::clone(&events);
+        let notify_events = Arc::clone(&notify_events);
         thread::spawn(move || {
-            let _ = handle(stream, &ts, &events);
+            let _ = handle(stream, &ts, &events, &notify_events);
         });
     }
 }
 
-fn handle(mut stream: TcpStream, ts: &Teamspace, events: &Events) -> std::io::Result<()> {
+fn handle(
+    mut stream: TcpStream,
+    ts: &Teamspace,
+    events: &Events,
+    notify_events: &NotifyEvents,
+) -> std::io::Result<()> {
     let mut reader = BufReader::new(stream.try_clone()?);
     let mut request_line = String::new();
     reader.read_line(&mut request_line)?;
@@ -163,6 +185,8 @@ fn handle(mut stream: TcpStream, ts: &Teamspace, events: &Events) -> std::io::Re
             let args = request.get("args").cloned().unwrap_or(Value::Null);
             let result = if cmd == "__poll_run_events" {
                 poll_events(events, &args)
+            } else if cmd == "__poll_notify_events" {
+                poll_events(notify_events, &args)
             } else {
                 dispatch(ts, cmd, &args)
             };

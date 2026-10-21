@@ -429,3 +429,42 @@ pub fn get_thread(ts: State<'_, Arc<Teamspace>>, thread_id: &str) -> Result<Thre
 pub fn retry_message(ts: State<'_, Arc<Teamspace>>, message_id: &str) -> Result<Message, Error> {
     ts.retry_message(message_id)
 }
+
+// ---------------------------------------------------------------- 待我处理、决策、通知
+
+#[tauri::command(async)]
+pub fn get_inbox(ts: State<'_, Arc<Teamspace>>, input: GetInboxInput) -> Result<Inbox, Error> {
+    ts.get_inbox(input)
+}
+
+#[tauri::command(async)]
+pub fn record_decision(
+    ts: State<'_, Arc<Teamspace>>,
+    input: RecordDecisionInput,
+) -> Result<Decision, Error> {
+    ts.record_decision(input)
+}
+
+#[tauri::command(async)]
+pub fn list_decisions(
+    ts: State<'_, Arc<Teamspace>>,
+    input: ListDecisionsQuery,
+) -> Result<Vec<Decision>, Error> {
+    ts.list_decisions(input)
+}
+
+#[tauri::command(async)]
+pub fn get_notification_settings(
+    ts: State<'_, Arc<Teamspace>>,
+    input: GetNotificationSettingsInput,
+) -> Result<NotificationSettings, Error> {
+    ts.get_notification_settings(input)
+}
+
+#[tauri::command(async)]
+pub fn update_notification_settings(
+    ts: State<'_, Arc<Teamspace>>,
+    input: UpdateNotificationSettingsInput,
+) -> Result<NotificationSettings, Error> {
+    ts.update_notification_settings(input)
+}

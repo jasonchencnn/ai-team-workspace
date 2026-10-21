@@ -209,6 +209,29 @@ fn a_successful_worktree_run_without_changes_is_flagged() {
     assert!(view.run.as_ref().unwrap().no_changes, "{view:#?}");
 }
 
+/// 使用记录 2：改动没能提交到执行分支时（Agent 自己切走了分支）不能判定为「没有任何改动」：
+/// 记录里既有改动文件，就不能同时说「没有改动」。
+#[test]
+fn a_run_whose_commit_failed_is_not_flagged_as_no_changes() {
+    let e = env(true);
+    let task = e.task("切走分支 [mock:shellwrite=output.txt] [mock:gitcheckout=other]");
+    let run = e.ts.start_run(&task.id).unwrap();
+    let run = e.wait_end(&run.id);
+    assert_eq!(run.status, RunStatus::Succeeded, "{run:#?}");
+    assert!(
+        !run.no_changes,
+        "提交失败时不能判定为「成功但没有任何改动」：{run:#?}"
+    );
+    assert!(!run.changed_files.is_empty(), "{:?}", run.changed_files);
+    assert!(
+        run.change_note
+            .as_deref()
+            .unwrap_or_default()
+            .contains("无法把改动提交到执行分支"),
+        "{run:#?}"
+    );
+}
+
 /// 使用记录 2：普通文件夹原地执行成功但快照比对没有发现改动时，同样标记 `noChanges`。
 #[test]
 fn a_successful_plain_folder_run_without_changes_is_flagged() {

@@ -51,6 +51,7 @@ impl ReviewGit for FakeGit {
         dir: &Path,
         message: &str,
         _: Option<&std::ffi::OsStr>,
+        _timeout: std::time::Duration,
     ) -> std::result::Result<Option<String>, String> {
         self.log(format!("commit {} {message}", dir.display()));
         match &self.commit_err {
@@ -1108,8 +1109,9 @@ impl ReviewGit for MergedErr {
         d: &Path,
         m: &str,
         p: Option<&std::ffi::OsStr>,
+        timeout: std::time::Duration,
     ) -> std::result::Result<Option<String>, String> {
-        self.0.commit_all(d, m, p)
+        self.0.commit_all(d, m, p, timeout)
     }
     fn diff_files(
         &self,
@@ -1205,8 +1207,7 @@ fn startup_reconciles_leftover_merges_with_real_git() {
     run_git(&["branch", "teamspace/FE-001-r1"]);
     set_marker(&f, &s.run_id);
 
-    let reopened =
-        Teamspace::open_with(&f.db_path(), Box::new(FakeProbe), HostConfig::default()).unwrap();
+    let reopened = f.reopen();
     assert_eq!(
         reopened.get_task(&s.task.id).unwrap().task.status,
         TaskStatus::Done

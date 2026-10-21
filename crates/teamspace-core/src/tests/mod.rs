@@ -1,11 +1,14 @@
 //! 通过 [`Teamspace`] 公开命令测试业务规则。全部使用临时目录和假探测，不调用真实 Git、CLI 或 Agent。
 
+mod decisions;
 mod dependencies;
 mod events;
 mod files;
 mod folders;
 mod harnesses;
+mod inbox;
 mod messages;
+mod notifications;
 #[cfg(unix)]
 mod qa_round2;
 #[cfg(unix)]
@@ -197,6 +200,16 @@ pub(crate) fn plain_fixture() -> Fixture {
 impl Fixture {
     pub fn db_path(&self) -> PathBuf {
         self.dir.path().join("teamspace.db")
+    }
+
+    /// 模拟应用重启：旧实例先让出数据库的独占权，再用同一个数据库重新打开一个新实例。
+    ///
+    /// 与真实重启一致：旧实例退出（独占权随之释放）后新实例才打开同一个数据库——
+    /// 活着的实例不会再被第二个实例顶掉（见 [`crate::instance`]）。
+    /// 新实例由调用方持有；夹具里的旧实例仍在（不再独占数据库），需要时照旧可用。
+    pub fn reopen(&self) -> Teamspace {
+        self.ts.release_instance();
+        Teamspace::open_with(&self.db_path(), Box::new(FakeProbe), HostConfig::default()).unwrap()
     }
 
     /// 在工作区中创建文件（含父目录）。

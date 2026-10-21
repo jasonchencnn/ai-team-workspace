@@ -24,7 +24,7 @@ pub const CONTEXT_MESSAGES: usize = 10;
 
 /// 线程与消息的列。
 const THREAD_COLS: &str = "id, team_id, task_id, subject, participants, created_at, updated_at";
-const MESSAGE_COLS: &str = "id, thread_id, team_id, task_id, sender_kind, sender_role_id, \
+pub(crate) const MESSAGE_COLS: &str = "id, thread_id, team_id, task_id, sender_kind, sender_role_id, \
                            to_role_id, body, status, failure_reason, reply_body, created_at, \
                            delivered_at, replied_at";
 
@@ -328,8 +328,11 @@ pub(crate) fn mark_expired(conn: &Connection, message_id: &str) -> Result<Messag
     get(conn, message_id)
 }
 
-/// 把超过期限仍未回复的消息转「过期」，返回被置为过期的消息。
-pub(crate) fn expire_stale(conn: &Connection, cutoff: &str) -> Result<Vec<Message>> {
+/// 把超过期限仍未回复的消息转「过期」，返回被置为过期的消息与它原来的状态。
+pub(crate) fn expire_stale(
+    conn: &Connection,
+    cutoff: &str,
+) -> Result<Vec<(Message, MessageStatus)>> {
     let mut stmt = conn.prepare(&format!(
         "SELECT {MESSAGE_COLS} FROM messages
          WHERE status IN ('queued', 'delivering') AND created_at < ?1
@@ -338,9 +341,10 @@ pub(crate) fn expire_stale(conn: &Connection, cutoff: &str) -> Result<Vec<Messag
     let stale: Vec<Message> = stmt
         .query_map(params![cutoff], from_row)?
         .collect::<rusqlite::Result<_>>()?;
-    let mut expired: Vec<Message> = Vec::new();
+    let mut expired: Vec<(Message, MessageStatus)> = Vec::new();
     for message in stale {
-        expired.push(mark_expired(conn, &message.id)?);
+        let previous = message.status;
+        expired.push((mark_expired(conn, &message.id)?, previous));
     }
     Ok(expired)
 }
@@ -508,7 +512,7 @@ fn from_thread_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<MessageThread> {
     })
 }
 
-fn from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Message> {
+pub(crate) fn from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Message> {
     Ok(Message {
         id: row.get(0)?,
         thread_id: row.get(1)?,

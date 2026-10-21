@@ -59,6 +59,7 @@ use crate::model::{
     RunUpdateQuery, TaskStatus,
 };
 use crate::role_folder;
+use crate::run::worktree::{COMMIT_TIMEOUT, GIT_TIMEOUT};
 use crate::service::run::{self as store_run, Ending};
 use crate::service::{MAX_REASON, harness, task};
 use crate::store::{new_id, now};
@@ -420,19 +421,20 @@ impl Core {
             "teamspace: {} attempt {} (interrupted)",
             run.task_key, run.attempt
         );
-        match self.commit_run_dir(run, &message) {
+        // 保全提交有更短的超时：超时只记保全失败，不能让应用关不掉。
+        match self.commit_run_dir(run, &message, COMMIT_TIMEOUT) {
             Ok(Some(commit)) => Preserved {
                 commit: Some(commit),
                 problem: None,
             },
             Ok(None) => {
                 // 没有未提交的改动：执行分支上已有的提交就是这次执行改动的落点（与基线相同即没有改动）。
+                // 分支在仓库里，不在执行目录里：执行目录已被删掉时也要能查到保全提交。
                 let path_env = self.probe.command_path_env();
-                let head = self.review_git().branch_head(
-                    Path::new(&run.exec_dir),
-                    branch,
-                    Some(&path_env),
-                );
+                let workspace = store_run::workspace_of(&self.lock(), &run.id).unwrap_or_default();
+                let head =
+                    self.review_git()
+                        .branch_head(Path::new(&workspace), branch, Some(&path_env));
                 let commit = match (head, run.base_commit.as_deref()) {
                     (Some(head), Some(base)) if head != base => Some(head),
                     (Some(head), None) => Some(head),
@@ -459,11 +461,16 @@ impl Core {
         if run.isolation != RunIsolation::Worktree {
             return None;
         }
+        // 只在上一次执行确实做过「中断保全」（有保全提交）时才提示：
+        // 成功待验收或失败待处理的旧执行不是被保留下来的成果，Agent 不该去摘它。
+        // 这里看的是保全提交而不是状态：重新执行时上一次的中断执行会被记为「失败」，
+        // 但它留在分支上的保全提交还在。
         let previous: Option<String> = self
             .lock()
             .query_row(
                 "SELECT branch FROM runs
                  WHERE task_id = ?1 AND attempt < ?2 AND branch IS NOT NULL
+                   AND interrupted_commit IS NOT NULL
                  ORDER BY attempt DESC LIMIT 1",
                 rusqlite::params![run.task_id, run.attempt],
                 |row| row.get(0),
@@ -2024,8 +2031,11 @@ impl Driver {
             run_id: self.run.id.clone(),
             task_id: self.run.task_id.clone(),
             team_id: self.run.team_id.clone(),
-            prompt: p,
+            prompt: p.clone(),
         });
+        // 通知：权限请求要 Human 答复（订阅关了就不推）。
+        self.core
+            .push_notification(crate::model::permission_spec(&self.run, &p));
     }
 
     /// 记录 Human 对编辑请求的允许。目标路径以这次编辑的 diff 为准；没有 diff 时逐个收下请求里的路径。
@@ -2394,7 +2404,7 @@ impl Driver {
             "teamspace: {} attempt {}",
             self.run.task_key, self.run.attempt
         );
-        match self.core.commit_run_dir(&self.run, &message) {
+        match self.core.commit_run_dir(&self.run, &message, GIT_TIMEOUT) {
             Ok(_) => None,
             Err(err) => Some(format!(
                 "无法把改动提交到执行分支：{err}；打开验收页时会再试一次"
@@ -2456,10 +2466,12 @@ impl Driver {
                 None => problem.clone(),
             });
         }
-        // 成功但相对基线没有任何改动：Git 执行看执行分支相对基线提交的 diff，原地执行看快照比对结果。
+        // 成功但相对基线没有任何改动：分支 diff 为空**且**工作区改动为空。
+        // 判断不出来时（提交失败、快照被截断）按「有改动」处理，不误报。
         let no_changes = match &end {
+            End::Succeeded(_) if commit_problem.is_some() || audit.incomplete => false,
             End::Succeeded(_) => match self.run.isolation {
-                RunIsolation::Worktree => self.branch_has_no_changes(),
+                RunIsolation::Worktree => self.branch_has_no_changes() && audit.files.is_empty(),
                 RunIsolation::InPlace => audit.files.is_empty(),
             },
             _ => false,
@@ -2660,6 +2672,42 @@ impl Driver {
         }
         self.core.sync_role_folders(&self.run.team_id);
         self.core.emit_run(&self.run.id);
+        // 通知：任务进入待验收、执行失败或受阻（事务提交后再推，不持锁）。
+        if matches!(saved, Some(Some(_))) {
+            self.notify_task_state(task_to, reason.as_deref(), status);
+        }
+    }
+
+    /// 任务状态变化后的通知：待验收、执行失败、受阻。
+    fn notify_task_state(
+        &self,
+        task_to: Option<TaskStatus>,
+        reason: Option<&str>,
+        status: RunStatus,
+    ) {
+        let Some(to) = task_to else {
+            return;
+        };
+        if to != TaskStatus::Review && to != TaskStatus::Blocked {
+            return;
+        }
+        let Some((task, run)) = self.db(|tx| {
+            Ok((
+                task::get(tx, &self.run.task_id)?,
+                store_run::get(tx, &self.run.id)?,
+            ))
+        }) else {
+            return;
+        };
+        let spec = match to {
+            TaskStatus::Review => crate::model::task_review_spec(&task, Some(&run)),
+            TaskStatus::Blocked => {
+                let reason = reason.unwrap_or("任务受阻");
+                crate::model::task_blocked_spec(&task, reason, status == RunStatus::Failed)
+            }
+            _ => return,
+        };
+        self.core.push_notification(spec);
     }
 }
 

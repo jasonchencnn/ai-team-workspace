@@ -338,6 +338,8 @@ fn recovery_after_a_crash_computes_changed_files_from_the_saved_snapshot() {
         .unwrap()
     };
 
+    // 强制结束 = 旧进程已经不在了：放开数据库的独占权，新实例才打不开——才能重开。
+    e.ts.release_instance();
     reset();
     let ts = reopen();
     let recovered = ts.get_run(&run.id).unwrap();

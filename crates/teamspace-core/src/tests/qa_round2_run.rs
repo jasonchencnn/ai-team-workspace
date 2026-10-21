@@ -20,7 +20,7 @@ fn wait_end(ts: &Teamspace, run_id: &str) -> Run {
 }
 
 fn reopen(f: &Fixture) -> Teamspace {
-    Teamspace::open_with(&f.db_path(), Box::new(FakeProbe), HostConfig::default()).unwrap()
+    f.reopen()
 }
 
 fn events_of(ts: &Teamspace, team_id: &str) -> Vec<Event> {
@@ -501,6 +501,8 @@ fn k_run_012_mark_failed_and_rerun_after_interruption() {
     // 另一个中断的执行直接重新执行：旧的记为失败，新的 attempt + 1。
     let b = f.readyable(&team.id, &fe, "乙");
     insert_run(&f, &b.task, &h, RunRow::new("r-b", "running"));
+    // 上一个实例退出（释放数据库独占权）后再打开新的。
+    drop(ts);
     let ts2 = reopen(&f);
     assert_eq!(ts2.get_run("r-b").unwrap().status, RunStatus::Interrupted);
     let new_run = ts2.start_run(&b.task.id).unwrap();

@@ -6,6 +6,7 @@
 
 use std::ffi::OsStr;
 use std::path::Path;
+use std::time::Duration;
 
 use super::git_review;
 use super::worktree::{Worktree, git};
@@ -52,11 +53,14 @@ pub(crate) enum Merge {
 /// 验收用到的 Git 操作。错误为中文说明。
 pub(crate) trait ReviewGit: Send + Sync {
     /// 把执行目录（worktree）里的全部改动提交到执行分支；没有改动时返回 `None`。
+    ///
+    /// `timeout` 是这次提交允许占用的时间：超时后 kill 掉 Git 子进程并报错。
     fn commit_all(
         &self,
         dir: &Path,
         message: &str,
         path_env: Option<&OsStr>,
+        timeout: Duration,
     ) -> Result<Option<String>, String>;
 
     /// `base_commit..head` 的改动文件。
@@ -140,8 +144,9 @@ impl ReviewGit for RealGit {
         dir: &Path,
         message: &str,
         path_env: Option<&OsStr>,
+        timeout: Duration,
     ) -> Result<Option<String>, String> {
-        git_review::commit_all(dir, message, path_env)
+        git_review::commit_all(dir, message, path_env, timeout)
     }
 
     fn diff_files(
