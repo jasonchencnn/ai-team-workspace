@@ -44,6 +44,7 @@
 | D31 | 通知订阅按「类别总开关 + 岗位开关」两级存（作用域 `*` 表示类别总开关），没有记录时默认开启；关掉类别即关掉全部岗位，岗位开关只能在此基础上再关 | 默认全开符合「先能用」；两级开关覆盖「不要某类通知」与「不要某个岗位的通知」两种真实需求 |
 | D32 | Leader 白名单只放只读的 `get_inbox`；`record_decision`、`list_decisions` 与通知订阅读写均拒绝并留 `leader_denied` 痕迹 | 决策与订阅是 Human 的控制权（D8），Leader 只能看不能改 |
 | D33 | 岗位消息过期时限保持 7 天（Figma 画板写 24 小时，以内核为准）；画板中的消息类型、引用 / reply_to、改派、以岗位身份回复、投递时绑定快照本期不做，绑定快照随 M6-01 实现 | 总指挥按 D27 于 2026-10-21 裁定：先保证消息闭环可用，复杂编排留待使用中再加 |
+| D34 | 调整 D25/D27 的执行者：OpenCode 上的 MiniMax M3.1 已不免费，开发主力改为 MiniMax Code CLI（`mcode`，免费期内）；OpenCode 只用名称带 `free` 的模型（`opencode/minimax-m3.1-flash-free`、`opencode/deepseek-v4.1-flash-free`）做辅助开发与交叉审查；agy（Gemini 3.8 Flash）做校验与回归；总指挥只做分派、进度跟踪、答疑与验收。项目于 2026-10-21 迁到外置固态盘 `/Volumes/jasonchen/MyVault/协作工作` | Human 于 2026-10-21 迁移完成后以 /goal 指定 |
 
 ## 沿用的原始产品原则
 

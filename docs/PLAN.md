@@ -8,12 +8,12 @@
 
 | 项 | 内容 |
 |---|---|
-| 阶段 | **暂停**（2026-10-21 15:20，Human 迁移到新固态盘）；M4 完成，M5 进行中 |
+| 阶段 | M5 进行中（2026-10-21 迁到外置固态盘后恢复，环境检查通过，执行者按 D34 调整） |
 | 已完成 | M1～M3 已签收；M3-11 自举：7 个任务全部经 Teamspace 自己执行、验收、合并（L-1～L-10、L-13 及 M3 校验记录）；`pnpm run check`（Rust 751、前端 87）与 `pnpm run e2e`（289 通过、5 跳过）全部通过 |
-| 进行中 | 无（已暂停）。未完成的三个分支已保存为 wip 提交：`team/m5-04`（待我处理页，13 个文件）、`team/m5-05`（MCP 消息工具，7 个文件）、`team/m5-kfix`（内核修复批含 M4-G-1，13 个文件），任务说明在 `../协作工作-wt/_logs/brief-*.md` |
+| 进行中 | `team/m5-04`（待我处理页）与 `team/m5-kfix`（内核修复批含 M4-G-1）由 MiniMax Code 续做；`team/m5-05`（MCP 消息工具）已完成，交叉审查中。开发日志见 `docs/DEVLOG.md` |
 | 待你确认 | 无 |
 | 遗留 | L-11 窄屏（M7）、L-12 视觉细节批；UI-ROLE-002 空状态分支不可达（`test.fixme`）；见第 16 节使用记录 |
-| 下一步 | 迁移后：确认仓库与 worktree 路径（必要时 `git worktree repair`），按 `_logs/brief-m5-04.md`、`brief-m5-05.md`、`brief-m5-kfix.md` 续接三个 wip 分支（让执行者先 `git log -1`、`git show --stat HEAD` 了解已做部分）；之后 M5 交叉审查与 agy 回归 → M6 → M7（第 18 节） |
+| 下一步 | 合入 M5-04/05/kfix → M5-06 e2e、交叉审查与 agy 回归 → M6 → M7（第 18 节，执行者按 D34） |
 
 ## 1. 目标
 
@@ -427,7 +427,7 @@ M4 的 Leader 编排没有对应画板，交互主要发生在 Leader 自己的�
 
 ## 18. M5–M7 执行计划（D27：总指挥制定，不做阶段校验）
 
-执行者：MiniMax Code CLI 与 OpenCode CLI（MiniMax-M3.1-Flash）；agy（Gemini）在每个里程碑末做独立回归；总指挥分派与验收。每个任务的完成标准都是：对照 Figma 画板（如有）、规则在 Rust 内核并有测试、`pnpm run check` 通过、相关 e2e 通过；里程碑末完整 e2e 通过。
+执行者（D34 起）：MiniMax Code CLI 为主力；OpenCode 只用带 `free` 的模型（minimax-m3.1-flash-free、deepseek-v4.1-flash-free）做辅助开发与交叉审查，表中写 OpenCode 的任务改由 MiniMax Code 主做；agy（Gemini）在每个里程碑末做独立回归；总指挥分派与验收。每个任务的完成标准都是：对照 Figma 画板（如有）、规则在 Rust 内核并有测试、`pnpm run check` 通过、相关 e2e 通过；里程碑末完整 e2e 通过。
 
 ### M5 岗位通信与待我处理
 
