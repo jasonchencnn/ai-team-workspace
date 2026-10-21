@@ -109,6 +109,13 @@ pub fn render(input: &BriefInput) -> String {
     push(&mut out, "");
     push(&mut out, "## 工作约定");
     push(&mut out, or_none(&input.role_guidelines));
+    if input.isolation == RunIsolation::Worktree {
+        push(
+            &mut out,
+            "同一仓库的多个执行目录共用同一个 stash，不要使用 `git stash`（会把别的执行目录的暂存内容\
+             一起带走）。需要对照基线时，用 `git worktree add` 在临时目录检出基线提交再比较。",
+        );
+    }
     push(&mut out, "");
     push(
         &mut out,
@@ -515,6 +522,32 @@ mod tests {
             !text.contains("日志 11"),
             "only {JOURNAL_LINES} journal lines"
         );
+    }
+
+    #[test]
+    fn git_brief_forbids_stash_and_points_to_worktree() {
+        // Git 工作空间：说明包里写明不要用 `git stash`，改用 `git worktree add` 对照基线。
+        let text = render(&input());
+        assert!(
+            text.contains("不要使用 `git stash`"),
+            "missing stash rule in\n{text}"
+        );
+        assert!(
+            text.contains("`git worktree add` 在临时目录检出基线提交"),
+            "missing worktree hint in\n{text}"
+        );
+        assert!(
+            text.contains("同一仓库的多个执行目录共用同一个 stash"),
+            "missing stash reason in\n{text}"
+        );
+        // 普通文件夹不是 Git 工作空间，不提 stash。
+        let plain = render(&BriefInput {
+            isolation: RunIsolation::InPlace,
+            branch: None,
+            ..input()
+        });
+        assert!(!plain.contains("git stash"), "{plain}");
+        assert!(!plain.contains("git worktree add"), "{plain}");
     }
 
     #[test]
