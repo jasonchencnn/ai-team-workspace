@@ -11,6 +11,7 @@
 mod event;
 mod file;
 mod harness;
+mod message;
 mod review;
 mod role;
 mod run;
@@ -21,6 +22,7 @@ mod team;
 pub use event::*;
 pub use file::*;
 pub use harness::*;
+pub use message::*;
 pub use review::*;
 pub use role::*;
 pub use run::*;

@@ -75,6 +75,10 @@ register_commands!(
     rerun_after_conflict,
     list_events,
     pick_workspace_folder,
+    send_message,
+    list_threads,
+    get_thread,
+    retry_message,
 );
 
 /// 本机控制 socket 的文件名（放在应用数据目录里）。

@@ -48,6 +48,14 @@ pub enum EventKind {
     /// Leader 越权：外部会话经本机控制 socket 请求了白名单之外的操作，被拒绝并留痕
     /// （`data.command` 为被拒的命令名，`data.message` 为拒绝原因）。
     LeaderDenied,
+    /// 消息已发出（`data.messageId`、`data.threadId`、`data.toRoleId`）。
+    MessageSent,
+    /// 消息已收到回复（`data.messageId`、`data.threadId`）。
+    MessageReplied,
+    /// 消息投递失败（`data.messageId`、`data.threadId`、`data.reason`）。
+    MessageDeliveryFailed,
+    /// 消息过期（超过 7 天仍未回复；`data.messageId`、`data.threadId`）。
+    MessageExpired,
 }
 
 /// 操作者：Human、Leader，或 Teamspace 自己（执行引擎根据 Agent 的结果做的状态变化）。

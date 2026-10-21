@@ -21,6 +21,9 @@ import type { FileSearchQuery } from "../bindings/FileSearchQuery.js";
 import type { FileTasksQuery } from "../bindings/FileTasksQuery.js";
 import type { FileTaskRef } from "../bindings/FileTaskRef.js";
 import type { HarnessInstance } from "../bindings/HarnessInstance.js";
+import type { Message } from "../bindings/Message.js";
+import type { MessageThread } from "../bindings/MessageThread.js";
+import type { ListThreadsQuery } from "../bindings/ListThreadsQuery.js";
 import type { MarkdownFile } from "../bindings/MarkdownFile.js";
 import type { MarkdownList } from "../bindings/MarkdownList.js";
 import type { MarkdownListQuery } from "../bindings/MarkdownListQuery.js";
@@ -41,11 +44,13 @@ import type { RunEvent } from "../bindings/RunEvent.js";
 import type { RunUpdatePage } from "../bindings/RunUpdatePage.js";
 import type { RunUpdateQuery } from "../bindings/RunUpdateQuery.js";
 import type { SuggestTaskPrefixInput } from "../bindings/SuggestTaskPrefixInput.js";
+import type { SendMessageInput } from "../bindings/SendMessageInput.js";
 import type { TaskBoard } from "../bindings/TaskBoard.js";
 import type { TaskBoardQuery } from "../bindings/TaskBoardQuery.js";
 import type { TaskDetail } from "../bindings/TaskDetail.js";
 import type { TaskStatusInfo } from "../bindings/TaskStatusInfo.js";
 import type { Team } from "../bindings/Team.js";
+import type { ThreadDetail } from "../bindings/ThreadDetail.js";
 import type { TeamOverview } from "../bindings/TeamOverview.js";
 import type { UpdateHarnessInput } from "../bindings/UpdateHarnessInput.js";
 import type { UpdateRoleInput } from "../bindings/UpdateRoleInput.js";
@@ -275,3 +280,18 @@ export const rerunAfterConflict = (input: RerunAfterConflictInput) =>
 
 /** 按团队分页列出活动。 */
 export const listEvents = (input: EventQuery) => invoke<EventPage>("list_events", { input });
+
+// ---------------------------------------------------------------- 岗位消息
+
+/** 发送一条消息给岗位：消息进入排队，由投递引擎交给该岗位绑定的 Harness 处理。 */
+export const sendMessage = (input: SendMessageInput) => invoke<Message>("send_message", { input });
+
+/** 列出消息线程：按团队（必填）、任务与岗位筛选。 */
+export const listThreads = (input: ListThreadsQuery) =>
+  invoke<MessageThread[]>("list_threads", { input });
+
+/** 取一个线程及其中的消息。 */
+export const getThread = (threadId: string) => invoke<ThreadDetail>("get_thread", { threadId });
+
+/** 重发一条失败或过期的消息。 */
+export const retryMessage = (messageId: string) => invoke<Message>("retry_message", { messageId });

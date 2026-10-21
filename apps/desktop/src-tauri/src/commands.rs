@@ -383,3 +383,31 @@ pub fn pick_workspace_folder(
         .map_err(|err| Error::invalid(format!("无法读取所选目录：{err}")))?;
     ts.inspect_workspace(&path.to_string_lossy()).map(Some)
 }
+
+// ---------------------------------------------------------------- 岗位消息
+
+#[tauri::command(async)]
+pub fn send_message(
+    ts: State<'_, Arc<Teamspace>>,
+    input: SendMessageInput,
+) -> Result<Message, Error> {
+    ts.send_message(input)
+}
+
+#[tauri::command(async)]
+pub fn list_threads(
+    ts: State<'_, Arc<Teamspace>>,
+    input: ListThreadsQuery,
+) -> Result<Vec<MessageThread>, Error> {
+    ts.list_threads(input)
+}
+
+#[tauri::command(async)]
+pub fn get_thread(ts: State<'_, Arc<Teamspace>>, thread_id: &str) -> Result<ThreadDetail, Error> {
+    ts.get_thread(thread_id)
+}
+
+#[tauri::command(async)]
+pub fn retry_message(ts: State<'_, Arc<Teamspace>>, message_id: &str) -> Result<Message, Error> {
+    ts.retry_message(message_id)
+}

@@ -70,6 +70,10 @@ pub const LEADER_ALLOWED: &[&str] = &[
     "cancel_run",
     // 退回验收
     "reject_review",
+    // 岗位消息（D8：消息由 Leader 发起属正常编排）
+    "send_message",
+    "list_threads",
+    "get_thread",
 ];
 
 /// 分发一条命令：按 `cmd` 找到内核方法，参数取自 `args`。
@@ -157,6 +161,10 @@ pub fn dispatch(
         "resolve_merge_manually" => out(ts.resolve_merge_manually(arg(args, "input")?)),
         "rerun_after_conflict" => out(ts.rerun_after_conflict(arg(args, "input")?)),
         "list_events" => out(ts.list_events(arg(args, "input")?)),
+        "send_message" => out(ts.send_message_as(actor, arg(args, "input")?)),
+        "list_threads" => out(ts.list_threads(arg(args, "input")?)),
+        "get_thread" => out(ts.get_thread(&arg::<String>(args, "threadId")?)),
+        "retry_message" => out(ts.retry_message(&arg::<String>(args, "messageId")?)),
         other => Err(bad(format!("未知命令：{other}"))),
     }
 }
@@ -227,6 +235,7 @@ fn operation_label(cmd: &str) -> String {
         "approve_review" => "通过验收（合并）",
         "resolve_merge_manually" => "已手动合并并标记完成",
         "rerun_after_conflict" => "合并冲突后重新执行",
+        "retry_message" => "重发消息",
         other => other,
     }
     .to_owned()

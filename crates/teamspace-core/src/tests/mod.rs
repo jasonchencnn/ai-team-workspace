@@ -5,6 +5,7 @@ mod events;
 mod files;
 mod folders;
 mod harnesses;
+mod messages;
 #[cfg(unix)]
 mod qa_round2;
 #[cfg(unix)]
