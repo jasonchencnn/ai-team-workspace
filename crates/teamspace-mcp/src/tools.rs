@@ -7,6 +7,8 @@
 //! 工具失败（应用没运行、名字解析不到、后端拒绝）都作为「工具级错误」返回，
 //! Leader 能直接看到中文说明，不会看到协议错误。
 
+use std::time::{Duration, Instant};
+
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::{CallToolResult, ContentBlock, Implementation, ServerCapabilities, ServerConfig};
 use rmcp::{ServerHandler, tool, tool_handler, tool_router};
@@ -15,16 +17,26 @@ use serde_json::{Value, json};
 use crate::client::{ControlClient, ControlError};
 use crate::error::ToolError;
 use crate::params::{
-    ActivityArgs, BoardArgs, CancelRunArgs, ChangeStatusArgs, CreateTaskArgs, RejectReviewArgs,
-    RunProgressArgs, RunStatusArgs, SetDependenciesArgs, TaskArgs, TeamArgs, UpdateTaskArgs,
+    ActivityArgs, BoardArgs, CancelRunArgs, ChangeStatusArgs, CreateTaskArgs, ListThreadsArgs,
+    RejectReviewArgs, RunProgressArgs, RunStatusArgs, SendMessageArgs, SetDependenciesArgs,
+    TaskArgs, TeamArgs, ThreadArgs, UpdateTaskArgs, WaitReplyArgs,
 };
-use crate::resolve::{self, TaskRef, TeamRef};
+use crate::resolve::{self, RoleRef, TaskRef, TeamRef};
 
 /// 任务状态里 Leader 不能设置的：置为已完成要走验收（合并），只能由你在应用里点（D7、D8）。
 const DONE_STATUS: &str = "done";
 
 /// Leader 可以设置的任务状态。
 const ALLOWED_STATUS: &[&str] = &["todo", "ready", "doing", "blocked", "review", "cancelled"];
+
+/// `wait_reply` 默认等多少秒。
+const DEFAULT_WAIT_SECONDS: u64 = 60;
+/// `wait_reply` 最多等多少秒（超过就按这个值算）。
+const MAX_WAIT_SECONDS: u64 = 600;
+/// `wait_reply` 的轮询间隔起点（之后每次翻倍，见 [`next_poll_interval`]）。
+const POLL_INTERVAL: Duration = Duration::from_millis(500);
+/// `wait_reply` 的轮询间隔上限：不超过 2 秒（brief 要求，够快也不至于压着应用）。
+const MAX_POLL_INTERVAL: Duration = Duration::from_secs(2);
 
 /// Teamspace 的 MCP 服务：把工具调用转给桌面应用。
 #[derive(Debug, Clone)]
@@ -290,6 +302,46 @@ impl TeamspaceServer {
         }
     }
 
+    /// 消息线程列表。
+    #[tool(
+        name = "list_threads",
+        description = "列出岗位通信的线程：主题、参与岗位、关联任务与最近更新时间；可按团队、岗位或任务筛选。",
+        annotations(read_only_hint = true)
+    )]
+    async fn list_threads(&self, Parameters(args): Parameters<ListThreadsArgs>) -> CallToolResult {
+        match self.thread_list(args).await {
+            Ok(value) => ok(value),
+            Err(err) => fail(err.message()),
+        }
+    }
+
+    /// 线程详情。
+    #[tool(
+        name = "get_thread",
+        description = "查看一个消息线程：往来消息、每条消息的状态、Agent 的回复正文与投递失败原因。",
+        annotations(read_only_hint = true)
+    )]
+    async fn get_thread(&self, Parameters(args): Parameters<ThreadArgs>) -> CallToolResult {
+        match self.thread_of(&args.thread).await {
+            Ok(value) => ok(value),
+            Err(err) => fail(err.message()),
+        }
+    }
+
+    /// 待我处理。
+    #[tool(
+        name = "inbox",
+        description = "查看待我处理（只读）：待验收、执行失败或受阻、待答复的权限请求、需要拍板的消息与 Leader 越权记录。\
+                       验收、权限答复、决策需要你在 Teamspace 应用中处理，这里只做查询与提醒。",
+        annotations(read_only_hint = true)
+    )]
+    async fn inbox(&self, Parameters(args): Parameters<TeamArgs>) -> CallToolResult {
+        match self.inbox_of(args.team.as_deref()).await {
+            Ok(value) => ok(value),
+            Err(err) => fail(err.message()),
+        }
+    }
+
     /// 创建任务。
     #[tool(
         name = "create_task",
@@ -409,6 +461,36 @@ impl TeamspaceServer {
             Err(err) => fail(err.message()),
         }
     }
+
+    /// 发消息给岗位。
+    #[tool(
+        name = "send_message",
+        description = "给岗位发一条消息：接收岗位可写岗位名称、岗位标识（如 role_frontend）、前缀（如 FE）或岗位 id；\
+                       可选关联任务（任务编号或标题）与主题。返回消息 id、线程 id 与当前状态；\
+                       岗位绑定的 Harness 处理后会回复，用 wait_reply 等回复。",
+        annotations(destructive_hint = false)
+    )]
+    async fn send_message(&self, Parameters(args): Parameters<SendMessageArgs>) -> CallToolResult {
+        match self.send(args).await {
+            Ok(value) => ok(value),
+            Err(err) => fail(err.message()),
+        }
+    }
+
+    /// 等消息的回复。
+    #[tool(
+        name = "wait_reply",
+        description = "等一条消息的回复：轮询到「已回复 / 失败 / 过期」为止，最多等 timeout_seconds 秒（默认 60，最多 600）。\
+                       结果里的 timeoutSeconds 是实际生效的等待时长（超过 600 会按 600 算）。\
+                       等待期间不影响其他工具调用。",
+        annotations(read_only_hint = true)
+    )]
+    async fn wait_reply(&self, Parameters(args): Parameters<WaitReplyArgs>) -> CallToolResult {
+        match self.wait(args).await {
+            Ok(value) => ok(value),
+            Err(err) => fail(err.message()),
+        }
+    }
 }
 
 #[tool_handler(router = Self::tool_router())]
@@ -418,9 +500,10 @@ impl ServerHandler for TeamspaceServer {
             .with_server_info(Implementation::new("teamspace", env!("CARGO_PKG_VERSION")))
             .with_instructions(
                 "Teamspace 的 Leader 工具箱：查看团队、岗位、Harness、看板、任务、执行进度与结果、\
-                 活动与验收；创建与编辑任务、设置依赖、开始与取消执行、退回验收。\
+                 活动与验收；创建与编辑任务、设置依赖、开始与取消执行、退回验收；\
+                 给岗位发消息、查消息线程、等岗位回复、看待我处理。\
                  所有操作都转给正在运行的 Teamspace 桌面应用，合并到主分支、换绑 Harness、\
-                 答复权限请求只能由你在 Teamspace 应用中操作。"
+                 答复权限请求、记录决策只能由你在 Teamspace 应用中操作。"
                     .to_owned(),
             )
     }
@@ -527,6 +610,191 @@ impl TeamspaceServer {
             "permissions": items,
             "hint": "权限请求只能由你在 Teamspace 应用中答复；这里只做查询与提醒。",
         }))
+    }
+
+    /// 消息线程列表（只读）。
+    async fn thread_list(&self, args: ListThreadsArgs) -> Result<Value, ToolError> {
+        let team = self.team(args.team.as_deref()).await?;
+        let role = match clean(args.role.as_deref()) {
+            Some(reference) => Some(resolve::resolve_role(&self.client, &team, reference).await?),
+            None => None,
+        };
+        let task = match clean(args.task.as_deref()) {
+            Some(reference) => Some(self.task(Some(&team), reference).await?),
+            None => None,
+        };
+        let mut input = json!({ "teamId": team.id });
+        if let Some(role) = &role {
+            input["roleId"] = json!(role.id);
+        }
+        if let Some(task) = &task {
+            input["taskId"] = json!(task.id);
+        }
+        let threads = self
+            .client
+            .call("list_threads", json!({ "input": input }))
+            .await?;
+        let items: Vec<Value> = threads
+            .as_array()
+            .map(|list| list.iter().map(thread_summary).collect())
+            .unwrap_or_default();
+        Ok(json!({
+            "team": team.name,
+            "count": items.len(),
+            "threads": items,
+        }))
+    }
+
+    /// 线程详情（只读）。
+    async fn thread_of(&self, thread_id: &str) -> Result<Value, ToolError> {
+        let thread_id = thread_id.trim();
+        if thread_id.is_empty() {
+            return Err(ToolError::Message(
+                "请指明线程 id（list_threads 返回的 threadId）。".to_owned(),
+            ));
+        }
+        let detail = self
+            .client
+            .call("get_thread", json!({ "threadId": thread_id }))
+            .await?;
+        Ok(thread_detail(&detail))
+    }
+
+    /// 待我处理（只读）。
+    async fn inbox_of(&self, team_reference: Option<&str>) -> Result<Value, ToolError> {
+        let team = self.team(team_reference).await?;
+        let inbox = self
+            .client
+            .call("get_inbox", json!({ "input": { "teamId": team.id } }))
+            .await?;
+        let items = inbox
+            .get("items")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        Ok(json!({
+            "team": team.name,
+            "counts": inbox.get("counts").cloned().unwrap_or(Value::Null),
+            "items": items,
+            "generatedAt": inbox.get("generatedAt"),
+            "hint": "验收、权限答复、决策需要你在 Teamspace 应用中处理；这里只做查询与提醒。",
+        }))
+    }
+
+    /// 发消息给岗位。
+    async fn send(&self, args: SendMessageArgs) -> Result<Value, ToolError> {
+        let body = args.body.trim().to_owned();
+        if body.is_empty() {
+            return Err(ToolError::Message(
+                "消息正文不能为空：写清要岗位做什么、要它回答什么。".to_owned(),
+            ));
+        }
+        let team = self.team(args.team.as_deref()).await?;
+        let role = resolve::resolve_role(&self.client, &team, &args.to).await?;
+        let task = match clean(args.task.as_deref()) {
+            Some(reference) => Some(self.task(Some(&team), reference).await?),
+            None => None,
+        };
+        let mut input = json!({
+            "teamId": team.id,
+            "toRoleId": role.id,
+            "body": body,
+        });
+        if let Some(task) = &task {
+            input["taskId"] = json!(task.id);
+        }
+        if let Some(subject) = clean(args.subject.as_deref()) {
+            input["subject"] = json!(subject);
+        }
+        let message = self
+            .client
+            .call("send_message", json!({ "input": input }))
+            .await?;
+        Ok(message_summary(&message, &role, task.as_ref()))
+    }
+
+    /// 等一条消息的回复：轮询到「已回复 / 失败 / 过期」为止，或等到超时。
+    async fn wait(&self, args: WaitReplyArgs) -> Result<Value, ToolError> {
+        let message_id = args.message.trim().to_owned();
+        if message_id.is_empty() {
+            return Err(ToolError::Message(
+                "请指明要等回复的消息 id（send_message 返回的 messageId）。".to_owned(),
+            ));
+        }
+        // 计时从进函数就开始：解析消息所在线程也算在等待时间里。
+        // 解析要逐条线程找消息（应用慢或线程多时很花时间），先把计时起点立住，
+        // 整个调用才不会远远超过 timeout_seconds。
+        let started = Instant::now();
+        let timeout = effective_timeout(args.timeout_seconds);
+        let deadline = started + timeout;
+        let team = self.team(args.team.as_deref()).await?;
+        let thread_id = match clean(args.thread.as_deref()) {
+            Some(thread_id) => thread_id.to_owned(),
+            None => match self.thread_of_message(&team, &message_id).await? {
+                Some(thread_id) => thread_id,
+                None => {
+                    return Err(ToolError::Message(format!(
+                        "找不到消息「{message_id}」：团队「{}」的线程里没有它；\
+                         请用 send_message 返回的 messageId。",
+                        team.name
+                    )));
+                }
+            },
+        };
+        // 轮询间隔从 500ms 起每次翻倍，最多 2 秒。
+        let mut interval = POLL_INTERVAL;
+        loop {
+            // 先看一次消息状态：解析线程花掉的时间也算在等待里，
+            // 但结果里总要有句话告诉 Leader 现在是什么状态。
+            let detail = self
+                .client
+                .call("get_thread", json!({ "threadId": thread_id }))
+                .await?;
+            let Some(message) = message_in(&detail, &message_id) else {
+                return Err(ToolError::Message(format!(
+                    "线程 {thread_id} 里找不到消息「{message_id}」。"
+                )));
+            };
+            let status = message
+                .get("status")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            if is_terminal(status) {
+                return Ok(wait_result(&message, started.elapsed(), false, timeout));
+            }
+            let now = Instant::now();
+            if now >= deadline {
+                return Ok(wait_result(&message, started.elapsed(), true, timeout));
+            }
+            // 轮询间隔不超过 2 秒；等待期间不占住运行时，别的工具照样能调。
+            tokio::time::sleep(interval.min(deadline - now)).await;
+            interval = next_poll_interval(interval);
+        }
+    }
+
+    /// 找到一条消息所在的线程 id。
+    async fn thread_of_message(
+        &self,
+        team: &TeamRef,
+        message_id: &str,
+    ) -> Result<Option<String>, ToolError> {
+        let threads = self
+            .client
+            .call("list_threads", json!({ "input": { "teamId": team.id } }))
+            .await?;
+        for thread in threads.as_array().cloned().unwrap_or_default() {
+            let Some(thread_id) = thread.get("id").and_then(Value::as_str) else {
+                continue;
+            };
+            let detail = self
+                .client
+                .call("get_thread", json!({ "threadId": thread_id }))
+                .await?;
+            if message_in(&detail, message_id).is_some() {
+                return Ok(Some(thread_id.to_owned()));
+            }
+        }
+        Ok(None)
     }
 
     /// 创建任务。
@@ -791,6 +1059,22 @@ fn clean(reference: Option<&str>) -> Option<&str> {
     reference.map(str::trim).filter(|value| !value.is_empty())
 }
 
+/// 实际生效的等待时长：没给就按默认 60 秒，给了超过 600 秒就按 600 秒算。
+///
+/// 钳制后的值会带回结果里（`timeoutSeconds`），Leader 才知道自己的值有没有被采纳。
+fn effective_timeout(requested: Option<u64>) -> Duration {
+    Duration::from_secs(
+        requested
+            .unwrap_or(DEFAULT_WAIT_SECONDS)
+            .min(MAX_WAIT_SECONDS),
+    )
+}
+
+/// 下一轮轮询的间隔：从 500ms 起每次翻倍，最多 2 秒。
+fn next_poll_interval(current: Duration) -> Duration {
+    (current * 2).min(MAX_POLL_INTERVAL)
+}
+
 /// 取字符串字段。
 fn string_of(value: &Value, key: &str) -> String {
     value
@@ -824,6 +1108,167 @@ fn run_summary(run: &Value) -> Value {
         "review": run.get("review"),
         "isolation": run.get("isolation"),
         "execDir": run.get("execDir"),
+    })
+}
+
+/// 消息投递状态的中文说明。
+fn message_status_label(status: &str) -> &'static str {
+    match status {
+        "queued" => "排队中",
+        "delivering" => "投递中",
+        "replied" => "已回复",
+        "failed" => "失败",
+        "expired" => "已过期",
+        _ => "未知状态",
+    }
+}
+
+/// 发送方的中文说明。
+fn sender_label(sender: &str) -> &'static str {
+    match sender {
+        "human" => "Human",
+        "leader" => "Leader",
+        "role" => "岗位",
+        _ => "未知来源",
+    }
+}
+
+/// 消息状态是不是终态（不会再变，除非重发）。
+fn is_terminal(status: &str) -> bool {
+    matches!(status, "replied" | "failed" | "expired")
+}
+
+/// 线程参与方。
+fn participants_of(thread: &Value) -> Vec<Value> {
+    thread
+        .get("participants")
+        .and_then(Value::as_array)
+        .map(|list| {
+            list.iter()
+                .map(|participant| {
+                    json!({
+                        "name": participant.get("name"),
+                        "kind": participant.get("kind"),
+                        "roleId": participant.get("roleId"),
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// 一条消息：状态、回复正文与失败原因都摆出来。
+fn message_view(message: &Value) -> Value {
+    let status = message
+        .get("status")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let sender = message
+        .get("sender")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    json!({
+        "messageId": message.get("id"),
+        "threadId": message.get("threadId"),
+        "sender": sender,
+        "senderLabel": sender_label(sender),
+        "toRoleId": message.get("toRoleId"),
+        "body": message.get("body"),
+        "status": status,
+        "statusLabel": message_status_label(status),
+        "replyBody": message.get("replyBody"),
+        "failureReason": message.get("failureReason"),
+        "createdAt": message.get("createdAt"),
+        "repliedAt": message.get("repliedAt"),
+    })
+}
+
+/// 线程列表里的一项。
+fn thread_summary(thread: &Value) -> Value {
+    json!({
+        "threadId": thread.get("id"),
+        "subject": thread.get("subject"),
+        "taskId": thread.get("taskId"),
+        "participants": participants_of(thread),
+        "createdAt": thread.get("createdAt"),
+        "updatedAt": thread.get("updatedAt"),
+    })
+}
+
+/// 线程详情：线程本身与其中的消息。
+fn thread_detail(detail: &Value) -> Value {
+    let thread = detail.get("thread").cloned().unwrap_or(Value::Null);
+    let messages = detail
+        .get("messages")
+        .and_then(Value::as_array)
+        .map(|list| list.iter().map(message_view).collect::<Vec<_>>())
+        .unwrap_or_default();
+    json!({
+        "threadId": thread.get("id"),
+        "subject": thread.get("subject"),
+        "taskId": thread.get("taskId"),
+        "participants": participants_of(&thread),
+        "createdAt": thread.get("createdAt"),
+        "updatedAt": thread.get("updatedAt"),
+        "messages": messages,
+    })
+}
+
+/// 刚发出的消息：消息 id、线程 id 与当前状态。
+fn message_summary(message: &Value, role: &RoleRef, task: Option<&TaskRef>) -> Value {
+    let status = message
+        .get("status")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    json!({
+        "messageId": message.get("id"),
+        "threadId": message.get("threadId"),
+        "status": status,
+        "statusLabel": message_status_label(status),
+        "toRoleId": role.id,
+        "toRoleName": role.name,
+        "taskId": task.map(|task| task.id.clone()),
+        "taskKey": task.map(|task| task.key.clone()),
+        "createdAt": message.get("createdAt"),
+        "hint": "消息已排队，岗位绑定的 Harness 接手后会回复；用 wait_reply 等回复，用 get_thread 看线程。",
+    })
+}
+
+/// 线程详情里的某一条消息。
+fn message_in(detail: &Value, message_id: &str) -> Option<Value> {
+    detail
+        .get("messages")
+        .and_then(Value::as_array)?
+        .iter()
+        .find(|message| message.get("id").and_then(Value::as_str) == Some(message_id))
+        .cloned()
+}
+
+/// 等回复的结果。
+///
+/// `timeout` 是实际生效的等待时长（钳制后的），一并告诉 Leader。
+fn wait_result(message: &Value, waited: Duration, timed_out: bool, timeout: Duration) -> Value {
+    let status = message
+        .get("status")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let hint = match status {
+        "replied" => "岗位已回复，回复正文见 replyBody。",
+        "failed" => "投递失败，失败原因见 failureReason。",
+        "expired" => "超过 7 天仍未回复，这条消息已过期。",
+        _ => "岗位还没回复；可以稍后再等，或先用 list_threads、get_thread 看进展。",
+    };
+    json!({
+        "messageId": message.get("id"),
+        "threadId": message.get("threadId"),
+        "status": status,
+        "statusLabel": message_status_label(status),
+        "replyBody": message.get("replyBody"),
+        "failureReason": message.get("failureReason"),
+        "waitedSeconds": waited.as_secs(),
+        "timeoutSeconds": timeout.as_secs(),
+        "timedOut": timed_out,
+        "hint": hint,
     })
 }
 
@@ -982,5 +1427,30 @@ mod tests {
         // 只有锚点没有路径的，丢掉。
         assert_eq!(refs[2]["path"], "README.md", "{refs:?}");
         assert_eq!(refs[2]["anchor"], Value::Null, "{refs:?}");
+    }
+
+    /// 等待时长：缺省 60 秒，最多 600 秒（超过就按 600 算）。
+    #[test]
+    fn the_wait_timeout_is_clamped_to_the_maximum() {
+        assert_eq!(effective_timeout(None), Duration::from_secs(60));
+        assert_eq!(effective_timeout(Some(0)), Duration::from_secs(0));
+        assert_eq!(effective_timeout(Some(30)), Duration::from_secs(30));
+        assert_eq!(effective_timeout(Some(600)), Duration::from_secs(600));
+        assert_eq!(effective_timeout(Some(900)), Duration::from_secs(600));
+    }
+
+    /// 轮询间隔从 500ms 起每次翻倍，最多 2 秒。
+    #[test]
+    fn the_poll_interval_backs_off_up_to_two_seconds() {
+        let mut interval = POLL_INTERVAL;
+        assert_eq!(interval, Duration::from_millis(500));
+        interval = next_poll_interval(interval);
+        assert_eq!(interval, Duration::from_secs(1));
+        interval = next_poll_interval(interval);
+        assert_eq!(interval, Duration::from_secs(2));
+        // 到上限就不再涨了。
+        interval = next_poll_interval(interval);
+        assert_eq!(interval, Duration::from_secs(2));
+        assert!(interval <= MAX_POLL_INTERVAL, "{interval:?}");
     }
 }

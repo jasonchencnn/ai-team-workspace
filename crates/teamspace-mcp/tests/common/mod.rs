@@ -6,6 +6,7 @@
 
 #![allow(dead_code)]
 
+use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
@@ -48,6 +49,49 @@ pub fn git(dir: &Path, args: &[&str]) {
         .unwrap()
         .success();
     assert!(ok, "git {args:?}");
+}
+
+/// 临时环境里的数据库路径。
+fn db_path_of(dir: &Path) -> PathBuf {
+    dir.join("data").join("teamspace.db")
+}
+
+/// 绕过内核直接执行 SQL（测试辅助）。
+///
+/// 内核没有对外暴露「把消息置为过期」这类接口，而「过期」是内核自己才会产生的数据，
+/// 测试要覆盖它，只能像内核自己的测试那样直接改库。
+/// 这里借用系统的 sqlite3 命令行；没有它就用 python3 的 sqlite3 模块。
+pub fn raw_sql(db: &Path, sql: &str) {
+    let sqlite = Command::new("sqlite3")
+        .arg("-cmd")
+        .arg(".timeout 5000")
+        .arg(db)
+        .arg(sql)
+        .output();
+    let output = match sqlite {
+        Ok(output) => output,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+            let script = "import sqlite3,sys\n\
+                          conn = sqlite3.connect(sys.argv[1])\n\
+                          conn.execute(sys.argv[2])\n\
+                          conn.commit()\n";
+            Command::new("python3")
+                .arg("-c")
+                .arg(script)
+                .arg(db)
+                .arg(sql)
+                .output()
+                .unwrap_or_else(|err| {
+                    panic!("改数据库失败（sqlite3 与 python3 都用不了）：{err}\n{sql}")
+                })
+        }
+        Err(err) => panic!("改数据库失败：{err}\n{sql}"),
+    };
+    assert!(
+        output.status.success(),
+        "改数据库失败：{sql}\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
 }
 
 /// 一个团队、若干岗位、一个 Mock Harness，以及控制 socket。
@@ -97,12 +141,8 @@ impl Env {
             }),
         };
         let ts = Arc::new(
-            Teamspace::open_with(
-                &dir.path().join("data/teamspace.db"),
-                Box::new(LocalProbe::new()),
-                config,
-            )
-            .unwrap(),
+            Teamspace::open_with(&db_path_of(dir.path()), Box::new(LocalProbe::new()), config)
+                .unwrap(),
         );
         // 取消执行时的宽限期缩短，测试不用等十秒。
         ts.set_run_settings(teamspace_core::RunSettings {
@@ -159,6 +199,11 @@ impl Env {
             ws: workspace,
         }
     }
+
+    /// 数据库路径（测试辅助：造内核才会产生的数据时直接改库）。
+    pub fn db_path(&self) -> PathBuf {
+        db_path_of(self.dir.path())
+    }
 }
 
 /// 一次工具调用的结果。
@@ -199,6 +244,8 @@ pub struct Client {
     /// 服务端输出由后台线程读进来，这里按行取（每次取都有 deadline）。
     lines: Receiver<String>,
     next_id: i64,
+    /// 已经收到、但调用方还没来取的响应（并发请求时用）。
+    buffered: HashMap<i64, Value>,
 }
 
 impl Client {
@@ -220,6 +267,7 @@ impl Client {
             stdin,
             lines,
             next_id: 0,
+            buffered: HashMap::new(),
         };
         let result = client
             .result(
@@ -241,10 +289,26 @@ impl Client {
 
     /// 发一条请求，返回完整的 JSON-RPC 响应。
     pub fn request(&mut self, method: &str, params: Value) -> Value {
+        let id = self.send_request(method, params);
+        self.response(id)
+    }
+
+    /// 发一条请求，只返回它的 id（不等响应）。
+    ///
+    /// 要同时观察两个请求谁先回来时用它：发出去之后用 [`Client::response`] 取响应。
+    pub fn send_request(&mut self, method: &str, params: Value) -> i64 {
         self.next_id += 1;
         let id = self.next_id;
         let message = json!({ "jsonrpc": "2.0", "id": id, "method": method, "params": params });
         self.send(&message);
+        id
+    }
+
+    /// 等指定 id 的响应；别的 id 的响应先存起来（不丢弃）。
+    pub fn response(&mut self, id: i64) -> Value {
+        if let Some(value) = self.buffered.remove(&id) {
+            return value;
+        }
         let deadline = Instant::now() + REQUEST_TIMEOUT;
         loop {
             let line = self.read_line();
@@ -254,12 +318,21 @@ impl Client {
             if value.get("id").and_then(Value::as_i64) == Some(id) {
                 return value;
             }
+            // 别的请求的响应：存起来，等它的调用方来取。
+            if let Some(other) = value.get("id").and_then(Value::as_i64) {
+                self.buffered.insert(other, value);
+            }
             // 服务端通知（没有 id 或 id 不匹配）忽略，但不能无限等下去。
             assert!(
                 Instant::now() < deadline,
-                "等待 {method} 的响应超时（{REQUEST_TIMEOUT:?}）"
+                "等待响应 {id} 超时（{REQUEST_TIMEOUT:?}）"
             );
         }
+    }
+
+    /// 某个请求的响应是不是已经收到了（并发请求时用来判断谁先回来）。
+    pub fn response_received(&self, id: i64) -> bool {
+        self.buffered.contains_key(&id)
     }
 
     /// 发一条请求并取出 `result`。
@@ -279,40 +352,24 @@ impl Client {
 
     /// 调一个工具。
     pub fn call(&mut self, name: &str, arguments: Value) -> ToolCall {
-        let response = self.request(
+        let id = self.call_async(name, arguments);
+        self.tool_result(id)
+    }
+
+    /// 调一个工具，只返回请求 id（不等响应）。
+    ///
+    /// 要观察「另一个工具调用是否被阻塞」时用它：发出去之后用 [`Client::tool_result`] 取结果。
+    pub fn call_async(&mut self, name: &str, arguments: Value) -> i64 {
+        self.send_request(
             "tools/call",
             json!({ "name": name, "arguments": arguments }),
-        );
-        if let Some(err) = response.get("error") {
-            return ToolCall {
-                text: err.to_string(),
-                is_error: true,
-                protocol_error: err
-                    .get("message")
-                    .and_then(Value::as_str)
-                    .map(str::to_owned),
-            };
-        }
-        let result = response.get("result").cloned().unwrap_or(Value::Null);
-        let text = result
-            .get("content")
-            .and_then(Value::as_array)
-            .map(|blocks| {
-                blocks
-                    .iter()
-                    .filter_map(|block| block.get("text").and_then(Value::as_str))
-                    .collect::<Vec<_>>()
-                    .join("\n")
-            })
-            .unwrap_or_default();
-        ToolCall {
-            text,
-            is_error: result
-                .get("isError")
-                .and_then(Value::as_bool)
-                .unwrap_or(false),
-            protocol_error: None,
-        }
+        )
+    }
+
+    /// 取一条工具调用的结果（配合 [`Client::call_async`]）。
+    pub fn tool_result(&mut self, id: i64) -> ToolCall {
+        let response = self.response(id);
+        tool_call_of(&response)
     }
 
     /// 写一行 JSON。
@@ -332,6 +389,40 @@ impl Client {
             }
             Err(RecvTimeoutError::Disconnected) => panic!("服务已退出"),
         }
+    }
+}
+
+/// 一条 JSON-RPC 响应里的工具结果。
+fn tool_call_of(response: &Value) -> ToolCall {
+    if let Some(err) = response.get("error") {
+        return ToolCall {
+            text: err.to_string(),
+            is_error: true,
+            protocol_error: err
+                .get("message")
+                .and_then(Value::as_str)
+                .map(str::to_owned),
+        };
+    }
+    let result = response.get("result").cloned().unwrap_or(Value::Null);
+    let text = result
+        .get("content")
+        .and_then(Value::as_array)
+        .map(|blocks| {
+            blocks
+                .iter()
+                .filter_map(|block| block.get("text").and_then(Value::as_str))
+                .collect::<Vec<_>>()
+                .join("\n")
+        })
+        .unwrap_or_default();
+    ToolCall {
+        text,
+        is_error: result
+            .get("isError")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+        protocol_error: None,
     }
 }
 

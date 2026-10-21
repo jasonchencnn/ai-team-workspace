@@ -11,7 +11,8 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 # 异步运行时：rmcp 的 stdio 传输基于 tokio（工作区里已由 rmcp 引入 tokio 1.53.1），
 # 这里显式声明同一版本并精确锁定，只在本 crate 内使用。
-tokio = { version = "=1.53.1", features = ["rt-multi-thread", "macros"] }
+# time：wait_reply 轮询消息状态时要让出运行时（tokio::time::sleep）。
+tokio = { version = "=1.53.1", features = ["rt-multi-thread", "macros", "time"] }
 
 [dev-dependencies]
 # 集成测试用：临时数据库 + 控制 socket + 内置 Mock Agent。
