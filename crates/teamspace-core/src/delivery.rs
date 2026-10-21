@@ -425,6 +425,39 @@ fn run_session(
     }
 }
 
+/// 在 Agent 给出的权限选项里挑一个。
+///
+/// 先按 `kind` 选：放行优先 `allow_once`，拒绝优先 `reject_once`（其次 `allow_always` / `reject_always`）。
+/// `optionId` 只是标识，可能是随机串，靠前缀匹配会挑错；选项没带 `kind` 时才退回按
+/// `optionId` 前缀匹配（兼容只给标识的老适配器）。
+fn pick_permission_option(options: Option<&Value>, allow: bool) -> Option<String> {
+    let options = options?.as_array()?;
+    let kinds: &[&str] = if allow {
+        &["allow_once", "allow_always"]
+    } else {
+        &["reject_once", "reject_always"]
+    };
+    for kind in kinds {
+        let picked = options.iter().find_map(|option| {
+            if option.get("kind").and_then(Value::as_str) != Some(*kind) {
+                return None;
+            }
+            option
+                .get("optionId")
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+        });
+        if picked.is_some() {
+            return picked;
+        }
+    }
+    let prefix = if allow { "allow" } else { "reject" };
+    options.iter().find_map(|option| {
+        let id = option.get("optionId").and_then(Value::as_str)?;
+        id.starts_with(prefix).then(|| id.to_owned())
+    })
+}
+
 /// 处理 Agent 发来的请求：只读策略下允许读取，拒绝写入与命令执行。
 fn handle_request(
     process: &Arc<AgentProcess>,
@@ -453,21 +486,7 @@ fn handle_request(
             let readable = matches!(kind, "read" | "search")
                 && !path.is_empty()
                 && scope.can_read(path).is_ok();
-            let wanted = if readable { "allow" } else { "reject" };
-            let option = params
-                .get("options")
-                .and_then(Value::as_array)
-                .and_then(|options| {
-                    options
-                        .iter()
-                        .find(|o| {
-                            o.get("optionId")
-                                .and_then(Value::as_str)
-                                .is_some_and(|id| id.starts_with(wanted))
-                        })
-                        .and_then(|o| o.get("optionId").and_then(Value::as_str))
-                        .map(str::to_owned)
-                });
+            let option = pick_permission_option(params.get("options"), readable);
             let reply = match option {
                 Some(option_id) => {
                     json!({ "outcome": { "outcome": "selected", "optionId": option_id } })
@@ -701,6 +720,68 @@ mod tests {
     use std::time::{Duration, Instant};
 
     use super::*;
+
+    /// 权限选项的 `optionId` 是随机串时，靠 `kind` 也能挑对：放行选 `allow_once`，拒绝选 `reject_once`。
+    #[test]
+    fn permission_options_are_picked_by_kind() {
+        let options = json!([
+            { "optionId": "7f3c1d9a", "name": "允许一次", "kind": "allow_once" },
+            { "optionId": "b2e84a10", "name": "总是允许", "kind": "allow_always" },
+            { "optionId": "c95b70fe", "name": "拒绝一次", "kind": "reject_once" },
+        ]);
+        assert_eq!(
+            pick_permission_option(Some(&options), true).as_deref(),
+            Some("7f3c1d9a")
+        );
+        assert_eq!(
+            pick_permission_option(Some(&options), false).as_deref(),
+            Some("c95b70fe")
+        );
+    }
+
+    /// 选项顺序不同也挑同一个：按 `kind` 的优先级选，不按出现顺序。
+    #[test]
+    fn permission_options_prefer_once_over_always() {
+        let options = json!([
+            { "optionId": "always", "name": "总是允许", "kind": "allow_always" },
+            { "optionId": "once", "name": "允许一次", "kind": "allow_once" },
+        ]);
+        assert_eq!(
+            pick_permission_option(Some(&options), true).as_deref(),
+            Some("once")
+        );
+
+        let options = json!([
+            { "optionId": "always", "name": "总是拒绝", "kind": "reject_always" },
+            { "optionId": "once", "name": "拒绝一次", "kind": "reject_once" },
+        ]);
+        assert_eq!(
+            pick_permission_option(Some(&options), false).as_deref(),
+            Some("once")
+        );
+    }
+
+    /// 没有 `kind` 的老适配器仍按 `optionId` 前缀匹配；都没有时挑不出选项。
+    #[test]
+    fn permission_options_fall_back_to_option_id_prefix() {
+        let options = json!([
+            { "optionId": "allow", "name": "允许" },
+            { "optionId": "reject", "name": "拒绝" },
+        ]);
+        assert_eq!(
+            pick_permission_option(Some(&options), true).as_deref(),
+            Some("allow")
+        );
+        assert_eq!(
+            pick_permission_option(Some(&options), false).as_deref(),
+            Some("reject")
+        );
+
+        let options = json!([{ "optionId": "7f3c1d9a", "name": "允许一次" }]);
+        assert_eq!(pick_permission_option(Some(&options), true), None);
+        assert_eq!(pick_permission_option(Some(&options), false), None);
+        assert_eq!(pick_permission_option(None, true), None);
+    }
 
     /// 新消息在「查队列」与「进入等待」之间到时，等待不能把它睡掉。
     ///
