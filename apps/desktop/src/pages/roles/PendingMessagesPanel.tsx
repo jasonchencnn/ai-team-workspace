@@ -2,7 +2,11 @@ import { Link } from "react-router";
 
 import { Button, ErrorBanner, Panel, Spinner, Tag } from "../../components/index.js";
 import { MESSAGE_STATUS_LABELS, MESSAGE_STATUS_TONES } from "../messages/messagesUi.js";
-import { pendingDeliveryNote } from "./rebindUi.js";
+import {
+  pendingDeliveryNextStep,
+  pendingDeliveryNote,
+  PENDING_DELIVERY_PRINCIPLES,
+} from "./rebindUi.js";
 import { useRolePendingMessages } from "./useRebindData.js";
 
 export interface PendingMessagesPanelProps {
@@ -57,28 +61,45 @@ export function PendingMessagesPanel({ teamId, roleId, enabled }: PendingMessage
       ) : null}
 
       {items.length === 0 ? null : (
-        <ul className="pending-messages__list">
-          {items.map((item) => (
-            <li key={item.id} className="pending-messages__item">
-              <div className="pending-messages__head">
-                <span className="pending-messages__subject">{item.threadSubject}</span>
-                <Tag tone={MESSAGE_STATUS_TONES[item.status]}>
-                  {MESSAGE_STATUS_LABELS[item.status]}
-                </Tag>
-              </div>
-              <p className="pending-messages__binding">
-                {pendingDeliveryNote(item.bindingHarnessName)}
-              </p>
-              <p className="pending-messages__body">{item.body}</p>
-              <Link
-                className="pending-messages__link"
-                to={`/teams/${teamId}/messages?thread=${item.threadId}&role=${roleId}`}
-              >
-                查看岗位通信线程
-              </Link>
-            </li>
-          ))}
-        </ul>
+        <>
+          <section className="pending-messages__principles">
+            <h3 className="pending-messages__principles-title">投递处理原则</h3>
+            <ol className="pending-messages__principles-list">
+              {PENDING_DELIVERY_PRINCIPLES.map((principle) => (
+                <li key={principle}>{principle}</li>
+              ))}
+            </ol>
+          </section>
+
+          <ul className="pending-messages__list">
+            {items.map((item) => (
+              <li key={item.id} className="pending-messages__item">
+                <div className="pending-messages__head">
+                  <span className="pending-messages__subject">{item.threadSubject}</span>
+                  <Tag tone={MESSAGE_STATUS_TONES[item.status]}>
+                    {MESSAGE_STATUS_LABELS[item.status]}
+                  </Tag>
+                </div>
+                <p className="pending-messages__ids">
+                  {item.id} · {item.threadId}
+                </p>
+                <p className="pending-messages__binding">
+                  {pendingDeliveryNote(item.bindingHarnessName)}
+                </p>
+                <p className="pending-messages__next">
+                  下一步：{pendingDeliveryNextStep(item.status)}
+                </p>
+                <p className="pending-messages__body">{item.body}</p>
+                <Link
+                  className="pending-messages__link"
+                  to={`/teams/${teamId}/messages?thread=${item.threadId}&role=${roleId}`}
+                >
+                  查看岗位通信线程
+                </Link>
+              </li>
+            ))}
+          </ul>
+        </>
       )}
     </Panel>
   );

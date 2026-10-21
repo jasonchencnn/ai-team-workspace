@@ -296,7 +296,7 @@ function HarnessCreateSection({ teamId, onClose }: HarnessCreateSectionProps) {
               >
                 <span className="acp-preset__name">{info.label}</span>
                 <span className="acp-preset__desc">{info.description}</span>
-                <span className="acp-preset__detect">{presetStateLabel(info)}</span>
+                <Tag tone={presetStateTone(info)}>{presetStateLabel(info)}</Tag>
                 {info.hint === null ? null : <span className="acp-preset__hint">{info.hint}</span>}
               </button>
             ))}
@@ -407,4 +407,15 @@ function presetStateLabel(info: AcpPresetInfo): string {
     case "opencode":
       return info.commandFound ? "本机已检测到" : "未检测到";
   }
+}
+
+/**
+ * 预设卡片上的检测状态色：对照 Figma 85:905，本机已检测到用绿色标签，
+ * 其余（未检测到 / 内置 / 自由配置）用中性灰。
+ */
+function presetStateTone(info: AcpPresetInfo): "neutral" | "success" {
+  if (info.preset === "mock" || info.preset === "custom") {
+    return "neutral";
+  }
+  return info.commandFound ? "success" : "neutral";
 }

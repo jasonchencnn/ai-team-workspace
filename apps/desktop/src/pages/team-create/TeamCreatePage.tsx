@@ -310,7 +310,7 @@ export function TeamCreatePage() {
             <EmptyState
               bare
               title="还没有岗位"
-              description="岗位完全由你定义；也可以先创建团队，稍后在「岗位与绑定」中添加。"
+              description="岗位完全由你定义；也可以先创建团队，之后再补。"
             />
           ) : null}
 
@@ -413,9 +413,11 @@ export function TeamCreatePage() {
             );
           })}
 
-          <p className="tc-note">
-            可以不建任何岗位直接创建团队，也可以稍后在「岗位与绑定」中添加。
-          </p>
+          {/* 说明只在有岗位时出现：没有岗位时上面的空状态已经把「可以先建团队」
+              讲清楚了，两处同时说会显得重复。 */}
+          {entries.length === 0 ? null : (
+            <p className="tc-note">岗位可以在「岗位与绑定」里随时增删改。</p>
+          )}
         </section>
       </div>
 
