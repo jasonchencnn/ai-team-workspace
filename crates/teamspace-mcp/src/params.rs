@@ -208,3 +208,62 @@ pub struct BoardArgs {
     #[serde(default)]
     pub include_cancelled: Option<bool>,
 }
+
+/// 发消息给岗位的参数。
+#[derive(Debug, Clone, Default, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+pub struct SendMessageArgs {
+    /// 接收岗位：岗位名称、岗位标识（如 role_frontend）、前缀（如 FE）或岗位 id。
+    pub to: String,
+    /// 消息正文（必填）：要岗位做什么、要它回答什么。
+    pub body: String,
+    /// 关联任务：任务编号（如 FE-001）或标题；可省略。
+    #[serde(default)]
+    pub task: Option<String>,
+    /// 主题：新建线程时用；省略时取正文第一行。
+    #[serde(default)]
+    pub subject: Option<String>,
+    /// 团队名称或 id；只有一个团队时可省略。
+    #[serde(default)]
+    pub team: Option<String>,
+}
+
+/// 查消息线程的参数。
+#[derive(Debug, Clone, Default, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+pub struct ListThreadsArgs {
+    /// 团队名称或 id；只有一个团队时可省略。
+    #[serde(default)]
+    pub team: Option<String>,
+    /// 只看某个岗位参与的线程：岗位名称、岗位标识或前缀。
+    #[serde(default)]
+    pub role: Option<String>,
+    /// 只看关联某个任务的线程：任务编号或标题。
+    #[serde(default)]
+    pub task: Option<String>,
+}
+
+/// 查线程详情的参数。
+#[derive(Debug, Clone, Default, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+pub struct ThreadArgs {
+    /// 线程 id（list_threads 返回的 threadId）。
+    pub thread: String,
+}
+
+/// 等消息回复的参数。
+#[derive(Debug, Clone, Default, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+pub struct WaitReplyArgs {
+    /// 要等回复的消息 id（send_message 返回的 messageId）。
+    pub message: String,
+    /// 最多等多少秒（默认 60，最多 600）。
+    #[serde(default)]
+    pub timeout_seconds: Option<u64>,
+    /// 消息所在的线程 id：给了就只在这个线程里找消息。
+    #[serde(default)]
+    pub thread: Option<String>,
+    /// 团队名称或 id；只有一个团队时可省略。
+    #[serde(default)]
+    pub team: Option<String>,
+}

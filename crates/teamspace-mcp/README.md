@@ -59,6 +59,9 @@ Codex 等支持 stdio MCP 的客户端同理：在其 MCP 配置里登记同一�
 | `list_activity` | `team`/`task`/`role`（均可选）、`cursor`、`limit` | 活动与审计记录，可按任务或岗位筛选 |
 | `get_review` | `task`、`team`（可选） | 待验收视图：执行摘要、改动文件、可否通过/退回、历史退回意见 |
 | `pending_permissions` | `team`（可选） | 正在执行、等待答复的权限请求（只读） |
+| `list_threads` | `team`（可选）、`role`（可选）、`task`（可选） | 岗位通信的线程：主题、参与岗位、关联任务、最近更新时间 |
+| `get_thread` | `thread` | 线程详情：往来消息、每条消息的状态、回复正文与失败原因 |
+| `inbox` | `team`（可选） | 待我处理（只读）：待验收、执行失败或受阻、待答复权限、需要拍板的消息、Leader 越权记录 |
 
 ### 操作
 
@@ -71,6 +74,19 @@ Codex 等支持 stdio MCP 的客户端同理：在其 MCP 配置里登记同一�
 | `start_run` | `task` | 开始执行任务 |
 | `cancel_run` | `run` 或 `task` | 取消正在进行的执行 |
 | `reject_review` | `task` 或 `run`、`comment`（必填） | 退回验收，续接会话重做 |
+| `send_message` | `to`、`body`、`task`（可选）、`subject`（可选）、`team`（可选） | 给岗位发消息；返回消息 id、线程 id 与当前状态 |
+| `wait_reply` | `message`、`timeout_seconds`（可选，默认 60、最多 600）、`thread`（可选）、`team`（可选） | 等一条消息的回复：轮询到「已回复 / 失败 / 过期」为止 |
+
+### 给岗位发消息
+
+`send_message` 的 `to` 可以写岗位名称、岗位标识（`role_frontend`）、任务编号前缀（`FE`）或岗位 id；
+`task` 可以写任务编号（`FE-002`）或标题，也可以不给。消息进入「排队」，由接收岗位绑定的 Harness 接手，
+回复写回同一个线程。
+
+`wait_reply` 拿到回复：轮询间隔不超过 2 秒，等待期间不阻塞别的工具调用。等不到时返回当前状态与
+`timedOut: true`（不是错误——消息还在路上，可以稍后再等）。
+
+失败与过期都会保留原消息、失败原因与时间；`get_thread` 能看到这些。
 
 ### 怎么指代团队、岗位和任务
 
@@ -87,10 +103,12 @@ Leader 可以用名称或编号指代，服务端负责解析成 id（先调用�
 
 ## 限制
 
-权限边界在桌面应用的内核里把守（D7、D8、D26），这套工具不提供、也不绕过下面这些操作：
+权限边界在桌面应用的内核里把守（D7、D8、D26、D32），这套工具不提供、也不绕过下面这些操作：
 
 - **通过验收并合并到主分支**：只能在 Teamspace 应用里由你点。
 - **答复 Agent 的权限请求**：`pending_permissions` 只做查询与提醒，答复仍在应用里点。
+- **记录决策与改通知订阅**：`inbox` 只做查询与提醒，两件事都是你的控制权（D32）。
+- **重发失败或过期的消息**：不在 Leader 白名单里。
 - **换绑 / 新建 / 编辑 Harness、岗位与团队**：同样只能由你在应用里做。
 - **把任务置为已完成**：走验收流程，不能用 `change_task_status` 直接置为 `done`。
 - 应用没运行时，所有工具都返回「Teamspace 应用没有运行，请先打开 Teamspace」。
@@ -106,6 +124,7 @@ cargo test  -p teamspace-mcp            # 单元测试 + 集成测试
 cargo clippy -p teamspace-mcp --all-targets
 ```
 
-集成测试（`tests/mcp_tools.rs`）会真的起一个 Teamspace：临时数据库 + 临时目录里的控制 socket +
+集成测试（`tests/mcp_tools.rs`、`tests/mcp_messages.rs`）会真的起一个 Teamspace：临时数据库 + 临时目录里的控制 socket +
 内置 Mock Agent（`examples/mock_agent.rs`），再以 stdio 启动 `teamspace-mcp` 二进制，按 MCP
-协议调用工具，不调用任何真实模型、不消耗额度。
+协议调用工具，不调用任何真实模型、不消耗额度。消息相关的用例用 Mock 的 `[mock:reply=…]` 与
+`[mock:replyfail]` 标记模拟回复与失败。

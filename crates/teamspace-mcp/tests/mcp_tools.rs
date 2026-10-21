@@ -29,6 +29,9 @@ const EXPECTED_TOOLS: &[&str] = &[
     "list_activity",
     "get_review",
     "pending_permissions",
+    "list_threads",
+    "get_thread",
+    "inbox",
     "create_task",
     "update_task",
     "set_dependencies",
@@ -36,9 +39,11 @@ const EXPECTED_TOOLS: &[&str] = &[
     "start_run",
     "cancel_run",
     "reject_review",
+    "send_message",
+    "wait_reply",
 ];
 
-/// 不该由 Leader 触发的操作（D7、D8、D26）。
+/// 不该由 Leader 触发的操作（D7、D8、D26、D32）。
 const FORBIDDEN_TOOLS: &[&str] = &[
     "approve_review",
     "respond_permission",
@@ -49,6 +54,12 @@ const FORBIDDEN_TOOLS: &[&str] = &[
     "create_role",
     "resolve_merge_manually",
     "takeover_run",
+    // 重发消息、记录决策、通知订阅：都不在 Leader 白名单里（D32）。
+    "retry_message",
+    "record_decision",
+    "list_decisions",
+    "get_notification_settings",
+    "update_notification_settings",
 ];
 
 #[test]
