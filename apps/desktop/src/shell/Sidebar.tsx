@@ -26,6 +26,8 @@ const NAV_ENTRIES: NavEntry[] = [
   { label: "岗位与绑定", to: "/roles", end: true },
   // 活动与审计按 D22 放在「岗位与绑定」之后、「待我处理」之前。
   { label: "活动与审计", to: "/activity", end: true },
+  // 岗位通信（M5-03）：与待我处理同属 M5，放在待我处理之前。
+  { label: "岗位通信", to: "/messages", end: true },
   { label: "待我处理", note: "M5 提供" },
 ];
 

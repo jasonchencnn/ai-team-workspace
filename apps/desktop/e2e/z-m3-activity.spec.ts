@@ -256,6 +256,7 @@ test("ACT-011 侧边栏里「活动与审计」在「岗位与绑定」之后、
     "共享文件",
     "岗位与绑定",
     "活动与审计",
+    "岗位通信",
     "待我处理M5 提供",
   ]);
   await expect(page.locator(".sidebar__nav .nav-item--active")).toHaveText("活动与审计");
