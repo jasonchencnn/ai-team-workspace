@@ -74,11 +74,13 @@ register_commands!(
     resolve_merge_manually,
     rerun_after_conflict,
     list_events,
+    leader_integration,
+    write_workspace_mcp_config,
     pick_workspace_folder,
 );
 
 /// 本机控制 socket 的文件名（放在应用数据目录里）。
-const CONTROL_SOCKET_NAME: &str = "teamspace-control.sock";
+const CONTROL_SOCKET_NAME: &str = teamspace_core::leader::SOCKET_FILE_NAME;
 
 /// Starts the native host.
 pub fn run() -> tauri::Result<()> {

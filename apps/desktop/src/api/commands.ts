@@ -21,10 +21,12 @@ import type { FileSearchQuery } from "../bindings/FileSearchQuery.js";
 import type { FileTasksQuery } from "../bindings/FileTasksQuery.js";
 import type { FileTaskRef } from "../bindings/FileTaskRef.js";
 import type { HarnessInstance } from "../bindings/HarnessInstance.js";
+import type { LeaderIntegration } from "../bindings/LeaderIntegration.js";
 import type { MarkdownFile } from "../bindings/MarkdownFile.js";
 import type { MarkdownList } from "../bindings/MarkdownList.js";
 import type { MarkdownListQuery } from "../bindings/MarkdownListQuery.js";
 import type { MarkdownReadQuery } from "../bindings/MarkdownReadQuery.js";
+import type { McpConfigWrite } from "../bindings/McpConfigWrite.js";
 import type { RejectReviewInput } from "../bindings/RejectReviewInput.js";
 import type { RerunAfterConflictInput } from "../bindings/RerunAfterConflictInput.js";
 import type { ResolveMergeManuallyInput } from "../bindings/ResolveMergeManuallyInput.js";
@@ -275,3 +277,13 @@ export const rerunAfterConflict = (input: RerunAfterConflictInput) =>
 
 /** 按团队分页列出活动。 */
 export const listEvents = (input: EventQuery) => invoke<EventPage>("list_events", { input });
+
+// ---------------------------------------------------------------- Leader 接入
+
+/** Leader 接入配置：teamspace-mcp 路径、控制 socket 路径与三段可复制的配置文本。 */
+export const leaderIntegration = (teamId: string) =>
+  invoke<LeaderIntegration>("leader_integration", { teamId });
+
+/** 把 mcpServers.teamspace 合并进工作空间的 .mcp.json（只在用户确认后调用）。 */
+export const writeWorkspaceMcpConfig = (teamId: string) =>
+  invoke<McpConfigWrite>("write_workspace_mcp_config", { teamId });

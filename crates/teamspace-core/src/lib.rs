@@ -6,6 +6,7 @@ pub mod api;
 pub mod control;
 pub mod dispatch;
 pub mod error;
+pub mod leader;
 pub mod mock_agent;
 pub mod model;
 pub mod probe;

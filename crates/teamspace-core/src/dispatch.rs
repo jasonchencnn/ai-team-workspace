@@ -157,6 +157,10 @@ pub fn dispatch(
         "resolve_merge_manually" => out(ts.resolve_merge_manually(arg(args, "input")?)),
         "rerun_after_conflict" => out(ts.rerun_after_conflict(arg(args, "input")?)),
         "list_events" => out(ts.list_events(arg(args, "input")?)),
+        "leader_integration" => out(ts.leader_integration(&arg::<String>(args, "teamId")?)),
+        "write_workspace_mcp_config" => {
+            out(ts.write_workspace_mcp_config(&arg::<String>(args, "teamId")?))
+        }
         other => Err(bad(format!("未知命令：{other}"))),
     }
 }
@@ -227,6 +231,8 @@ fn operation_label(cmd: &str) -> String {
         "approve_review" => "通过验收（合并）",
         "resolve_merge_manually" => "已手动合并并标记完成",
         "rerun_after_conflict" => "合并冲突后重新执行",
+        "leader_integration" => "生成 Leader 接入配置",
+        "write_workspace_mcp_config" => "写入工作空间 .mcp.json",
         other => other,
     }
     .to_owned()

@@ -26,6 +26,8 @@ export const queryKeys = {
   /** 某团队全部活动查询的前缀。 */
   teamEvents: (teamId: string) => ["teams", teamId, "events"] as const,
   events: (teamId: string, query: EventQuery) => ["teams", teamId, "events", query] as const,
+  /** Leader 接入配置（团队空间页的「接入 Leader」卡片）。 */
+  leaderIntegration: (teamId: string) => ["teams", teamId, "leader-integration"] as const,
   /** 共享文件页的工作空间 Markdown 列表。挂在团队之下，随「刷新文件列表」重新取。 */
   markdownFiles: (teamId: string) => ["teams", teamId, "markdown-files"] as const,
   markdownFile: (teamId: string, path: string) =>

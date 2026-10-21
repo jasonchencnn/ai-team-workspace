@@ -19,6 +19,7 @@ import type { TagTone } from "../../components/index.js";
 import { useRevealRoleFolder } from "../roles/roleFolder.js";
 import { roleWorkbenchPath } from "../roles/rolesNav.js";
 import { healthLabel, healthTone } from "../harness-detail/harnessFormat.js";
+import { LeaderIntegrationCard } from "./LeaderIntegrationCard.js";
 import { formatLocalDateTime } from "./formatLocalDateTime.js";
 import "./team-home.css";
 
@@ -288,6 +289,10 @@ export function TeamHomePage() {
           </div>
         </Panel>
       </div>
+
+      <section className="th-leader" aria-label="接入 Leader">
+        <LeaderIntegrationCard teamId={data.team.id} />
+      </section>
     </div>
   );
 }
