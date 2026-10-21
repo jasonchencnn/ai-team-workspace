@@ -5,3 +5,12 @@ members = [
   "crates/*",
 ]
 exclude = ["archive"]
+
+[workspace.dependencies]
+# 官方 MCP Rust SDK：`crates/teamspace-mcp` 用它实现 stdio server（M4-02）。
+# 精确锁定版本，只开 stdio server 需要的 features（server + stdio 传输 + 工具宏）。
+rmcp = { version = "=3.6.0", default-features = false, features = [
+  "server",
+  "transport-io",
+  "macros",
+] }

@@ -1,0 +1,9 @@
+[package]
+name = "teamspace-mcp"
+version = "0.1.0"
+edition = "2024"
+publish = false
+description = "MCP stdio server that lets an external Leader session drive the Teamspace desktop app."
+
+[dependencies]
+rmcp = { workspace = true }
