@@ -96,6 +96,7 @@ fn driver_for(core: &Arc<Core>, run_id: &str) -> Driver {
     let active = Arc::new(ActiveRun {
         tx: Mutex::new(tx.clone()),
         stop: AtomicU8::new(Stop::None as u8),
+        stop_actor: AtomicU8::new(Actor::Human.code()),
         process: Mutex::new(None),
         done: Mutex::new(false),
         done_cv: Condvar::new(),

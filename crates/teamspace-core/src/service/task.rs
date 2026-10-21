@@ -13,9 +13,9 @@ use super::{
 };
 use crate::error::{Error, Result};
 use crate::model::{
-    BoardColumn, ChangeTaskStatusInput, CheckTaskDependenciesInput, CreateTaskInput, EventKind,
-    FileRef, FileRefView, FileTaskRef, RoleRef, StatusCount, Task, TaskBoard, TaskBoardQuery,
-    TaskDependencyCheck, TaskDetail, TaskStatus, TaskSummary, UpdateTaskInput,
+    Actor, BoardColumn, ChangeTaskStatusInput, CheckTaskDependenciesInput, CreateTaskInput,
+    EventKind, FileRef, FileRefView, FileTaskRef, RoleRef, StatusCount, Task, TaskBoard,
+    TaskBoardQuery, TaskDependencyCheck, TaskDetail, TaskStatus, TaskSummary, UpdateTaskInput,
 };
 use crate::store::{enum_col, enum_str, new_id, non_blank, now};
 
@@ -670,6 +670,7 @@ pub(crate) fn create(
     conn: &Connection,
     input: CreateTaskInput,
     files: &FileCheck,
+    actor: Actor,
 ) -> Result<TaskDetail> {
     let team = team::get_active(conn, &input.team_id)?;
     let title = validate_title(&input.title)?;
@@ -702,8 +703,9 @@ pub(crate) fn create(
         ],
     )?;
     write_refs_and_deps(conn, &id, &refs, &deps)?;
-    event::record(
+    event::record_as(
         conn,
+        actor,
         NewEvent {
             team_id: &team.id,
             task_id: Some(&id),
@@ -723,6 +725,7 @@ pub(crate) fn update(
     conn: &Connection,
     input: UpdateTaskInput,
     files: &FileCheck,
+    actor: Actor,
 ) -> Result<TaskDetail> {
     let old = get(conn, &input.task_id)?;
     if super::run::active_for_task(conn, &old.id)?.is_some() {
@@ -751,8 +754,9 @@ pub(crate) fn update(
     if owner.id != old.owner_role_id {
         summary.push_str(&format!("，负责岗位改为「{}」", owner.name));
     }
-    event::record(
+    event::record_as(
         conn,
+        actor,
         NewEvent {
             team_id: &team.id,
             task_id: Some(&old.id),
@@ -775,6 +779,7 @@ pub(crate) fn change_status(
     input: ChangeTaskStatusInput,
     files: &FileCheck,
     dependent_files: Option<&super::dependency::FileChecks>,
+    actor: Actor,
 ) -> Result<TaskDetail> {
     let task = get(conn, &input.task_id)?;
     let team = team::get_active(conn, &task.team_id)?;
@@ -839,8 +844,9 @@ pub(crate) fn change_status(
         }
         data["affectedDependentKeys"] = json!(affected);
     }
-    event::record(
+    event::record_as(
         conn,
+        actor,
         NewEvent {
             team_id: &team.id,
             task_id: Some(&task.id),

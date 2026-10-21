@@ -41,14 +41,16 @@ export const KIND_LABELS: Record<EventKind, string> = {
   review_merge_blocked: "合并受阻",
   review_cleanup_failed: "清理失败",
   review_rerun: "冲突后重新执行",
+  leader_denied: "Leader 越权",
 };
 
 /** 活动种类列表（多选用），顺序与后端枚举一致；URL 里也按这个顺序拼接，保证地址栏稳定。 */
 export const EVENT_KINDS = Object.keys(KIND_LABELS) as EventKind[];
 
-/** 操作者显示名：人还是 Teamspace 自己做主。 */
+/** 操作者显示名：人、Leader（外部会话）还是 Teamspace 自己做主。 */
 export const ACTOR_LABELS: Record<string, string> = {
   human: "你",
+  leader: "Leader",
   system: "Teamspace",
 };
 

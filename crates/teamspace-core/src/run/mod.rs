@@ -167,6 +167,8 @@ enum Msg {
 pub(crate) struct ActiveRun {
     tx: Mutex<Sender<Msg>>,
     stop: AtomicU8,
+    /// 请求停止的操作者（Leader 取消执行时为 Leader），结束执行时用它记活动。
+    stop_actor: AtomicU8,
     process: Mutex<Option<Arc<AgentProcess>>>,
     done: Mutex<bool>,
     done_cv: Condvar,
@@ -182,8 +184,13 @@ impl ActiveRun {
         }
     }
 
+    /// 请求停止时的操作者；没有停止请求时按 Human 处理。
+    fn stop_actor(&self) -> Actor {
+        Actor::from_code(self.stop_actor.load(Ordering::SeqCst))
+    }
+
     /// 请求停止（先到的请求生效，应用退出总是生效）。
-    fn request_stop(&self, stop: Stop) {
+    fn request_stop(&self, stop: Stop, actor: Actor) {
         if stop == Stop::Shutdown {
             self.stop.store(stop as u8, Ordering::SeqCst);
         } else {
@@ -194,6 +201,7 @@ impl ActiveRun {
                 Ordering::SeqCst,
             );
         }
+        self.stop_actor.store(actor.code(), Ordering::SeqCst);
         let _ = self.send(Msg::Stop);
     }
 
@@ -277,6 +285,7 @@ impl Core {
         let active = Arc::new(ActiveRun {
             tx: Mutex::new(tx.clone()),
             stop: AtomicU8::new(Stop::None as u8),
+            stop_actor: AtomicU8::new(Actor::Human.code()),
             process: Mutex::new(None),
             done: Mutex::new(false),
             done_cv: Condvar::new(),
@@ -294,11 +303,13 @@ impl Core {
     }
 
     /// 请求停止活动执行并等待它结束。执行不在活动中时返回 `false`。
-    pub(crate) fn stop_run(&self, run_id: &str, stop: Stop) -> bool {
+    ///
+    /// `actor` 是请求停止的操作者：结束执行时的活动记录用它（Leader 取消执行记为 Leader）。
+    pub(crate) fn stop_run(&self, run_id: &str, stop: Stop, actor: Actor) -> bool {
         let Some(active) = self.runs.get(run_id) else {
             return false;
         };
-        active.request_stop(stop);
+        active.request_stop(stop, actor);
         let grace = self.runs.settings().cancel_grace;
         if !active.wait_done(grace + Duration::from_secs(5)) {
             active.kill();
@@ -342,7 +353,7 @@ impl Core {
             .map(|(id, a)| (id.clone(), Arc::clone(a)))
             .collect();
         for (_, active) in &actives {
-            active.request_stop(Stop::Shutdown);
+            active.request_stop(Stop::Shutdown, Actor::Human);
             active.kill();
         }
         for (id, _) in &actives {
@@ -2359,7 +2370,7 @@ impl Driver {
                     RunStatus::Cancelled,
                     Some(TaskStatus::Ready),
                     None,
-                    Actor::Human,
+                    self.active.stop_actor(),
                     "已取消",
                 )
             }
@@ -2370,7 +2381,7 @@ impl Driver {
                     RunStatus::Cancelled,
                     None,
                     None,
-                    Actor::Human,
+                    self.active.stop_actor(),
                     "已停止，人工接管",
                 )
             }
