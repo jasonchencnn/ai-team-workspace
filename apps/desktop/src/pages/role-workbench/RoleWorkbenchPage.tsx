@@ -1,7 +1,13 @@
 import { useMutation, useQuery } from "@tanstack/react-query";
+import { useState } from "react";
 import { useNavigate, useParams } from "react-router";
 
-import { getRoleWorkbench, listTaskStatuses, openRolePath } from "../../api/commands.js";
+import {
+  getRoleWorkbench,
+  listHarnesses,
+  listTaskStatuses,
+  openRolePath,
+} from "../../api/commands.js";
 import { queryKeys } from "../../api/queryKeys.js";
 import type { HarnessInstance } from "../../bindings/HarnessInstance.js";
 import type { RoleFileEntry } from "../../bindings/RoleFileEntry.js";
@@ -27,8 +33,17 @@ import {
   isTestHarness,
   presetTagLabel,
 } from "../harness-detail/harnessFormat.js";
+import { PendingBindingCard } from "../roles/PendingBindingCard.js";
+import { PendingMessagesPanel } from "../roles/PendingMessagesPanel.js";
+import { RebindHarnessDialog } from "../roles/RebindHarnessDialog.js";
 import { splitJournalLine, useRevealRoleFolder } from "../roles/roleFolder.js";
 import { roleBindingPath } from "../roles/rolesNav.js";
+import {
+  REBIND_POLL_INTERVAL_MS,
+  useRoleActiveRuns,
+  useRebindRefresh,
+} from "../roles/useRebindData.js";
+import { useRoleMutations } from "../roles/useRoleMutations.js";
 import { runDisplayStatus } from "../task-detail/run/runUi.js";
 import { statusTone } from "../tasks/taskUi.js";
 import { formatLocalDateTime } from "../team-home/formatLocalDateTime.js";
@@ -73,11 +88,29 @@ interface WorkbenchViewProps {
 
 function WorkbenchView({ teamId, roleId, onBack }: WorkbenchViewProps) {
   const navigate = useNavigate();
+  const [rebindOpen, setRebindOpen] = useState(false);
 
   const workbench = useQuery({
     queryKey: workbenchKey(teamId, roleId),
     queryFn: () => getRoleWorkbench(roleId),
+    // 有待生效换绑时轮询：当前执行结束就自动生效，工作台要跟上。
+    refetchInterval: (query) =>
+      query.state.data?.view.pendingBinding !== null &&
+      query.state.data?.view.pendingBinding !== undefined
+        ? REBIND_POLL_INTERVAL_MS
+        : false,
   });
+
+  // 换绑流程要选目标实例：同团队的实例列表与岗位页共用同一份缓存。
+  const harnessesQuery = useQuery({
+    queryKey: queryKeys.harnesses(teamId),
+    queryFn: () => listHarnesses(teamId),
+  });
+  const activeRunsQuery = useRoleActiveRuns(teamId, roleId);
+  const { rebindRole, cancelPendingRebind } = useRoleMutations(teamId);
+
+  // 换绑生效 / 撤销时刷新工作台（岗位视图挂在岗位 key 之下）。
+  useRebindRefresh(teamId);
 
   // 任务状态显示名一律来自后端。
   const statuses = useQuery({ queryKey: queryKeys.taskStatuses, queryFn: listTaskStatuses });
@@ -235,9 +268,31 @@ function WorkbenchView({ teamId, roleId, onBack }: WorkbenchViewProps) {
                 </div>
               </>
             ) : (
-              <BindingBody harness={data.view.harness} onChange={goRoles} />
+              <BindingBody
+                harness={data.view.harness}
+                onChange={goRoles}
+                onRebind={() => {
+                  rebindRole.reset();
+                  setRebindOpen(true);
+                }}
+              />
             )}
           </Panel>
+
+          <PendingBindingCard
+            view={data.view}
+            isCancelling={cancelPendingRebind.isPending}
+            error={cancelPendingRebind.error}
+            onCancel={() => {
+              cancelPendingRebind.mutate(roleId);
+            }}
+          />
+
+          <PendingMessagesPanel
+            teamId={teamId}
+            roleId={roleId}
+            enabled={data.view.pendingBinding !== null}
+          />
 
           {problems.length === 0 ? null : (
             <Card tone="warning" title="岗位文件夹无法写入">
@@ -316,6 +371,31 @@ function WorkbenchView({ teamId, roleId, onBack }: WorkbenchViewProps) {
           </Panel>
         </div>
       </div>
+
+      {rebindOpen ? (
+        <RebindHarnessDialog
+          role={role}
+          view={data.view}
+          harnesses={harnessesQuery.data ?? []}
+          activeRuns={activeRunsQuery.data ?? []}
+          isRunsPending={activeRunsQuery.isPending}
+          isSubmitting={rebindRole.isPending}
+          error={rebindRole.error}
+          onClose={() => {
+            setRebindOpen(false);
+          }}
+          onConfirm={(harnessId, mode) => {
+            rebindRole.mutate(
+              { roleId, harnessId, mode },
+              {
+                onSuccess: () => {
+                  setRebindOpen(false);
+                },
+              },
+            );
+          }}
+        />
+      ) : null}
     </div>
   );
 }
@@ -443,9 +523,11 @@ function RecentTasks({ teamId, tasks, taskCount, statusLabel }: RecentTasksProps
 interface BindingBodyProps {
   harness: HarnessInstance;
   onChange: () => void;
+  /** 打开「更换 Harness」流程弹窗。 */
+  onRebind: () => void;
 }
 
-function BindingBody({ harness, onChange }: BindingBodyProps) {
+function BindingBody({ harness, onChange, onRebind }: BindingBodyProps) {
   const now = Date.now();
 
   return (
@@ -480,11 +562,17 @@ function BindingBody({ harness, onChange }: BindingBodyProps) {
         </p>
       )}
       <div className="rw-actions">
-        <Button variant="neutral" onClick={onChange}>
+        <Button variant="neutral" onClick={onRebind}>
+          更换 Harness
+        </Button>
+        <Button variant="subtle" onClick={onChange}>
           换绑 Harness
         </Button>
       </div>
-      <p className="rw-note">点击后进入「岗位与绑定」更换；进行中的任务完成后生效。</p>
+      <p className="rw-note">
+        「更换 Harness」按执行情况选择换绑方式，进行中的任务完成后生效；「换绑
+        Harness」进入「岗位与绑定」直接改选实例。
+      </p>
     </>
   );
 }

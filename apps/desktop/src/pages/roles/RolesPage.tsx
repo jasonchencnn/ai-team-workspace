@@ -17,6 +17,7 @@ import { RoleCreateForm } from "./RoleCreateForm.js";
 import { RoleDetail } from "./RoleDetail.js";
 import { RoleList } from "./RoleList.js";
 import { HARNESS_TAB_PARAM } from "./rolesNav.js";
+import { REBIND_POLL_INTERVAL_MS, hasPendingBinding, useRebindRefresh } from "./useRebindData.js";
 import "./roles.css";
 
 /** 岗位页内的两个视图：岗位列表/详情，以及 Harness 接入。用 `?tab=` 记住当前视图。 */
@@ -43,11 +44,17 @@ function RolesView({ teamId }: { teamId: string }) {
   const rolesQuery = useQuery({
     queryKey: queryKeys.roles(teamId),
     queryFn: () => listRoles(teamId),
+    // 有待生效换绑时轮询：当前执行结束就自动生效，界面要跟上。
+    refetchInterval: (query) =>
+      hasPendingBinding(query.state.data ?? []) ? REBIND_POLL_INTERVAL_MS : false,
   });
   const harnessesQuery = useQuery({
     queryKey: queryKeys.harnesses(teamId),
     queryFn: () => listHarnesses(teamId),
   });
+
+  // 换绑事件（待生效 / 已生效 / 已撤销）到达时刷新岗位与团队概览。
+  useRebindRefresh(teamId);
 
   const roles = rolesQuery.data ?? [];
   const harnesses = harnessesQuery.data ?? [];

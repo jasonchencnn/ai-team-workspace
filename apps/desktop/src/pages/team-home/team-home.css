@@ -224,3 +224,11 @@
   font-size: var(--font-size-caption);
   line-height: var(--line-height-caption);
 }
+
+/* 席位卡片上的待生效换绑：标出来但不写成已经换好 */
+.th-role__pending {
+  color: var(--color-warning);
+  font-size: var(--font-size-caption);
+  line-height: var(--line-height-caption);
+  overflow-wrap: anywhere;
+}
