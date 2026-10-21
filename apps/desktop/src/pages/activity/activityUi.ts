@@ -26,6 +26,7 @@ export const KIND_LABELS: Record<EventKind, string> = {
   role_rebind_requested: "换绑待生效",
   role_rebind_applied: "换绑生效",
   role_rebind_cancelled: "撤销换绑",
+  role_rebind_rerun_failed: "换绑后重跑失败",
   harness_created: "注册 Harness",
   harness_updated: "编辑 Harness",
   harness_archived: "归档 Harness",

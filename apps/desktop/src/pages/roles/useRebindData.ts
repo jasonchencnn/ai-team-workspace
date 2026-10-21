@@ -57,7 +57,7 @@ export function useRolePendingMessages(teamId: string, roleId: string, enabled: 
 
 /**
  * 启动包预览：岗位下一次执行会附上的交接内容。
- * 为空字符串表示不会附加交接（当前 Harness 已在此岗位执行过）。
+ * 为空字符串表示不会附加交接（当前 Harness 已经执行过，或岗位还没有可交接的历史）。
  */
 export function useRoleHandoffPreview(teamId: string, roleId: string) {
   return useQuery<string>({

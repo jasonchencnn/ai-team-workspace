@@ -627,6 +627,25 @@ mod tests {
         let role = f.role(&team.id, "role_frontend");
         let harness = f.harness(&team.id, "Mock", crate::model::AcpPreset::Mock);
         f.ts.bind_role_harness(&role.id, &harness.id).unwrap();
+        // 岗位在这个 Harness 上跑过一次，才有历史可交底
+        // （从未执行过的新岗位不附加交接节，D35③）。
+        let task = f.task(&team.id, &role, "任务");
+        f.raw_sql(&format!(
+            "UPDATE tasks SET status = 'doing' WHERE id = '{task_id}';
+             INSERT INTO runs (id, team_id, task_id, role_id, harness_id, harness_name,
+                               harness_preset, harness_command, attempt, status, session_id,
+                               workspace_path, exec_dir, isolation, started_at)
+             VALUES ('run-1', '{team}', '{task_id}', '{role}', '{harness}', 'Mock', 'mock', 'x', 1,
+                     'failed', 's-1', '{ws}', '{ws}', 'in_place', '2026-10-13T00:00:00.000Z');",
+            task_id = task.task.id,
+            team = team.id,
+            role = role.id,
+            harness = harness.id,
+            ws = f.ws.display(),
+        ));
+        // 换到另一个 Harness：换了环境才交底。
+        let other = f.harness(&team.id, "Mock 二号", crate::model::AcpPreset::Mock);
+        f.ts.bind_role_harness(&role.id, &other.id).unwrap();
         let preview = dispatch(
             &f.ts,
             Caller::Human,

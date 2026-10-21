@@ -28,6 +28,8 @@ pub(crate) struct HandoffData {
 /// 判据：上一次执行用的 Harness 实例与本次不同，或本次是该 Harness 在这个岗位上的第一次执行。
 /// 也就是「换了环境要交底，同一个环境不重复交底」。
 ///
+/// 岗位从未执行过时（新岗位的第一次执行）不附加交接节：没有可交接的历史（D35③）。
+///
 /// `exclude_run_id` 是本次执行（已经落库、尚未开始）：判断「此前是否用过这个 Harness」时要把它
 /// 排除掉，否则第一次执行会被自己挡住。
 pub(crate) fn needs_handoff(
@@ -54,7 +56,8 @@ pub(crate) fn needs_handoff(
         .optional()?;
     Ok(match last {
         Some(last) => last != harness_id || same == 0,
-        None => true,
+        // 从未执行过：没有历史可交接，不附加交接节（D35③）。
+        None => false,
     })
 }
 
@@ -90,7 +93,10 @@ fn open_tasks(conn: &Connection, role_id: &str) -> Result<Vec<HandoffTask>> {
     Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
 }
 
-/// 该岗位最近几次执行的结果（最新的在前），最多 [`RECENT_RUN_LIMIT`] 次。
+/// 该岗位最近几次**已结束**执行的结果（最新的在前），最多 [`RECENT_RUN_LIMIT`] 次。
+///
+/// 进行中的执行（排队 / 执行中 / 等待确认）不算「最近结果」：交接的是已经发生的事，
+/// 正在跑的活没有结果可交。
 fn recent_runs(
     conn: &Connection,
     role_id: &str,
@@ -100,6 +106,7 @@ fn recent_runs(
         "SELECT r.task_id, r.status, r.started_at, r.summary, r.failure, t.key FROM runs r
          JOIN tasks t ON t.id = r.task_id
          WHERE r.role_id = ?1 AND r.id <> ?2
+           AND r.status NOT IN ('queued', 'running', 'waiting_permission')
          ORDER BY r.started_at DESC, r.id DESC LIMIT ?3",
     )?;
     let rows = stmt.query_map(

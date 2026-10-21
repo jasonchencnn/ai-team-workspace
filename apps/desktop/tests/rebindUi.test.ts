@@ -150,7 +150,7 @@ describe("待投递消息说明", () => {
 describe("启动包空态", () => {
   it("已绑定但没有交接内容时提示不会附加交接", () => {
     expect(handoffEmptyText(true)).toBe(HANDOFF_EMPTY_TEXT);
-    expect(HANDOFF_EMPTY_TEXT).toBe("当前 Harness 已在此岗位执行过，不会附加交接");
+    expect(HANDOFF_EMPTY_TEXT).toBe("该岗位在当前 Harness 上没有需要交接的内容，不会附加交接");
   });
 
   it("岗位没绑实例时说清楚是没有东西可交接", () => {

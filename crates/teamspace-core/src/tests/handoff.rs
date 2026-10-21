@@ -38,17 +38,15 @@ fn run_once(f: &Fixture, team: &Team, role: &Role, title: &str) -> Run {
     wait_end(f, &run.id)
 }
 
+/// 从未执行过的岗位：第一次执行不附加交接节。
+///
+/// 没有历史可交接：新岗位上手时不需要交底（D35③）。
 #[test]
-fn empty_role_still_gets_a_handoff_section() {
+fn a_role_that_never_ran_gets_no_handoff_section() {
     let f = plain_fixture();
     let (_, fe, _) = setup(&f);
     let text = f.ts.get_role_handoff_preview(&fe.id).unwrap();
-    assert!(text.contains("## 岗位交接"), "{text}");
-    assert!(text.contains("### 岗位说明"), "{text}");
-    assert!(text.contains("### 未完成任务\n\n（无）"), "{text}");
-    assert!(text.contains("### 近期执行结果\n\n（无）"), "{text}");
-    assert!(text.contains("### 工作日志（最近部分）"), "{text}");
-    assert!(text.contains("### 相关文件引用\n\n（无）"), "{text}");
+    assert_eq!(text, "", "从未执行过的新岗位没有历史可交接：{text}");
 }
 
 /// 取「未完成任务」一节的正文（到下一节为止）。
@@ -66,8 +64,18 @@ fn open_tasks_section(text: &str) -> String {
 fn handoff_lists_open_tasks_and_their_files() {
     let f = plain_fixture();
     let (team, fe, _) = setup(&f);
+    // 先在 Mock 上跑过一次，再换到另一个 Harness：换了环境才交底
+    // （从未执行过的新岗位不交底，见上一个用例）。
+    run_once(&f, &team, &fe, "先跑一次");
+    let other = f.harness(&team.id, "Mock 二号", AcpPreset::Mock);
+    f.ts.bind_role_harness(&fe.id, &other.id).unwrap();
     let task = f.readyable(&team.id, &fe, "登录页");
     let text = f.ts.get_role_handoff_preview(&fe.id).unwrap();
+    assert!(text.contains("## 岗位交接"), "{text}");
+    assert!(text.contains("### 岗位说明"), "{text}");
+    assert!(text.contains("### 未完成任务\n\n"), "{text}");
+    assert!(text.contains("### 近期执行结果\n\n"), "{text}");
+    assert!(text.contains("### 工作日志（最近部分）"), "{text}");
     assert!(
         text.contains(&format!("- {} 登录页（TODO）", task.task.key)),
         "{text}"
@@ -91,6 +99,41 @@ fn handoff_lists_open_tasks_and_their_files() {
         !text.contains("### 相关文件引用\n\n- `docs/spec.md`\n- `收尾"),
         "{text}"
     );
+}
+
+/// 交接节里的「近期执行结果」只列已经结束的执行：正在跑的活没有结果可交。
+#[test]
+fn handoff_only_lists_finished_runs() {
+    let f = plain_fixture();
+    let (team, fe, harness) = setup(&f);
+    let finished = run_once(&f, &team, &fe, "跑过一次");
+    let other = f.harness(&team.id, "Mock 二号", AcpPreset::Mock);
+    f.ts.bind_role_harness(&fe.id, &other.id).unwrap();
+
+    // 再插一条进行中的执行。
+    let running = f.readyable(&team.id, &fe, "正在跑");
+    f.raw_sql(&format!(
+        "UPDATE tasks SET status = 'doing' WHERE id = '{task_id}';
+         INSERT INTO runs (id, team_id, task_id, role_id, harness_id, harness_name, harness_preset,
+                           harness_command, attempt, status, session_id, workspace_path, exec_dir,
+                           isolation, started_at)
+         VALUES ('run-running', '{team}', '{task_id}', '{role}', '{harness}', 'Mock', 'mock', 'x', 1,
+                 'running', 's-1', '{ws}', '{ws}', 'in_place', '2026-10-21T00:00:00.000Z');",
+        task_id = running.task.id,
+        team = team.id,
+        role = fe.id,
+        harness = harness.id,
+        ws = f.ws.display(),
+    ));
+
+    let text = f.ts.get_role_handoff_preview(&fe.id).unwrap();
+    let section = text
+        .split("### 近期执行结果")
+        .nth(1)
+        .expect("近期执行结果一节");
+    let section = section.split("\n### ").next().unwrap_or(section);
+    assert!(section.contains(&finished.task_key), "{section}");
+    assert!(!section.contains(&running.task.key), "{section}");
 }
 
 #[test]

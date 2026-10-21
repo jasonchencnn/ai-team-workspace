@@ -436,6 +436,8 @@ pub(crate) fn bind(conn: &Connection, role_id: &str, harness_id: &str) -> Result
         "UPDATE roles SET harness_id = ?2, updated_at = ?3 WHERE id = ?1",
         params![role_id, harness_id, now()],
     )?;
+    // 手动绑定清掉待生效换绑：手动操作是更近的意图（D35④）。
+    clear_pending_rebind(conn, &role)?;
     event::record(
         conn,
         NewEvent {
@@ -467,6 +469,8 @@ pub(crate) fn unbind(conn: &Connection, role_id: &str) -> Result<RoleView> {
         "UPDATE roles SET harness_id = NULL, updated_at = ?2 WHERE id = ?1",
         params![role_id, now()],
     )?;
+    // 手动解绑同样清掉待生效换绑（D35④）。
+    clear_pending_rebind(conn, &role)?;
     event::record(
         conn,
         NewEvent {
@@ -479,6 +483,38 @@ pub(crate) fn unbind(conn: &Connection, role_id: &str) -> Result<RoleView> {
         },
     )?;
     view(conn, get_active(conn, role_id)?)
+}
+
+/// 清掉该岗位的待生效换绑并记一条「已撤销」活动。
+///
+/// 手动绑定 / 解绑是更近的意图，待生效的换绑不再等它（D35④）。
+fn clear_pending_rebind(conn: &Connection, role: &Role) -> Result<()> {
+    let Some(pending) = rebind::pending(conn, &role.id)? else {
+        return Ok(());
+    };
+    conn.execute(
+        "DELETE FROM role_pending_bindings WHERE id = ?1",
+        params![pending.id],
+    )?;
+    event::record(
+        conn,
+        NewEvent {
+            team_id: &role.team_id,
+            task_id: None,
+            role_id: Some(&role.id),
+            kind: EventKind::RoleRebindCancelled,
+            summary: format!(
+                "岗位「{}」手动更换绑定：撤销待生效的换绑，不再切换到 Harness「{}」",
+                role.name, pending.harness_name
+            ),
+            data: json!({
+                "mode": pending.mode,
+                "harnessId": pending.harness_id,
+                "harnessName": pending.harness_name,
+                "reason": "manual_binding",
+            }),
+        },
+    )
 }
 
 #[cfg(test)]

@@ -384,6 +384,8 @@ impl Core {
                     Some(&preserved),
                 )
             })?;
+            // 恢复时执行被标为已中断，也算执行结束：该岗位的待生效换绑在此刻生效（M6-01、D35）。
+            self.apply_pending_rebind(&run.role_id);
         }
         self.discard_stale_snapshots(SNAPSHOT_KEEP);
         Ok(())
