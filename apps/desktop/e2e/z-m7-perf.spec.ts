@@ -107,6 +107,33 @@ test("PERF-002 看板每列能「加载更多」，加载后卡片变多且总�
   expect(new Set(keys).size).toBe(keys.length);
 });
 
+test("PERF-004 TODO 合并列：后端翻完后本地还有没显示的，「加载更多」仍在，能一路展开到全部", async ({
+  page,
+}) => {
+  await gotoBoard(page);
+  const column = page.locator(".task-board__column").first();
+  await column.locator(".task-card-link").first().waitFor({ state: "visible" });
+  const more = column.getByRole("button", { name: "加载更多" });
+  await expect(more).toBeVisible();
+
+  // TODO 列合并 todo(400) 与 ready(300)：第一次「加载更多」把两边都取完，
+  // 后端已经没有更多，但本地还有 300 条没展开显示。
+  await more.click();
+  await expect(column.locator(".task-card-link")).toHaveCount(400);
+  await expect(column.locator(".task-board__more-note")).toContainText("已显示 400 / 700");
+
+  // 关键：后端没有更多了，按钮不能消失——剩下的任务还在本地，只是还没展开。
+  await expect(more).toBeVisible();
+  await more.click();
+  await expect(column.locator(".task-card-link")).toHaveCount(600);
+  await expect(more).toBeVisible();
+  await more.click();
+  await expect(column.locator(".task-card-link")).toHaveCount(700);
+
+  // 全部展开后按钮才消失。
+  await expect(more).toHaveCount(0);
+});
+
 test("PERF-003 活动页在 2000 条任务、几千条活动下首屏在预算内出现", async ({ page }) => {
   await page.goto(`/#/teams/${teamId}/activity`);
   await page.reload();

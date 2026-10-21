@@ -5,8 +5,17 @@ import { useNavigate, useParams } from "react-router";
 
 import { listRoles } from "../../api/commands.js";
 import { queryKeys } from "../../api/queryKeys.js";
-import { Button, EmptyState, ErrorBanner, PageHeader, Panel, Tag } from "../../components/index.js";
+import {
+  Button,
+  EmptyState,
+  ErrorBanner,
+  PageHeader,
+  Panel,
+  Spinner,
+  Tag,
+} from "../../components/index.js";
 import type { InboxItem } from "../../bindings/InboxItem.js";
+import type { PermissionPrompt } from "../../bindings/PermissionPrompt.js";
 import { formatTime } from "../tasks/taskUi.js";
 import { DecisionDialog } from "./DecisionDialog.js";
 import { DecisionRecorded } from "./DecisionRecorded.js";
@@ -18,7 +27,9 @@ import {
   inboxTotal,
   type InboxGroup,
 } from "./inboxUi.js";
+import { PermissionDecisionCard } from "./PermissionDecisionCard.js";
 import { useInbox, useNotifyRefresh } from "./useInbox.js";
+import { usePermissionDecision } from "./usePermissionDecision.js";
 import "./inbox.css";
 
 /** 可以记录决策的类别：受阻任务与需要拍板的消息。 */
@@ -54,6 +65,19 @@ export function InboxPage() {
   const groups = groupInboxItems(items);
   const total = inboxTotal(inbox.data?.counts, items);
   const selected = items.find((item) => item.id === selectedId) ?? items[0] ?? null;
+
+  // 权限类事项就地答复：取这条事项对应的执行记录里的待确认请求。
+  const decision = usePermissionDecision(
+    teamId,
+    selected !== null && selected.category === "permission" ? selected.runId : null,
+  );
+  // 发起请求的岗位名：执行记录里有 roleId，岗位列表里有名字。
+  const roleNameOf = (roleId: string | null): string => {
+    if (roleId === null) {
+      return "未知岗位";
+    }
+    return roles.data?.find((view) => view.role.id === roleId)?.role.name ?? "未知岗位";
+  };
 
   return (
     <>
@@ -117,11 +141,19 @@ export function InboxPage() {
             ) : (
               <InboxDetail
                 item={selected}
+                roleName={roleNameOf(decision.run?.roleId ?? null)}
                 onJump={() => {
                   void navigate(inboxTargetPath(teamId, selected));
                 }}
                 onDecide={() => {
                   setDecisionItem(selected);
+                }}
+                permission={{
+                  loading: decision.loading,
+                  submitting: decision.submitting,
+                  error: decision.error,
+                  prompt: decision.prompt,
+                  onRespond: decision.respond,
                 }}
               />
             )}
@@ -223,12 +255,23 @@ function InboxGroupBlock({ group, selectedId, onSelect, onJump, onDecide }: Inbo
 
 interface InboxDetailProps {
   item: InboxItem;
+  /** 发起请求的岗位名（权限类事项用）。 */
+  roleName: string;
   onJump: () => void;
   onDecide: () => void;
+  /** 待答复权限的就地答复状态；非权限类事项不用。 */
+  permission: {
+    loading: boolean;
+    submitting: boolean;
+    error: unknown;
+    prompt: PermissionPrompt | null;
+    onRespond: (optionId: string) => void;
+  };
 }
 
 /** 右侧详情：影响说明、建议操作与处理入口。 */
-function InboxDetail({ item, onJump, onDecide }: InboxDetailProps) {
+function InboxDetail({ item, roleName, onJump, onDecide, permission }: InboxDetailProps) {
+  const isPermission = item.category === "permission";
   return (
     <Panel className="inbox__detail-panel">
       <div className="inbox__detail-head">
@@ -237,22 +280,48 @@ function InboxDetail({ item, onJump, onDecide }: InboxDetailProps) {
       </div>
       <h2 className="inbox__detail-title">{item.title}</h2>
       <p className="inbox__detail-impact">{item.impact}</p>
-      <p className="inbox__detail-suggestion">{item.suggestion}</p>
+      {isPermission ? null : <p className="inbox__detail-suggestion">{item.suggestion}</p>}
       {item.noChanges ? (
         <p className="inbox__detail-warn">本次执行没有任何改动，Agent 可能提前结束。</p>
       ) : null}
       <time className="inbox__detail-time" dateTime={item.occurredAt}>
         {formatTime(item.occurredAt)}
       </time>
+
+      {isPermission ? (
+        permission.loading ? (
+          <Spinner label="正在取这次权限请求" />
+        ) : permission.prompt === null ? (
+          <p className="inbox__detail-suggestion">这个权限请求已经处理完了，或执行已经结束。</p>
+        ) : (
+          <PermissionDecisionCard
+            prompt={permission.prompt}
+            roleName={roleName}
+            taskKey={item.taskKey}
+            submitting={permission.submitting}
+            error={permission.error}
+            onRespond={permission.onRespond}
+          />
+        )
+      ) : null}
+
       <div className="inbox__detail-actions">
-        <Button variant="primary" onClick={onJump}>
-          {inboxActionLabel(item)}
-        </Button>
-        {canRecordDecision(item) ? (
-          <Button variant="neutral" onClick={onDecide}>
-            记录决策
+        {isPermission ? (
+          <Button variant="neutral" onClick={onJump}>
+            查看任务详情
           </Button>
-        ) : null}
+        ) : (
+          <>
+            <Button variant="primary" onClick={onJump}>
+              {inboxActionLabel(item)}
+            </Button>
+            {canRecordDecision(item) ? (
+              <Button variant="neutral" onClick={onDecide}>
+                记录决策
+              </Button>
+            ) : null}
+          </>
+        )}
       </div>
     </Panel>
   );

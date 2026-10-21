@@ -13,6 +13,17 @@ const ROLE_NAMES = new Map([
   ["role-fe", "前端开发"],
 ]);
 
+/**
+ * 固定「现在」与两条消息时间。
+ *
+ * 时间按本地时区构造（不是写死的 UTC 字符串），这样两条消息与「现在」永远落在同一个
+ * 本地日里，断言不受运行日期与所在时区影响——之前写死 2026-10-21 的 UTC 时间，
+ * 过了当天零点就变成「昨天」，测试会自己挂掉。
+ */
+const NOW = new Date(2026, 9, 21, 12, 0, 0);
+const CREATED_AT = new Date(2026, 9, 21, 10, 31, 0).toISOString();
+const REPLIED_AT = new Date(2026, 9, 21, 11, 2, 0).toISOString();
+
 /** 只用到界面关心字段的最小消息。 */
 function messageWith(status: MessageStatus, extra: Partial<Message> = {}): Message {
   return {
@@ -27,7 +38,7 @@ function messageWith(status: MessageStatus, extra: Partial<Message> = {}): Messa
     status,
     failureReason: null,
     replyBody: null,
-    createdAt: "2026-10-21T02:31:00Z",
+    createdAt: CREATED_AT,
     deliveredAt: null,
     repliedAt: null,
     bindingHarnessId: null,
@@ -36,7 +47,7 @@ function messageWith(status: MessageStatus, extra: Partial<Message> = {}): Messa
 }
 
 function render(props: Parameters<typeof MessageBubble>[0]): string {
-  return renderToStaticMarkup(createElement(MessageBubble, props));
+  return renderToStaticMarkup(createElement(MessageBubble, { now: NOW, ...props }));
 }
 
 describe("消息气泡", () => {
@@ -60,7 +71,7 @@ describe("消息气泡", () => {
     const html = render({
       message: messageWith("replied", {
         replyBody: "已确认，将按引用规范执行。",
-        repliedAt: "2026-10-21T03:02:00Z",
+        repliedAt: REPLIED_AT,
       }),
       roleNames: ROLE_NAMES,
     });

@@ -32,7 +32,6 @@ export function DecisionRecorded({
         <span aria-hidden="true">✓</span> 决策已记录
       </h2>
       <p className="decision-recorded__text">{text}</p>
-      <p className="decision-recorded__link">已写入团队活动记录</p>
       {resumedTask && taskKey !== null ? (
         <>
           <p className="decision-recorded__note">
@@ -41,7 +40,9 @@ export function DecisionRecorded({
           <p className="decision-recorded__note">任务解除阻塞，不代表已经完成。</p>
         </>
       ) : null}
-      <p className="decision-recorded__meta">操作人 {actor}</p>
+      {/* 底部一行与 Figma 8-311 对齐：操作人 / 已写入团队活动记录。
+          原来那句「已写入团队活动记录」单独做成蓝色，像个链接却不能点。 */}
+      <p className="decision-recorded__meta">操作人 {actor} / 已写入团队活动记录</p>
       <Button variant="primary" onClick={onBack}>
         返回待我处理
       </Button>

@@ -61,6 +61,9 @@ export const queryKeys = {
     ["teams", teamId, "roles", "handoff-preview", roleId] as const,
   /** 待我处理：按类别聚合需要 Human 判断的事项。 */
   inbox: (teamId: string) => ["teams", teamId, "inbox"] as const,
+  /** 待答复权限对应的执行记录；挂在待我处理之下，答复后随待我处理一起刷新。 */
+  permissionRun: (teamId: string, runId: string) =>
+    ["teams", teamId, "inbox", "permission-run", runId] as const,
   /** 决策列表：按团队与任务（或消息）过滤。 */
   decisions: (teamId: string, taskId: string) =>
     ["teams", teamId, "inbox", "decisions", taskId] as const,

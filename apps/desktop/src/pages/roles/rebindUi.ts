@@ -3,6 +3,7 @@
 // 怎么换、何时换、哪些执行算「进行中」都由内核决定（crates/teamspace-core/src/service/），
 // 前端只负责把后端返回的事实翻译成中文文案；所有判定都写成纯函数，单元测试直接锁住。
 import type { HarnessInstance } from "../../bindings/HarnessInstance.js";
+import type { MessageStatus } from "../../bindings/MessageStatus.js";
 import type { PendingBinding } from "../../bindings/PendingBinding.js";
 import type { RebindMode } from "../../bindings/RebindMode.js";
 
@@ -122,6 +123,35 @@ export function pendingBindingSummary(
 export function pendingDeliveryNote(bindingName: string | null): string {
   return `入队时绑定：${bindingName ?? "无有效绑定"}，将按生效后的绑定投递`;
 }
+
+/**
+ * 待投递消息的「下一步」：按当前投递状态说明接下来会怎样。
+ * 状态口径以内核为准（见 `MessageStatus`），画板上的 QUEUED / RETRYING 是示意。
+ */
+export function pendingDeliveryNextStep(status: MessageStatus): string {
+  switch (status) {
+    case "queued":
+      return "换绑生效后按新绑定自动投递";
+    case "delivering":
+      return "正在投递，稍后回来看结果";
+    case "replied":
+      return "对方已回复，去线程里看";
+    case "failed":
+      return "投递失败，可在岗位通信里重发或改派";
+    case "expired":
+      return "已过期，需要重新发送";
+  }
+}
+
+/**
+ * 投递处理原则（对照 Figma 46:815）：换绑期间消息怎么处理，说清楚给人看。
+ */
+export const PENDING_DELIVERY_PRINCIPLES: readonly string[] = [
+  "已送达的消息不回收，历史记录仍指向旧 Binding。",
+  "已排队的消息在真正投递时解析当前有效 Binding。",
+  "旧 Binding 拒绝后，消息不会丢失，系统写入 Event 并按策略重试。",
+  "没有有效 Binding 时需要人工介入，只有 Human / 授权 Role 可改派。",
+];
 
 /**
  * 启动包预览为空时的提示。

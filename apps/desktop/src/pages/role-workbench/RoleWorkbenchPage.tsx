@@ -446,7 +446,11 @@ function RecentRuns({ runs, onOpen }: RecentRunsProps) {
           })}
         </ul>
       )}
-      <p className="rw-note">点击进入任务详情，可查看这次执行的完整进度与改动。</p>
+      {/* 说明只在有执行记录时出现：空状态下讲「点击进入任务详情」会让用户
+          找不到可点的东西。 */}
+      {runs.length === 0 ? null : (
+        <p className="rw-note">点击进入任务详情，可查看这次执行的完整进度与改动。</p>
+      )}
     </Panel>
   );
 }

@@ -430,7 +430,7 @@ export function MessagesPage() {
           </dd>
         </dl>
       </Card>
-      <Card title="投递状态" tone="info">
+      <Card title="非即时状态" tone="info">
         <p>排队中 → 投递中 → 已回复；失败或过期保留原消息与原因，可重新发送。</p>
       </Card>
       <Link className="msg-side__link" to={auditLink}>

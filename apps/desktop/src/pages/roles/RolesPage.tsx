@@ -20,13 +20,14 @@ import { HARNESS_TAB_PARAM } from "./rolesNav.js";
 import { REBIND_POLL_INTERVAL_MS, hasPendingBinding, useRebindRefresh } from "./useRebindData.js";
 import "./roles.css";
 
-/** 岗位页内的两个视图：岗位列表/详情，以及 Harness 接入。用 `?tab=` 记住当前视图。 */
+/**
+ * 岗位页内的两个视图：岗位列表/详情，以及 Harness 接入。用 `?tab=` 记住当前视图。
+ *
+ * 路由只有 `teams/:teamId/roles`，`teamId` 恒有值；`#/roles` 会落到 IndexRedirect，
+ * 所以这里不再有「未选择团队」分支（UI-ROLE-002 的死分支已删除）。
+ */
 export function RolesPage() {
-  const { teamId } = useParams();
-
-  if (teamId === undefined) {
-    return <EmptyState title="未选择团队" description="请先在左侧选择一个团队。" />;
-  }
+  const { teamId = "" } = useParams();
 
   return <RolesView teamId={teamId} />;
 }

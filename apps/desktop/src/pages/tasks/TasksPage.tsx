@@ -24,6 +24,7 @@ import type { Run } from "../../bindings/Run.js";
 import type { TaskStatus } from "../../bindings/TaskStatus.js";
 import type { TaskSummary } from "../../bindings/TaskSummary.js";
 import { runBadge } from "../task-detail/run/runUi.js";
+import { columnHasHiddenTasks, mergeBoardTasks } from "./boardPaging.js";
 import type { FirstColumnFilter, TaskPanelState } from "./taskUi.js";
 import {
   formatTime,
@@ -341,11 +342,13 @@ export function TasksPage() {
     const map = new Map<TaskStatus, StatusColumn>();
     for (const column of board.data?.columns ?? []) {
       const extra = extraByStatus[column.status];
+      // 第一页与后续页可能有重叠（看板刷新后排序基准变了），按 id 去重，第一页优先。
+      const tasks = mergeBoardTasks(column.tasks, extra?.tasks ?? []);
       map.set(column.status, {
         label: column.label,
-        tasks: [...column.tasks, ...(extra?.tasks ?? [])],
+        tasks,
         total: column.total,
-        pool: column.tasks.length + (extra?.tasks.length ?? 0),
+        pool: tasks.length,
         // 还没加载过时听内核的；加载过之后看游标还在不在。
         hasMore: extra === undefined ? column.hasMore : extra.cursor !== undefined,
       });
@@ -469,8 +472,8 @@ export function TasksPage() {
 
   const displayColumns = buildColumns(byStatus, filter, showDone, showCancelled, visibleByColumn);
   const listTasks = displayColumns.flatMap((column) => column.tasks);
-  const moreColumns = displayColumns.filter(
-    (column) => column.hasMore || column.pool > column.tasks.length,
+  const moreColumns = displayColumns.filter((column) =>
+    columnHasHiddenTasks(column.hasMore, column.pool, column.tasks.length),
   );
 
   return (
@@ -563,19 +566,19 @@ export function TasksPage() {
                   badge={runBadge(runByTask.get(task.id))}
                 />
               ))}
-              {column.hasMore || column.pool > column.tasks.length ? (
+              {columnHasHiddenTasks(column.hasMore, column.pool, column.tasks.length) ? (
                 <div className="task-board__more">
-                  {column.hasMore ? (
-                    <Button
-                      variant="neutral"
-                      disabled={loadingMore}
-                      onClick={() => {
-                        void loadMore(column);
-                      }}
-                    >
-                      加载更多
-                    </Button>
-                  ) : null}
+                  {/* 后端翻完了但本地还有没展开的卡片时也要能点开：
+                      「加载更多」在这种情况下只把已取回的卡片展开出来。 */}
+                  <Button
+                    variant="neutral"
+                    disabled={loadingMore}
+                    onClick={() => {
+                      void loadMore(column);
+                    }}
+                  >
+                    加载更多
+                  </Button>
                   <span className="task-board__more-note">
                     已显示 {column.tasks.length} / {column.total}
                   </span>
