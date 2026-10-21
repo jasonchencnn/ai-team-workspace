@@ -4,6 +4,13 @@
 
 ## 2026-10-21
 
+- 主线 `9ee88f1` 全量通过：Rust 1011、前端 168、e2e 308 通过 5 跳过。派 MiniMax Code 做 `team/m6-01`（换绑三种方式与待生效）、`team/m6-02`（岗位启动包）。
+- M5-06 回归（agy 只读审查，从 `/Volumes/jasonchen/MyVault` 启动以便读到 Figma 截图；agy 无 shell 权限，e2e 由总指挥跑）：报 5 个缺陷，总指挥逐条核实属实——严重 1（过期消息重发后立即再过期）、一般 4（总开关关时岗位开关被冲掉、通知中心跨团队、已决策消息再失败不回待我处理、投递引擎权限选项只认 optionId 前缀）。派 MiniMax Code 在 `team/m5-06` 修复。
+- 暂缓（M7-02 视觉批）：待我处理页的高风险审批未就地批准 / 拒绝（现为跳转处理）。
+- M5 合入：`team/m5-kfix`（MiniMax Code，投递唤醒丢失、发信岗位、线程摘要去 N+1、M4-G-1 socket 握手探测；qa_m4 连跑 10 次通过）→ `ec1a03c`；`team/m5-05`（MCP 消息工具，deepseek-free 交叉审查无越权、无严重问题，2 条一般问题由 minimax-m3.1-flash-free 修复：wait_reply 计时含解析、轮询退避至 2 秒、生效超时回显与测试）→ `43ea58a`；`team/m5-04`（MiniMax Code，待我处理页、决策弹窗、高风险审批样式、通知中心与订阅；与 M5-03 的侧边栏 / 路由 / 导航断言冲突由总指挥按两边合并）→ `9ee88f1`。
+- 审查中的轻微问题按 D19 暂缓：wait_reply 不响应取消、thread 参数无归属校验、send_message 不能指定线程、工具清单只做子集断言、inbox 只测了 decision 一类。
+- 环境：worktree 里旧的 `target/` 构建产物指向旧路径，会让 Tauri 构建失败，清掉过期产物后正常。
+- 已建 `team/m6-01`、`team/m6-02` worktree，等主线全量检查与 e2e 通过后派给 MiniMax Code。
 - 迁移检查：仓库迁到 `/Volumes/jasonchen/MyVault/协作工作`（APFS 外置盘）。`git fsck` 无误；三个 worktree（`../协作工作-wt/m5-04`、`m5-05`、`m5-kfix`）链接正常；工作区干净。主线 `pnpm run check` 通过（Rust 984 通过 2 忽略、前端 140 通过）。Rust `target/` 未随迁移，首次冷编译。
 - 环境注意：仓库换盘后 pnpm 默认用 `/Volumes/jasonchen/.pnpm-store`（空），离线安装需加 `--store-dir /Users/chenzhiqing/Library/pnpm/store/v10`（非 TTY 时加 `CI=true`）。本机 Node 为 22.23，`engines` 要求 24.21，仅警告。
 - 执行者调整（D34）：OpenCode 的 M3.1 不再免费，主力改为 MiniMax Code；OpenCode 只用 `*-free` 模型辅助。
