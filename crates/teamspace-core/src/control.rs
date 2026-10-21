@@ -11,6 +11,10 @@
 //! 放在应用数据目录下一个 0700 的专用子目录里（其他本机用户连目录都进不去）。
 //! 路径已存在时：已有进程在监听就报错，不覆盖；没人监听（上次退出留下的残留）就删掉重建；
 //! 路径上不是 socket 文件时报错并给出可操作的中文提示（宿主应用据此提示用户，应用本身照常运行）。
+//!
+//! 「有人在监听」要握手确认：连得上不等于有人在服务——macOS 上并行启动子进程时，监听 socket 的
+//! 文件描述符可能被子进程继承，旧监听关闭后仍能连上。所以连上后发一次握手请求
+//! （`{"id":0,"cmd":"__ping"}`），对方在短时间内应答才算真的有监听者。
 
 #[cfg(unix)]
 mod imp {
@@ -30,6 +34,12 @@ mod imp {
 
     /// 单行请求的上限（1 MiB）：本机失控的客户端不能靠一行把内存吃光。
     pub(super) const MAX_LINE_BYTES: usize = 1024 * 1024;
+    /// 探测 socket 上是否真有监听者的握手命令。真正的监听者必须应答它。
+    pub(super) const PROBE_CMD: &str = "__ping";
+    /// 探测应答的编号。
+    const PROBE_ID: i64 = 0;
+    /// 探测应答的等待上限：超过这个时间没应答就当残留。
+    const PROBE_TIMEOUT: Duration = Duration::from_millis(500);
     /// 读请求的超时：对端不发数据也不断开时，不长期占着一条连接。
     const READ_TIMEOUT: Duration = Duration::from_secs(30);
     /// 同时在线的控制连接上限。
@@ -128,6 +138,11 @@ mod imp {
     /// 准备 socket 路径：有人监听就报错（不覆盖），没人监听的残留 socket 文件删掉重建。
     ///
     /// 路径上不是 socket 文件（普通文件、目录等）时报错，不动用户的数据，并给出可操作的中文提示。
+    ///
+    /// 「有人在监听」不能只看连不连得上：macOS 上并行启动子进程时，监听 socket 的文件描述符
+    /// 可能被子进程继承，旧监听关闭后内核仍认得这个 socket，探测照样连得上。这时若直接判定
+    /// 「已有进程在监听」，重新绑定就被挡住，应用再也起不来。所以连上之后还要握手一次
+    /// （[`PROBE_CMD`]）：真正的监听者必须应答；收不到应答就当残留，删掉重建。
     fn prepare_path(path: &Path) -> std::io::Result<()> {
         let meta = match std::fs::symlink_metadata(path) {
             Ok(meta) => meta,
@@ -145,10 +160,18 @@ mod imp {
             ));
         }
         match UnixStream::connect(path) {
-            Ok(_) => Err(std::io::Error::new(
-                std::io::ErrorKind::AddrInUse,
-                format!("控制 socket 已被占用：{}（已有进程在监听）", path.display()),
-            )),
+            Ok(stream) => {
+                if probe_is_live(&stream) {
+                    Err(std::io::Error::new(
+                        std::io::ErrorKind::AddrInUse,
+                        format!("控制 socket 已被占用：{}（已有进程在监听）", path.display()),
+                    ))
+                } else {
+                    // 连得上但没人应答：残留（监听 fd 被子进程继承之类），删掉重建。
+                    std::fs::remove_file(path)?;
+                    Ok(())
+                }
+            }
             // 有人在监听之外的失败（连不上但文件在）视为残留，删掉重建。
             Err(err)
                 if matches!(
@@ -161,6 +184,53 @@ mod imp {
             }
             Err(err) => Err(err),
         }
+    }
+
+    /// 探测 socket 上是否真有监听者：发一次握手请求，看对方是否应答。
+    ///
+    /// 应答在 [`PROBE_TIMEOUT`] 内到达且格式正确才算「有人在听」；
+    /// 超时、连接被关、应答不是合法 JSON，都当作残留。
+    fn probe_is_live(stream: &UnixStream) -> bool {
+        let mut stream = match stream.try_clone() {
+            Ok(clone) => clone,
+            Err(_) => return false,
+        };
+        if stream.set_read_timeout(Some(PROBE_TIMEOUT)).is_err()
+            || stream.set_write_timeout(Some(PROBE_TIMEOUT)).is_err()
+        {
+            return false;
+        }
+        let request = json!({ "id": PROBE_ID, "cmd": PROBE_CMD }).to_string();
+        if stream.write_all(request.as_bytes()).is_err()
+            || stream.write_all(b"\n").is_err()
+            || stream.flush().is_err()
+        {
+            return false;
+        }
+        let mut reader = BufReader::new(stream);
+        let mut line = String::new();
+        match reader.read_line(&mut line) {
+            Ok(0) => false,
+            Ok(_) => is_probe_reply(&line),
+            Err(_) => false,
+        }
+    }
+
+    /// 探测应答是不是有效的：合法 JSON、编号对得上、带 ok 或 err。
+    ///
+    /// 只看格式不看内容：对面可能是旧版本（不认识 `__ping`，回一个错误），
+    /// 那也说明对面确实有个活着的监听者，不能当成残留删掉。
+    pub(super) fn is_probe_reply(line: &str) -> bool {
+        let Ok(value) = serde_json::from_str::<Value>(line.trim()) else {
+            return false;
+        };
+        let Some(object) = value.as_object() else {
+            return false;
+        };
+        if object.get("id").and_then(Value::as_i64) != Some(PROBE_ID) {
+            return false;
+        }
+        object.contains_key("ok") || object.contains_key("err")
     }
 
     /// 接受连接：每个连接一个线程，连接处理期间不影响其他连接。
@@ -305,6 +375,11 @@ mod imp {
             .and_then(Value::as_str)
             .unwrap_or_default();
         let args = request.get("args").cloned().unwrap_or(Value::Null);
+        // 握手请求：只回答「这里有人在听吗」，不进命令分发、不需要任何权限。
+        // 别的进程正是靠它分辨「真的有监听者」与「只剩残留的 socket 文件」。
+        if cmd == PROBE_CMD {
+            return json!({ "id": id, "ok": "pong" }).to_string();
+        }
         match dispatch::dispatch(ts, Caller::Leader, cmd, &args) {
             Ok(value) => json!({ "id": id, "ok": value }).to_string(),
             Err(err) => json!({ "id": id, "err": err }).to_string(),
@@ -485,6 +560,70 @@ mod tests {
         assert!(reply.get("ok").is_some(), "{reply}");
         drop(ts);
         drop(server);
+    }
+
+    /// 监听者会应答握手请求：不进命令分发，也不需要任何权限。
+    #[test]
+    fn the_server_answers_the_probe_ping() {
+        let dir = tempfile::tempdir().unwrap();
+        let (_ts, path, _server) = serve_in(dir.path());
+
+        // 与探测端同样的请求：编号 0，命令 `__ping`。
+        let mut stream = UnixStream::connect(&path).unwrap();
+        stream
+            .write_all(format!("{{\"id\":0,\"cmd\":\"{}\"}}\n", super::imp::PROBE_CMD).as_bytes())
+            .unwrap();
+        stream.flush().unwrap();
+        let mut reader = BufReader::new(stream);
+        let mut reply = String::new();
+        reader.read_line(&mut reply).unwrap();
+        let value: Value = serde_json::from_str(&reply).unwrap();
+
+        assert_eq!(value["id"], 0, "{reply}");
+        assert_eq!(value["ok"], "pong", "{reply}");
+        assert!(value.get("err").is_none(), "{reply}");
+    }
+
+    /// 探测应答不是合法 JSON 时不算「有人在听」。
+    #[test]
+    fn a_malformed_probe_reply_is_not_taken_as_a_live_listener() {
+        assert!(!super::imp::is_probe_reply("不是 JSON"));
+        assert!(!super::imp::is_probe_reply("{}"));
+        assert!(!super::imp::is_probe_reply(r#"{"id":7,"ok":"pong"}"#));
+        assert!(super::imp::is_probe_reply(r#"{"id":0,"ok":"pong"}"#));
+        // 旧版本不认识 `__ping`，回的是错误：那也说明对面有活着的监听者。
+        assert!(super::imp::is_probe_reply(
+            r#"{"id":0,"err":{"kind":"invalid"}}"#
+        ));
+    }
+
+    /// 缺陷 M4-G-1：socket 文件还在、连得上，但没人应答握手（监听 fd 被子进程继承的残留）。
+    ///
+    /// 这种情况必须当残留处理：删掉重建，否则应用永远起不来。
+    #[test]
+    fn a_socket_that_does_not_answer_the_probe_is_treated_as_a_residue() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("teamspace-control.sock");
+        // 只监听、不接受连接：连得上（进 backlog），但不会有任何应答。
+        let listener = UnixListener::bind(&path).unwrap();
+
+        let config = HostConfig::default();
+        let ts = Arc::new(
+            Teamspace::open_with(
+                &dir.path().join("teamspace.db"),
+                Box::new(FakeProbe),
+                config,
+            )
+            .unwrap(),
+        );
+        let server = serve(Arc::clone(&ts), &path).unwrap();
+        assert!(path.exists());
+        // 新服务可用：说明残留已被清掉并重新绑定。
+        let reply = request(&path, "list_teams", json!({}));
+        assert!(reply.get("ok").is_some(), "{reply}");
+        drop(ts);
+        drop(server);
+        drop(listener);
     }
 
     /// 路径上是普通文件时报错，不覆盖用户的数据，并给出可操作的中文提示。
