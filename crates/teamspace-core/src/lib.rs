@@ -21,7 +21,7 @@ pub mod system_probe;
 mod tests;
 pub mod workspace_file;
 
-pub use api::{AgentCommand, HostConfig, RUN_EVENT, Teamspace};
+pub use api::{AgentCommand, HostConfig, NOTIFY_EVENT, RUN_EVENT, Teamspace};
 pub use error::{Error, ErrorKind, ErrorPayload, Result};
 pub use probe::SystemProbe;
 pub use run::RunSettings;

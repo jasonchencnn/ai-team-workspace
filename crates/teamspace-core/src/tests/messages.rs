@@ -265,8 +265,10 @@ fn stale_messages_expire_after_seven_days() {
         .unwrap();
     let expired = message_svc::expire_stale(&f.ts.lock(), &cutoff).unwrap();
     assert_eq!(expired.len(), 1);
-    assert_eq!(expired[0].id, message.id);
-    assert_eq!(expired[0].status, MessageStatus::Expired);
+    assert_eq!(expired[0].0.id, message.id);
+    assert_eq!(expired[0].0.status, MessageStatus::Expired);
+    // 原来的状态也带回来（推送时告诉前端状态是从哪儿变过来的）。
+    assert_eq!(expired[0].1, MessageStatus::Queued);
 
     let kinds: Vec<_> = events(&f, &team.id).iter().map(|e| e.kind).collect();
     assert!(kinds.contains(&EventKind::MessageExpired));

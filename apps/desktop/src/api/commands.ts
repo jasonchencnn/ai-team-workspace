@@ -14,13 +14,18 @@ import type { CreateHarnessInput } from "../bindings/CreateHarnessInput.js";
 import type { CreateRoleInput } from "../bindings/CreateRoleInput.js";
 import type { CreateTaskInput } from "../bindings/CreateTaskInput.js";
 import type { CreateTeamInput } from "../bindings/CreateTeamInput.js";
+import type { Decision } from "../bindings/Decision.js";
 import type { ErrorPayload } from "../bindings/ErrorPayload.js";
 import type { EventPage } from "../bindings/EventPage.js";
 import type { EventQuery } from "../bindings/EventQuery.js";
 import type { FileSearchQuery } from "../bindings/FileSearchQuery.js";
 import type { FileTasksQuery } from "../bindings/FileTasksQuery.js";
 import type { FileTaskRef } from "../bindings/FileTaskRef.js";
+import type { GetInboxInput } from "../bindings/GetInboxInput.js";
+import type { GetNotificationSettingsInput } from "../bindings/GetNotificationSettingsInput.js";
 import type { HarnessInstance } from "../bindings/HarnessInstance.js";
+import type { Inbox } from "../bindings/Inbox.js";
+import type { ListDecisionsQuery } from "../bindings/ListDecisionsQuery.js";
 import type { Message } from "../bindings/Message.js";
 import type { MessageThread } from "../bindings/MessageThread.js";
 import type { ListThreadsQuery } from "../bindings/ListThreadsQuery.js";
@@ -28,6 +33,9 @@ import type { MarkdownFile } from "../bindings/MarkdownFile.js";
 import type { MarkdownList } from "../bindings/MarkdownList.js";
 import type { MarkdownListQuery } from "../bindings/MarkdownListQuery.js";
 import type { MarkdownReadQuery } from "../bindings/MarkdownReadQuery.js";
+import type { NotificationSettings } from "../bindings/NotificationSettings.js";
+import type { NotifyEvent } from "../bindings/NotifyEvent.js";
+import type { RecordDecisionInput } from "../bindings/RecordDecisionInput.js";
 import type { RejectReviewInput } from "../bindings/RejectReviewInput.js";
 import type { RerunAfterConflictInput } from "../bindings/RerunAfterConflictInput.js";
 import type { ResolveMergeManuallyInput } from "../bindings/ResolveMergeManuallyInput.js";
@@ -53,6 +61,7 @@ import type { Team } from "../bindings/Team.js";
 import type { ThreadDetail } from "../bindings/ThreadDetail.js";
 import type { TeamOverview } from "../bindings/TeamOverview.js";
 import type { UpdateHarnessInput } from "../bindings/UpdateHarnessInput.js";
+import type { UpdateNotificationSettingsInput } from "../bindings/UpdateNotificationSettingsInput.js";
 import type { UpdateRoleInput } from "../bindings/UpdateRoleInput.js";
 import type { UpdateTaskInput } from "../bindings/UpdateTaskInput.js";
 import type { WorkspaceInfo } from "../bindings/WorkspaceInfo.js";
@@ -295,3 +304,36 @@ export const getThread = (threadId: string) => invoke<ThreadDetail>("get_thread"
 
 /** 重发一条失败或过期的消息。 */
 export const retryMessage = (messageId: string) => invoke<Message>("retry_message", { messageId });
+
+// ---------------------------------------------------------------- 待我处理、决策、通知
+
+/** 通知事件的名称（与 crates/teamspace-core 的 NOTIFY_EVENT 一致）。 */
+export const NOTIFY_EVENT = "teamspace:notify";
+
+/**
+ * 订阅通知事件（待验收、执行失败、受阻、消息已回复、消息需要处理、权限请求）与消息状态变化。
+ * 页面据此实时更新，不必轮询；返回取消订阅的函数。
+ */
+export const onNotifyEvent = (handler: (event: NotifyEvent) => void): Promise<UnlistenFn> =>
+  listen<NotifyEvent>(NOTIFY_EVENT, (event) => {
+    handler(event.payload);
+  });
+
+/** 待我处理：按类别聚合需要 Human 处理的事项；已处理的项按真实状态自动消失。 */
+export const getInbox = (input: GetInboxInput) => invoke<Inbox>("get_inbox", { input });
+
+/** 记录一条决策：写入决策，并在关联岗位的工作日志追加一行「决策：…」。 */
+export const recordDecision = (input: RecordDecisionInput) =>
+  invoke<Decision>("record_decision", { input });
+
+/** 决策列表：按团队（必填）、任务与消息筛选。 */
+export const listDecisions = (input: ListDecisionsQuery) =>
+  invoke<Decision[]>("list_decisions", { input });
+
+/** 通知订阅设置：按类别与岗位开关，默认全部开启。 */
+export const getNotificationSettings = (input: GetNotificationSettingsInput) =>
+  invoke<NotificationSettings>("get_notification_settings", { input });
+
+/** 修改通知订阅设置，返回修改后的设置。 */
+export const updateNotificationSettings = (input: UpdateNotificationSettingsInput) =>
+  invoke<NotificationSettings>("update_notification_settings", { input });
