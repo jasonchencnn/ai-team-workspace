@@ -12,9 +12,9 @@ import {
   diffDraft,
   draftChanged,
   draftFromSettings,
-  isRoleEnabled,
   NOTIFICATION_CATEGORY_DEFAULT_ROLES,
   NOTIFICATION_CATEGORY_SEVERITY,
+  roleSwitchValue,
   setCategoryEnabled,
   setRoleEnabled,
   type SubscriptionDraft,
@@ -194,10 +194,12 @@ export function NotificationSettingsPage() {
                         <span className="notify-settings__no-role">团队里还没有岗位</span>
                       ) : (
                         category.roles.map((role) => {
+                          // 总开关关着时岗位开关显示为禁用，但保留岗位自己的值：
+                          // 显示成「全关」会让用户以为岗位设置没了，再次保存就冲掉了。
                           const on =
                             draft === null
                               ? role.enabled
-                              : isRoleEnabled(draft, category.category, role.roleId);
+                              : roleSwitchValue(draft, category.category, role.roleId);
                           return (
                             <label className="notify-settings__role" key={role.roleId}>
                               <input

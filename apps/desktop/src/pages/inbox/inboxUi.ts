@@ -299,6 +299,20 @@ export function isRoleEnabled(
 }
 
 /**
+ * 岗位开关自己的值：不受类别总开关影响。
+ *
+ * 总开关关着时岗位开关显示为禁用，但要保留原来的值 —— 否则用户看到的岗位设置
+ * 全是「关」，再次保存就把岗位的设置冲掉了。
+ */
+export function roleSwitchValue(
+  draft: SubscriptionDraft,
+  category: NotificationCategory,
+  roleId: string,
+): boolean {
+  return draft.roleEnabled[category]?.[roleId] === true;
+}
+
+/**
  * 比较草稿与后端设置，算出要提交的改动。
  * 没有改动的类别不提交（后端「未列出的类别保持不变」）。
  */

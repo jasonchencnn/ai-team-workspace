@@ -22,6 +22,7 @@ import {
   isRoleEnabled,
   notificationTargetPath,
   reviewPath,
+  roleSwitchValue,
   setCategoryEnabled,
   setRoleEnabled,
   taskPath,
@@ -269,6 +270,34 @@ describe("通知订阅开关", () => {
     expect(diffDraft(SETTINGS, draft)).toEqual([]);
     expect(draftChanged(SETTINGS, draft)).toBe(false);
     expect(draftChanged(SETTINGS, setCategoryEnabled(draft, "permission", false))).toBe(true);
+  });
+
+  it("总开关关着时岗位开关保留自己的值", () => {
+    const off = setCategoryEnabled(draftFromSettings(SETTINGS), "task_review", false);
+
+    // 前端岗位本来就是开的，Leader 本来就是关的：总开关关着也要看得出来。
+    expect(roleSwitchValue(off, "task_review", "r-1")).toBe(true);
+    expect(roleSwitchValue(off, "task_review", "r-2")).toBe(false);
+    // 但实际生效值仍由总开关决定。
+    expect(isRoleEnabled(off, "task_review", "r-1")).toBe(false);
+  });
+
+  it("总开关关着时不提交未改动的岗位项", () => {
+    const off = setCategoryEnabled(draftFromSettings(SETTINGS), "task_review", false);
+    const updates = diffDraft(SETTINGS, off);
+
+    // 岗位开关原样保留，提交里不该带上任何岗位。
+    expect(updates).toEqual([{ category: "task_review", enabled: false, roles: [] }]);
+  });
+
+  it("重新打开总开关时岗位开关还是原来的值", () => {
+    const off = setCategoryEnabled(draftFromSettings(SETTINGS), "task_review", false);
+    const on = setCategoryEnabled(off, "task_review", true);
+
+    expect(roleSwitchValue(on, "task_review", "r-1")).toBe(true);
+    expect(roleSwitchValue(on, "task_review", "r-2")).toBe(false);
+    // 岗位设置没被动过，总开关也回到了原样：没有要提交的东西。
+    expect(diffDraft(SETTINGS, on)).toEqual([]);
   });
 });
 
