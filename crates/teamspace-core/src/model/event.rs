@@ -56,6 +56,9 @@ pub enum EventKind {
     MessageDeliveryFailed,
     /// 消息过期（超过 7 天仍未回复；`data.messageId`、`data.threadId`）。
     MessageExpired,
+    /// 记录了一条决策（`data.decisionId`、`data.text`；`roleId` 指向关联岗位，
+    /// 岗位工作日志据此追加一行「决策：…」）。
+    DecisionRecorded,
 }
 
 /// 操作者：Human、Leader，或 Teamspace 自己（执行引擎根据 Agent 的结果做的状态变化）。

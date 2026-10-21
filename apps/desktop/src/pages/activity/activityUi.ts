@@ -46,6 +46,7 @@ export const KIND_LABELS: Record<EventKind, string> = {
   message_replied: "消息已回复",
   message_delivery_failed: "消息投递失败",
   message_expired: "消息过期",
+  decision_recorded: "记录决策",
 };
 
 /** 活动种类列表（多选用），顺序与后端枚举一致；URL 里也按这个顺序拼接，保证地址栏稳定。 */

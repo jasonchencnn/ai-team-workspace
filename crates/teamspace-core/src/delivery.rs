@@ -21,7 +21,10 @@ use serde_json::{Value, json};
 use crate::acp::connection::{AgentProcess, Incoming, RpcFailure, SpawnSpec};
 use crate::acp::{self, METHOD_NOT_FOUND_CODE};
 use crate::api::Core;
-use crate::model::{AcpPreset, HandshakeStatus, Message, MessageSender, RunIsolation};
+use crate::model::{
+    AcpPreset, HandshakeStatus, Message, MessageSender, MessageStatus, NotificationCategory,
+    RunIsolation,
+};
 use crate::role_folder;
 use crate::run::env_profile;
 use crate::run::policy::Scope;
@@ -158,8 +161,19 @@ pub(crate) fn start(core: Arc<Core>) {
 /// 把超过期限仍未回复的消息转「过期」。
 pub(crate) fn expire_stale(core: &Core) {
     let cutoff = expiry_cutoff();
-    if let Err(err) = core.write(|tx| message_svc::expire_stale(tx, &cutoff)) {
-        eprintln!("teamspace delivery: 过期检查失败：{err}");
+    match core.write(|tx| message_svc::expire_stale(tx, &cutoff)) {
+        Ok(expired) => {
+            for (message, previous) in expired {
+                // 状态变化推给前端（页面不必轮询）。
+                core.emit_message_status(&message, Some(previous));
+                // 通知：过期消息要 Human 处理。
+                core.push_notification(crate::model::message_spec(
+                    &message,
+                    NotificationCategory::MessageAction,
+                ));
+            }
+        }
+        Err(err) => eprintln!("teamspace delivery: 过期检查失败：{err}"),
     }
 }
 
@@ -180,28 +194,39 @@ fn deliver(core: &Arc<Core>, message: &Message) {
     let context = match load_context(core, message) {
         Ok(context) => context,
         Err(reason) => {
-            fail(core, message, &reason);
+            fail(core, message, &reason, MessageStatus::Queued);
             return;
         }
     };
     // 状态转「投递中」。
-    if let Err(err) = core.write(|tx| message_svc::mark_delivering(tx, &message.id)) {
-        eprintln!("teamspace delivery {}: {err}", message.id);
-        return;
+    match core.update_message_status(MessageStatus::Queued, |tx| {
+        message_svc::mark_delivering(tx, &message.id)
+    }) {
+        Ok(_) => {}
+        Err(err) => {
+            eprintln!("teamspace delivery {}: {err}", message.id);
+            return;
+        }
     }
     match run_session(core, &context, message) {
         Ok(reply) => {
-            if let Err(err) = core.write(|tx| message_svc::mark_replied(tx, &message.id, &reply)) {
+            // 状态转「已回复」：状态事件与「消息已回复」通知都由内核统一推送。
+            if let Err(err) = core.update_message_status(MessageStatus::Delivering, |tx| {
+                message_svc::mark_replied(tx, &message.id, &reply)
+            }) {
                 eprintln!("teamspace delivery {}: {err}", message.id);
             }
         }
-        Err(reason) => fail(core, message, &reason),
+        Err(reason) => fail(core, message, &reason, MessageStatus::Delivering),
     }
 }
 
 /// 投递失败：状态转「失败」并记下原因。
-fn fail(core: &Arc<Core>, message: &Message, reason: &str) {
-    if let Err(err) = core.write(|tx| message_svc::mark_failed(tx, &message.id, reason)) {
+fn fail(core: &Arc<Core>, message: &Message, reason: &str, previous: MessageStatus) {
+    // 状态转「失败」：状态事件与「消息需要处理」通知都由内核统一推送。
+    if let Err(err) = core.update_message_status(previous, |tx| {
+        message_svc::mark_failed(tx, &message.id, reason)
+    }) {
         eprintln!("teamspace delivery {}: {err}", message.id);
     }
 }

@@ -7,7 +7,7 @@ use std::sync::Arc;
 use tauri::{Emitter, Manager};
 use teamspace_core::control::ControlServer;
 use teamspace_core::system_probe::LocalProbe;
-use teamspace_core::{HostConfig, RUN_EVENT, Teamspace};
+use teamspace_core::{HostConfig, NOTIFY_EVENT, RUN_EVENT, Teamspace};
 
 /// 同时生成命令名常量与 `generate_handler!`，保证二者不会漂移。
 macro_rules! register_commands {
@@ -81,6 +81,11 @@ register_commands!(
     list_threads,
     get_thread,
     retry_message,
+    get_inbox,
+    record_decision,
+    list_decisions,
+    get_notification_settings,
+    update_notification_settings,
 );
 
 /// 本机控制 socket 的文件名（放在应用数据目录下的 `control/` 子目录里）。
@@ -107,6 +112,12 @@ pub fn run() -> tauri::Result<()> {
             let handle = app.handle().clone();
             teamspace.set_run_listener(move |event| {
                 let _ = handle.emit(RUN_EVENT, event);
+            });
+            // 应用内通知（待验收、执行失败、受阻、消息已回复、消息需要处理、权限请求）
+            // 与消息状态变化推送给前端：页面不靠轮询也能实时看到。
+            let notify_handle = app.handle().clone();
+            teamspace.set_notify_listener(move |event| {
+                let _ = notify_handle.emit(NOTIFY_EVENT, event);
             });
             // 本机控制 socket：外部会话（Leader）经它操作 Teamspace，权限边界在内核里把守。
             let socket_path = dir.join(CONTROL_SOCKET_DIR).join(CONTROL_SOCKET_NAME);

@@ -12,7 +12,7 @@ use time::OffsetDateTime;
 use crate::error::{Error, Result};
 
 /// 当前 schema 版本。
-pub(crate) const SCHEMA_VERSION: i64 = 13;
+pub(crate) const SCHEMA_VERSION: i64 = 14;
 
 const SCHEMA_V1: &str = r#"
 CREATE TABLE teams (
@@ -388,9 +388,39 @@ CREATE INDEX messages_to_role ON messages (to_role_id, status, created_at);
 CREATE INDEX messages_status ON messages (status, created_at);
 "#;
 
+/// v14：决策记录与应用内通知的订阅设置（M5-02）。
+///
+/// - `decisions`：Human 拍板的决策。结构化保存，供 `list_decisions` 查询；同一决策还会写一条
+///   `decision_recorded` 活动，岗位工作日志据此追加一行「决策：…」。
+/// - `notification_settings`：通知订阅。`scope` 为 `*` 表示该类别的总开关，否则是岗位 id；
+///   没有记录时默认开启，因此这张表只存「关掉」或「显式打开」的选择。
+const SCHEMA_V14: &str = r#"
+CREATE TABLE decisions (
+    id           TEXT PRIMARY KEY,
+    team_id      TEXT NOT NULL REFERENCES teams (id),
+    task_id      TEXT REFERENCES tasks (id),
+    message_id   TEXT REFERENCES messages (id),
+    role_id      TEXT REFERENCES roles (id),
+    text         TEXT NOT NULL CHECK (text <> ''),
+    resumed_task INTEGER NOT NULL DEFAULT 0 CHECK (resumed_task IN (0, 1)),
+    created_at   TEXT NOT NULL
+);
+CREATE INDEX decisions_team ON decisions (team_id, created_at);
+CREATE INDEX decisions_task ON decisions (task_id);
+CREATE INDEX decisions_message ON decisions (message_id);
+
+CREATE TABLE notification_settings (
+    team_id  TEXT NOT NULL REFERENCES teams (id),
+    category TEXT NOT NULL,
+    scope    TEXT NOT NULL,
+    enabled  INTEGER NOT NULL CHECK (enabled IN (0, 1)),
+    PRIMARY KEY (team_id, category, scope)
+);
+"#;
+
 const MIGRATIONS: &[&str] = &[
     SCHEMA_V1, SCHEMA_V2, SCHEMA_V3, SCHEMA_V4, SCHEMA_V5, SCHEMA_V6, SCHEMA_V7, SCHEMA_V8,
-    SCHEMA_V9, SCHEMA_V10, SCHEMA_V11, SCHEMA_V12, SCHEMA_V13,
+    SCHEMA_V9, SCHEMA_V10, SCHEMA_V11, SCHEMA_V12, SCHEMA_V13, SCHEMA_V14,
 ];
 
 /// 打开数据库：WAL 日志、synchronous=NORMAL、开启外键，并迁移到当前版本。
@@ -1016,5 +1046,80 @@ mod tests {
         let t = now();
         assert_eq!(t.len(), "2026-10-12T06:06:01.262Z".len());
         assert!(t.ends_with('Z'));
+    }
+
+    /// v13 的库升到 v14：决策表与通知订阅表建好，老数据不受影响。
+    #[test]
+    fn v13_migrates_to_v14_with_decision_and_notification_tables() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("t.db");
+        {
+            let conn = Connection::open(&path).unwrap();
+            for sql in &MIGRATIONS[..13] {
+                conn.execute_batch(sql).unwrap();
+            }
+            conn.execute_batch("PRAGMA user_version = 13;").unwrap();
+        }
+        let conn = open(&path).unwrap();
+        let v: i64 = conn
+            .pragma_query_value(None, "user_version", |r| r.get(0))
+            .unwrap();
+        assert_eq!(v, SCHEMA_VERSION);
+        for (table, columns) in [
+            (
+                "decisions",
+                [
+                    "id",
+                    "team_id",
+                    "task_id",
+                    "message_id",
+                    "role_id",
+                    "text",
+                    "resumed_task",
+                    "created_at",
+                ]
+                .as_slice(),
+            ),
+            (
+                "notification_settings",
+                ["team_id", "category", "scope", "enabled"].as_slice(),
+            ),
+        ] {
+            for column in columns {
+                let n: i64 = conn
+                    .query_row(
+                        &format!(
+                            "SELECT COUNT(*) FROM pragma_table_info('{table}') WHERE name = ?1"
+                        ),
+                        [column],
+                        |r| r.get(0),
+                    )
+                    .unwrap();
+                assert_eq!(n, 1, "{table}.{column}");
+            }
+        }
+        // 订阅设置一行一个（团队，类别，作用域）：重复写入是替换而不是新增。
+        conn.execute_batch(
+            "INSERT INTO teams (id, name, workspace_path, created_at, updated_at)
+             VALUES ('t1', '团队', '/tmp', '2026-10-12T00:00:00.000Z', '2026-10-12T00:00:00.000Z');",
+        )
+        .unwrap();
+        for _ in 0..2 {
+            conn.execute(
+                "INSERT INTO notification_settings (team_id, category, scope, enabled)
+                 VALUES ('t1', 'task_review', '*', 0)
+                 ON CONFLICT (team_id, category, scope) DO UPDATE SET enabled = 0",
+                [],
+            )
+            .unwrap();
+        }
+        let rows: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM notification_settings WHERE team_id = 't1'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(rows, 1);
     }
 }

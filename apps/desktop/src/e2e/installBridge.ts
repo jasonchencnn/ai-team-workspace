@@ -2,10 +2,11 @@
 // 把所有 invoke 转发给 crates/teamspace-e2e-bridge 的 HTTP 服务（真实内核），不使用任何假数据。
 // 执行事件：桥接把内核推送的事件缓存起来，这里每 300ms 轮询一次（`__poll_run_events`），再用 mock 的
 // 事件系统 emit 给 `listen` 的订阅者，页面代码与正式应用一致（订阅 RUN_EVENT）。
+// 通知事件（应用内通知、消息状态变化）另有一份缓存（`__poll_notify_events`），emit 到 NOTIFY_EVENT。
 import { emit } from "@tauri-apps/api/event";
 import { mockIPC } from "@tauri-apps/api/mocks";
 
-import { RUN_EVENT } from "../api/commands.js";
+import { NOTIFY_EVENT, RUN_EVENT } from "../api/commands.js";
 
 interface BridgeReply {
   ok?: unknown;
@@ -68,6 +69,28 @@ function pollRunEvents(bridge: string): void {
   void tick();
 }
 
+/** 通知事件（应用内通知、消息状态变化）走自己的缓存与事件名。 */
+function pollNotifyEvents(bridge: string): void {
+  let after: number | null = null;
+  const tick = async () => {
+    try {
+      const polled = (await call(bridge, "__poll_notify_events", {
+        after: after ?? 0,
+      })) as PolledEvents;
+      if (after !== null) {
+        for (const item of polled.events) {
+          await emit(NOTIFY_EVENT, item.event);
+        }
+      }
+      after = polled.next;
+    } catch {
+      // 桥接暂时不可用时下次再试。
+    }
+    setTimeout(() => void tick(), POLL_INTERVAL_MS);
+  };
+  void tick();
+}
+
 export function installBridge(): void {
   const bridge = import.meta.env.VITE_E2E_BRIDGE;
   if (typeof bridge !== "string" || bridge === "") {
@@ -91,5 +114,6 @@ export function installBridge(): void {
   );
   if (!blocked) {
     pollRunEvents(bridge);
+    pollNotifyEvents(bridge);
   }
 }

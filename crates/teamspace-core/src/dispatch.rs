@@ -74,6 +74,8 @@ pub const LEADER_ALLOWED: &[&str] = &[
     "send_message",
     "list_threads",
     "get_thread",
+    // 待我处理（只读：Leader 可以看，但不能记录决策、也不能改通知订阅）
+    "get_inbox",
 ];
 
 /// 分发一条命令：按 `cmd` 找到内核方法，参数取自 `args`。
@@ -181,6 +183,11 @@ pub fn dispatch(
         "write_workspace_mcp_config" => {
             out(ts.write_workspace_mcp_config(&arg::<String>(args, "teamId")?))
         }
+        "get_inbox" => out(ts.get_inbox(arg(args, "input")?)),
+        "record_decision" => out(ts.record_decision(arg(args, "input")?)),
+        "list_decisions" => out(ts.list_decisions(arg(args, "input")?)),
+        "get_notification_settings" => out(ts.get_notification_settings(arg(args, "input")?)),
+        "update_notification_settings" => out(ts.update_notification_settings(arg(args, "input")?)),
         other => Err(bad(format!("未知命令：{other}"))),
     }
 }
@@ -259,6 +266,10 @@ fn operation_label(cmd: &str) -> String {
         "retry_message" => "重发消息",
         "leader_integration" => "生成 Leader 接入配置",
         "write_workspace_mcp_config" => "写入工作空间 .mcp.json",
+        "record_decision" => "记录决策",
+        "list_decisions" => "查看决策记录",
+        "get_notification_settings" => "查看通知订阅设置",
+        "update_notification_settings" => "修改通知订阅设置",
         other => other,
     }
     .to_owned()

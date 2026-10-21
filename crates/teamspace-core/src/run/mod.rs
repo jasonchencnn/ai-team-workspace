@@ -2031,8 +2031,11 @@ impl Driver {
             run_id: self.run.id.clone(),
             task_id: self.run.task_id.clone(),
             team_id: self.run.team_id.clone(),
-            prompt: p,
+            prompt: p.clone(),
         });
+        // 通知：权限请求要 Human 答复（订阅关了就不推）。
+        self.core
+            .push_notification(crate::model::permission_spec(&self.run, &p));
     }
 
     /// 记录 Human 对编辑请求的允许。目标路径以这次编辑的 diff 为准；没有 diff 时逐个收下请求里的路径。
@@ -2669,6 +2672,42 @@ impl Driver {
         }
         self.core.sync_role_folders(&self.run.team_id);
         self.core.emit_run(&self.run.id);
+        // 通知：任务进入待验收、执行失败或受阻（事务提交后再推，不持锁）。
+        if matches!(saved, Some(Some(_))) {
+            self.notify_task_state(task_to, reason.as_deref(), status);
+        }
+    }
+
+    /// 任务状态变化后的通知：待验收、执行失败、受阻。
+    fn notify_task_state(
+        &self,
+        task_to: Option<TaskStatus>,
+        reason: Option<&str>,
+        status: RunStatus,
+    ) {
+        let Some(to) = task_to else {
+            return;
+        };
+        if to != TaskStatus::Review && to != TaskStatus::Blocked {
+            return;
+        }
+        let Some((task, run)) = self.db(|tx| {
+            Ok((
+                task::get(tx, &self.run.task_id)?,
+                store_run::get(tx, &self.run.id)?,
+            ))
+        }) else {
+            return;
+        };
+        let spec = match to {
+            TaskStatus::Review => crate::model::task_review_spec(&task, Some(&run)),
+            TaskStatus::Blocked => {
+                let reason = reason.unwrap_or("任务受阻");
+                crate::model::task_blocked_spec(&task, reason, status == RunStatus::Failed)
+            }
+            _ => return,
+        };
+        self.core.push_notification(spec);
     }
 }
 

@@ -1,11 +1,14 @@
 //! 通过 [`Teamspace`] 公开命令测试业务规则。全部使用临时目录和假探测，不调用真实 Git、CLI 或 Agent。
 
+mod decisions;
 mod dependencies;
 mod events;
 mod files;
 mod folders;
 mod harnesses;
+mod inbox;
 mod messages;
+mod notifications;
 #[cfg(unix)]
 mod qa_round2;
 #[cfg(unix)]
