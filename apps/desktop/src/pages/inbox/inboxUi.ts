@@ -8,6 +8,8 @@ import type { NotificationCategory } from "../../bindings/NotificationCategory.j
 import type { NotificationCategorySetting } from "../../bindings/NotificationCategorySetting.js";
 import type { NotificationCategoryUpdate } from "../../bindings/NotificationCategoryUpdate.js";
 import type { NotificationSettings } from "../../bindings/NotificationSettings.js";
+import type { PermissionOption } from "../../bindings/PermissionOption.js";
+import type { PermissionPrompt } from "../../bindings/PermissionPrompt.js";
 
 /** 类别顺序：与后端 `InboxCategory::ALL` 一致（后端按这个顺序出事项）。 */
 export const INBOX_CATEGORY_ORDER: readonly InboxCategory[] = [
@@ -168,8 +170,51 @@ export function notificationTargetPath(teamId: string, notification: Notificatio
   return activityPath(teamId);
 }
 
-// ---------------------------------------------------------------- 通知中心
+// ---------------------------------------------------------------- 待答复权限
 
+/**
+ * 在 Agent 给出的权限选项里挑一个：放行优先 `allow_once`，拒绝优先 `reject_once`
+ * （其次 `allow_always` / `reject_always`）。与内核 `delivery.rs` 的挑法一致：
+ * `optionId` 可能是随机串，先按 `kind` 挑，选项没带 `kind` 时才退回按标识前缀匹配。
+ */
+export function pickPermissionOption(
+  options: readonly PermissionOption[],
+  intent: "allow" | "reject",
+): PermissionOption | null {
+  const kinds =
+    intent === "allow" ? ["allow_once", "allow_always"] : ["reject_once", "reject_always"];
+  for (const kind of kinds) {
+    const found = options.find((option) => option.kind === kind);
+    if (found !== undefined) {
+      return found;
+    }
+  }
+  const prefix = intent === "allow" ? "allow" : "reject";
+  return options.find((option) => option.optionId.startsWith(prefix)) ?? null;
+}
+
+/**
+ * 权限请求的「范围」一行：命令优先，其次路径，都没有就说工作目录内的操作。
+ * 只讲 Agent 报上来的范围，不替它推断。
+ */
+export function permissionScopeText(prompt: PermissionPrompt): string {
+  if (prompt.command !== null && prompt.command.trim() !== "") {
+    return prompt.command;
+  }
+  if (prompt.paths.length > 0) {
+    return prompt.paths.join("、");
+  }
+  return "Agent 未声明具体路径";
+}
+
+/**
+ * 权限请求的动作一行：工具类型 + Agent 给的标题。
+ */
+export function permissionActionText(prompt: PermissionPrompt): string {
+  return prompt.title.trim() === "" ? "一项需要确认的操作" : prompt.title;
+}
+
+// ---------------------------------------------------------------- 通知中心
 /** 会话内收到的一条通知（带已读标记）。通知不落库，只在页面打开期间攒着。 */
 export interface SessionNotification {
   notification: Notification;

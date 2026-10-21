@@ -5,6 +5,8 @@ import type { InboxCounts } from "../src/bindings/InboxCounts.js";
 import type { InboxItem } from "../src/bindings/InboxItem.js";
 import type { Notification } from "../src/bindings/Notification.js";
 import type { NotificationSettings } from "../src/bindings/NotificationSettings.js";
+import type { PermissionOption } from "../src/bindings/PermissionOption.js";
+import type { PermissionPrompt } from "../src/bindings/PermissionPrompt.js";
 import {
   activityPath,
   canResumeTask,
@@ -21,6 +23,9 @@ import {
   inboxTotal,
   isRoleEnabled,
   notificationTargetPath,
+  permissionActionText,
+  permissionScopeText,
+  pickPermissionOption,
   reviewPath,
   roleSwitchValue,
   setCategoryEnabled,
@@ -354,6 +359,73 @@ describe("跳转目标", () => {
     expect(notificationTargetPath("team-1", withTask)).toBe(taskPath("team-1", "t-1"));
     expect(notificationTargetPath("team-1", withThread)).toBe(threadPath("team-1", "th-1"));
     expect(notificationTargetPath("team-1", bare)).toBe(activityPath("team-1"));
+  });
+});
+
+describe("待答复权限", () => {
+  /** 造一条权限请求。 */
+  function prompt(partial: Partial<PermissionPrompt> = {}): PermissionPrompt {
+    return {
+      requestId: partial.requestId ?? "req-1",
+      toolCallId: partial.toolCallId ?? "call-1",
+      title: partial.title ?? "运行 cargo test",
+      toolKind: partial.toolKind ?? "execute",
+      paths: partial.paths ?? [],
+      command: partial.command ?? null,
+      reason: partial.reason ?? "执行命令需要确认",
+      options: partial.options ?? [],
+      requestedAt: partial.requestedAt ?? "2026-10-21T00:00:00Z",
+    };
+  }
+
+  it("放行优先选 allow_once，拒绝优先选 reject_once", () => {
+    const options: PermissionOption[] = [
+      { optionId: "always", name: "总是允许", kind: "allow_always" },
+      { optionId: "once", name: "允许一次", kind: "allow_once" },
+      { optionId: "no", name: "拒绝", kind: "reject_once" },
+    ];
+
+    expect(pickPermissionOption(options, "allow")?.optionId).toBe("once");
+    expect(pickPermissionOption(options, "reject")?.optionId).toBe("no");
+  });
+
+  it("没有 allow_once 时退回 allow_always", () => {
+    const options: PermissionOption[] = [
+      { optionId: "always", name: "总是允许", kind: "allow_always" },
+      { optionId: "never", name: "总是拒绝", kind: "reject_always" },
+    ];
+
+    expect(pickPermissionOption(options, "allow")?.optionId).toBe("always");
+    expect(pickPermissionOption(options, "reject")?.optionId).toBe("never");
+  });
+
+  it("选项没带 kind 时按标识前缀兜底（与内核同一套挑法）", () => {
+    const options: PermissionOption[] = [
+      { optionId: "reject-x", name: "拒绝", kind: "custom" },
+      { optionId: "allow-x", name: "允许", kind: "custom" },
+    ];
+
+    expect(pickPermissionOption(options, "allow")?.optionId).toBe("allow-x");
+    expect(pickPermissionOption(options, "reject")?.optionId).toBe("reject-x");
+  });
+
+  it("没有对应选项时返回 null", () => {
+    const options: PermissionOption[] = [{ optionId: "x", name: "随便", kind: "custom" }];
+
+    expect(pickPermissionOption(options, "allow")).toBeNull();
+    expect(pickPermissionOption(options, "reject")).toBeNull();
+    expect(pickPermissionOption([], "allow")).toBeNull();
+  });
+
+  it("范围优先给命令，其次路径，都没有就说没声明", () => {
+    expect(permissionScopeText(prompt({ command: "cargo test" }))).toBe("cargo test");
+    expect(permissionScopeText(prompt({ paths: ["/a", "/b"] }))).toBe("/a、/b");
+    expect(permissionScopeText(prompt())).toBe("Agent 未声明具体路径");
+  });
+
+  it("动作一行用 Agent 给的标题，空标题有兜底", () => {
+    expect(permissionActionText(prompt({ title: "写入 README.md" }))).toBe("写入 README.md");
+    expect(permissionActionText(prompt({ title: "  " }))).toBe("一项需要确认的操作");
   });
 });
 
