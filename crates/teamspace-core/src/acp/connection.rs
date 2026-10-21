@@ -31,6 +31,9 @@ use crate::system_probe::{
 const STDERR_TAIL: usize = 16 * 1024;
 /// 阻塞请求检查中止条件的间隔。
 const ABORT_POLL: Duration = Duration::from_millis(50);
+/// `wait_stderr` 最多等读取线程结束的时间。若 Agent 退出后子孙进程仍持有继承来的
+/// stderr 管道，管道不会关闭，读取线程不会退出；超时后直接读当前缓冲。
+const STDERR_JOIN_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// Agent 主动发来的消息。
 #[derive(Debug, Clone, PartialEq)]
@@ -294,6 +297,8 @@ pub struct AgentProcess {
     child: Mutex<Child>,
     pub conn: Connection,
     stderr: Arc<Mutex<Vec<u8>>>,
+    /// 读取线程结束时发一个 `()`；`wait_stderr` 用 `recv_timeout` 做有上限的等待。
+    stderr_done: Mutex<Option<mpsc::Receiver<()>>>,
 }
 
 impl AgentProcess {
@@ -325,12 +330,17 @@ impl AgentProcess {
         };
         let stderr = Arc::new(Mutex::new(Vec::new()));
         let tail = Arc::clone(&stderr);
-        thread::spawn(move || keep_tail(stderr_pipe, &tail));
+        let (done_tx, done_rx) = mpsc::channel();
+        thread::spawn(move || {
+            keep_tail(stderr_pipe, &tail);
+            let _ = done_tx.send(());
+        });
         let conn = Connection::start(stdout, stdin, on_incoming);
         Ok(Self {
             child: Mutex::new(child),
             conn,
             stderr,
+            stderr_done: Mutex::new(Some(done_rx)),
         })
     }
 
@@ -357,7 +367,19 @@ impl AgentProcess {
         }
     }
 
+    /// 等 stderr 读取线程结束（管道已关闭），确保缓冲区完整。
+    ///
+    /// 最多等 [`STDERR_JOIN_TIMEOUT`]：Agent 退出后若子孙进程仍持有继承来的 stderr
+    /// 管道，读取线程不会退出；超时后直接读当前缓冲，不阻塞调用方。
+    pub fn wait_stderr(&self) {
+        if let Some(rx) = lock(&self.stderr_done).take() {
+            let _ = rx.recv_timeout(STDERR_JOIN_TIMEOUT);
+        }
+    }
+
     /// stderr 最后一行非空内容（截断）。
+    ///
+    /// 进程退出后先调 [`wait_stderr`] 确保缓冲区完整；进程存活时直接读当前缓冲。
     pub fn stderr_tail(&self) -> Option<String> {
         let text = String::from_utf8_lossy(&lock(&self.stderr)).into_owned();
         super::last_meaningful_line(&text)
@@ -603,6 +625,7 @@ mod tests {
             process.exit_status(Duration::from_secs(5)).as_deref(),
             Some("退出码 3")
         );
+        process.wait_stderr();
         assert_eq!(
             process.stderr_tail().as_deref(),
             Some("boom: not logged in")

@@ -1317,7 +1317,12 @@ impl Driver {
 
     fn agent_exited(&self) -> End {
         let (exit, stderr) = match &self.process {
-            Some(p) => (p.exit_status(EXIT_WAIT), p.stderr_tail()),
+            Some(p) => {
+                let exit = p.exit_status(EXIT_WAIT);
+                // 进程已退出：等 stderr 读取线程结束，缓冲区才完整。
+                p.wait_stderr();
+                (exit, p.stderr_tail())
+            }
             None => (None, None),
         };
         let mut text = match exit {
