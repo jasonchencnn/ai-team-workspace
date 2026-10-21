@@ -413,7 +413,7 @@ M4 的 Leader 编排没有对应画板，交互主要发生在 Leader 自己的�
 | M4-05 | 使用记录 3、4、7：内核比较前后内容，确认工作日志只在末尾追加时自动允许（D17）；任务说明包写明禁止 `git stash`、对照基线改用临时 worktree；岗位页前缀自动建议与手动输入的时序竞争 | MiniMax Code | 04（同在执行内核） | 各有测试；e2e `z-qa-exploratory` 06 连跑 10 次通过 | ✅ 已合入 |
 | M4-06 | 端到端：模拟 Leader 的 MCP 客户端脚本走通「建两个任务并设依赖 → 开始执行（Mock）→ 查询进度 → 查看验收 → 退回 → 再查结果」；Leader 越权调用被拒并写活动 | OpenCode | 02、04 | 纳入 `pnpm run e2e` 或独立脚本并进 check | ✅ 已合入（Leader 全流程 7 步，连跑 5 次稳定） |
 | M4-07 | 交叉审查：MiniMax Code 审 OpenCode 的 M4-02/03/06，OpenCode 审 MiniMax Code 的 M4-01/04/05 | 两者互审 | 01–06 | 问题回派原执行者 | ✅ A（审 OpenCode）严重 2、一般 5、轻微 8；B（审 MiniMax Code）严重 1、一般 5、轻微 5；两边修复均已合入（`01abf2a`） |
-| M4-08 | 回归与真实冒烟：agy 独立回归；用 Claude Code 当 Leader（接入 teamspace-mcp），执行岗位用 Mock，走一遍可用标志（会消耗少量 Claude 额度）；然后交你校验 | agy / 总指挥 / 你 | 07 | 你校验通过 | 待开始 |
+| M4-08 | 回归与真实冒烟：agy 独立回归；用 Claude Code 当 Leader（接入 teamspace-mcp），执行岗位用 Mock，走一遍可用标志（会消耗少量 Claude 额度）；然后交你校验 | agy / 总指挥 / 你 | 07 | 你校验通过 | ✅ agy 回归 18 例（17 通过，1 例为缺陷 M4-G-1 待修）；Claude Code 当 Leader 的真实冒烟按 D27 并入 M7-05；阶段校验取消（D27） |
 
 使用记录 6（Claude Code「总是允许」按完整命令记忆）属于 Agent 适配器行为，放到 M5 的权限策略里一起考虑；记录 8（权限只能在界面答复）按决策 3 保持人工，由 M4-02 提供查询。
 
