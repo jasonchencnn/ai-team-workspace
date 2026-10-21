@@ -54,10 +54,18 @@ export function shouldPollMessages(messages: Message[]): boolean {
 }
 
 /**
+ * 线程列表里还有排队中或投递中的消息时，界面要继续刷新。
+ *
+ * 列表直接带最近一条消息的状态（`lastStatus`），不必再逐个取线程详情。
+ */
+export function shouldPollThreads(threads: MessageThread[]): boolean {
+  return threads.some((thread) => isPendingStatus(thread.lastStatus));
+}
+
+/**
  * 发送方显示名。
  *
- * 岗位发出的消息里 `senderRoleId` 一般是空的（内核还没记录发信岗位），
- * 这时退回接收岗位的名字——内核给线程登记的参与方也是这个岗位。
+ * 岗位发出的消息里 `senderRoleId` 是发信岗位（内核已记录），没有时退回接收岗位的名字。
  */
 export function senderName(message: Message, roleNames: Map<string, string>): string {
   if (message.sender === "human" || message.sender === "leader") {
@@ -146,14 +154,9 @@ export function formatMessageTime(iso: string, now: Date): string {
   return `${String(date.getMonth() + 1)}/${String(date.getDate())} ${clock(date)}`;
 }
 
-/** 线程列表项的摘要：最近一条消息的正文（去掉换行，最多 60 个字）。 */
-export function threadPreview(messages: Message[]): string {
-  const last = latestMessage(messages);
-  if (last === null) {
-    return "";
-  }
-  const text = last.body.replace(/\s+/g, " ").trim();
-  return text.length <= 60 ? text : `${text.slice(0, 60)}…`;
+/** 线程列表项的摘要：后端给的最近一条消息摘要（正文压成一行，超长截断）。 */
+export function threadSnippet(thread: MessageThread): string {
+  return thread.lastSnippet ?? "";
 }
 
 /** 线程在列表里的排序：最近更新的在前（后端已排序，这里只做兜底）。 */

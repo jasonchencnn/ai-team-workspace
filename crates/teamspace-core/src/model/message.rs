@@ -102,6 +102,13 @@ pub struct MessageThread {
     pub created_at: String,
     /// 最近一条消息的时间。
     pub updated_at: String,
+    /// 最近一条消息的投递状态。
+    pub last_status: MessageStatus,
+    /// 最近一条消息的发送时间。
+    pub last_message_at: String,
+    /// 最近一条消息的摘要；可缺省。
+    #[ts(optional = nullable)]
+    pub last_snippet: Option<String>,
 }
 
 /// 一条消息。

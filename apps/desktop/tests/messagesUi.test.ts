@@ -4,6 +4,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import type { Message } from "../src/bindings/Message.js";
 import type { MessageStatus } from "../src/bindings/MessageStatus.js";
+import type { MessageThread } from "../src/bindings/MessageThread.js";
 import type { ThreadParticipant } from "../src/bindings/ThreadParticipant.js";
 import {
   MESSAGE_STATUS_LABELS,
@@ -20,7 +21,8 @@ import {
   senderName,
   serializeThreadFilters,
   shouldPollMessages,
-  threadPreview,
+  shouldPollThreads,
+  threadSnippet,
 } from "../src/pages/messages/messagesUi.js";
 import {
   createMessagePoller,
@@ -44,6 +46,23 @@ function messageWith(status: MessageStatus, extra: Partial<Message> = {}): Messa
     createdAt: "2026-10-21T02:31:00Z",
     deliveredAt: null,
     repliedAt: null,
+    ...extra,
+  };
+}
+
+/** 只用到界面关心字段的最小线程（列表项直接带最近一条消息的摘要）。 */
+function threadWith(extra: Partial<MessageThread> = {}): MessageThread {
+  return {
+    id: "thread-1",
+    teamId: "team-1",
+    taskId: null,
+    subject: "登录验收",
+    participants: [],
+    createdAt: "2026-10-21T02:30:00Z",
+    updatedAt: "2026-10-21T02:31:00Z",
+    lastStatus: "queued",
+    lastMessageAt: "2026-10-21T02:31:00Z",
+    lastSnippet: "请阅读登录验收规范并完成回归。",
     ...extra,
   };
 }
@@ -97,6 +116,14 @@ describe("轮询开合", () => {
     expect(shouldPollMessages([messageWith("failed")])).toBe(false);
     expect(shouldPollMessages([messageWith("replied"), messageWith("delivering")])).toBe(true);
     expect(shouldPollMessages([])).toBe(false);
+  });
+
+  it("线程列表里有排队中或投递中的线程时继续刷新", () => {
+    expect(shouldPollThreads([threadWith({ lastStatus: "queued" })])).toBe(true);
+    expect(shouldPollThreads([threadWith({ lastStatus: "delivering" })])).toBe(true);
+    expect(shouldPollThreads([threadWith({ lastStatus: "replied" })])).toBe(false);
+    expect(shouldPollThreads([threadWith({ lastStatus: "failed" })])).toBe(false);
+    expect(shouldPollThreads([])).toBe(false);
   });
 
   it("轮询间隔与执行详情一致，重复启动不会叠加定时器", () => {
@@ -178,17 +205,13 @@ describe("时间与摘要", () => {
     expect(formatMessageTime("不是时间", now)).toBe("不是时间");
   });
 
-  it("摘要取最后一条消息的正文并压成一行", () => {
-    const messages = [
-      messageWith("replied", { id: "m1", body: "第一条" }),
-      messageWith("replied", { id: "m2", body: "第二条\n换行" }),
-    ];
-    expect(latestMessage(messages)?.id).toBe("m2");
-    expect(threadPreview(messages)).toBe("第二条 换行");
+  it("摘要用后端给的最近一条消息摘要", () => {
+    expect(threadSnippet(threadWith())).toBe("请阅读登录验收规范并完成回归。");
+    expect(threadSnippet(threadWith({ lastSnippet: "第二条 换行" }))).toBe("第二条 换行");
   });
 
-  it("没有消息时摘要为空", () => {
+  it("没有摘要时为空", () => {
+    expect(threadSnippet(threadWith({ lastSnippet: null }))).toBe("");
     expect(latestMessage([])).toBeNull();
-    expect(threadPreview([])).toBe("");
   });
 });

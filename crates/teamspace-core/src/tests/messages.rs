@@ -633,3 +633,68 @@ fn a_leader_cannot_send_on_behalf_of_a_role() {
     assert_eq!(err.kind, ErrorKind::Invalid);
     assert!(err.message.contains("岗位"), "{}", err.message);
 }
+
+// ---------------------------------------------------------------- 线程摘要
+
+/// 线程列表直接带上最近一条消息的摘要：状态、时间与正文摘要。
+#[test]
+fn thread_list_carries_the_latest_message_summary() {
+    let f = fixture();
+    let (team, fe, _) = setup(&f);
+    let first = send(&f, &team.id, &fe.id, "第一条");
+    let second = send(&f, &team.id, &fe.id, "第二条");
+
+    let threads =
+        f.ts.list_threads(ListThreadsQuery {
+            team_id: team.id.clone(),
+            task_id: None,
+            role_id: None,
+        })
+        .unwrap();
+    assert_eq!(threads.len(), 1);
+    let thread = &threads[0];
+    assert_eq!(thread.id, first.thread_id);
+    assert_eq!(thread.last_status, MessageStatus::Queued);
+    assert_eq!(thread.last_snippet.as_deref(), Some("第二条"));
+    // 摘要里的时间是最近一条消息的发送时间，不是线程的更新时间。
+    assert_eq!(thread.last_message_at, second.created_at);
+
+    // 状态变化后摘要跟着变。
+    message_svc::mark_replied(&f.ts.lock(), &second.id, "已完成").unwrap();
+    let threads =
+        f.ts.list_threads(ListThreadsQuery {
+            team_id: team.id.clone(),
+            task_id: None,
+            role_id: None,
+        })
+        .unwrap();
+    assert_eq!(threads[0].last_status, MessageStatus::Replied);
+
+    // 线程详情里的摘要与列表一致。
+    let detail = f.ts.get_thread(&first.thread_id).unwrap();
+    assert_eq!(detail.thread.last_status, MessageStatus::Replied);
+    assert_eq!(detail.thread.last_snippet.as_deref(), Some("第二条"));
+    assert_eq!(detail.thread.last_message_at, second.created_at);
+}
+
+/// 摘要里的正文压成一行并截断。
+#[test]
+fn the_snippet_collapses_whitespace_and_truncates() {
+    let f = fixture();
+    let (team, fe, _) = setup(&f);
+    let body = format!("开头{}", " 换行\t并排 ".repeat(40));
+    send(&f, &team.id, &fe.id, &body);
+
+    let threads =
+        f.ts.list_threads(ListThreadsQuery {
+            team_id: team.id.clone(),
+            task_id: None,
+            role_id: None,
+        })
+        .unwrap();
+    let snippet = threads[0].last_snippet.as_deref().unwrap();
+    assert!(!snippet.contains('\n'), "{snippet}");
+    assert!(!snippet.contains("  "), "{snippet}");
+    assert!(snippet.ends_with('…'), "{snippet}");
+    assert_eq!(snippet.chars().count(), 61);
+}

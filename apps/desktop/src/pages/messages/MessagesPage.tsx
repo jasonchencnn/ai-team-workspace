@@ -1,4 +1,4 @@
-import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useMemo, useState } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router";
 
@@ -22,7 +22,6 @@ import {
   Tag,
 } from "../../components/index.js";
 import type { MessageThread } from "../../bindings/MessageThread.js";
-import type { ThreadDetail } from "../../bindings/ThreadDetail.js";
 import { healthLabel } from "../harness-detail/harnessFormat.js";
 import { MessageBubble } from "./MessageBubble.js";
 import { SendMessageDialog } from "./SendMessageDialog.js";
@@ -34,12 +33,14 @@ import {
   TASK_PARAM,
   THREAD_PARAM,
   byUpdatedDesc,
+  canRetry,
   formatMessageTime,
   latestMessage,
   parseThreadFilters,
   participantsLabel,
   shouldPollMessages,
-  threadPreview,
+  shouldPollThreads,
+  threadSnippet,
 } from "./messagesUi.js";
 import { useMessageEventInvalidation } from "./useMessageEvents.js";
 import { useMessagePolling } from "./useMessagePolling.js";
@@ -101,20 +102,6 @@ export function MessagesPage() {
   // 当前线程：地址栏指定了就用指定的（可以带筛选深链进来），否则取最近更新的那个。
   const selectedThreadId = threadParam !== "" ? threadParam : (listed[0]?.id ?? "");
 
-  // 列表里其余线程的详情：只为拿到「最近一条的状态与时间」，所以按需取，不缓存成长期数据。
-  const otherThreadIds = useMemo(
-    () => listed.filter((thread) => thread.id !== selectedThreadId).map((thread) => thread.id),
-    [listed, selectedThreadId],
-  );
-  const otherDetails = useQueries({
-    queries: otherThreadIds.map((threadId) => ({
-      queryKey: queryKeys.messageThread(teamId, threadId),
-      queryFn: () => getThread(threadId),
-      enabled: teamId !== "" && threadId !== "",
-      staleTime: 2000,
-    })),
-  });
-
   const detail = useQuery({
     queryKey: queryKeys.messageThread(teamId, selectedThreadId),
     queryFn: () => getThread(selectedThreadId),
@@ -123,13 +110,11 @@ export function MessagesPage() {
 
   // 状态更新有两条通道：事件订阅（teamspace:notify 的 message_status 事件）
   // 与 3 秒轮询兜底。消息进入终态后轮询就停。
-  const pending = useMemo(() => {
-    const messages = [
-      ...(detail.data?.messages ?? []),
-      ...otherDetails.flatMap((result) => result.data?.messages ?? []),
-    ];
-    return shouldPollMessages(messages);
-  }, [detail.data, otherDetails]);
+  // 线程列表自带最近一条消息的状态，不用再逐个取线程详情。
+  const pending = useMemo(
+    () => shouldPollMessages(detail.data?.messages ?? []) || shouldPollThreads(listed),
+    [detail.data, listed],
+  );
   useMessagePolling(teamId, pending);
   useMessageEventInvalidation(teamId);
 
@@ -172,31 +157,11 @@ export function MessagesPage() {
   const selectedThread: MessageThread | undefined =
     detail.data?.thread ?? listed.find((thread) => thread.id === selectedThreadId);
 
-  // 详情之外的线程详情，按线程 id 归拢，列表里用来显示最近一条的状态与时间。
-  // 当前线程的详情也放进来：列表里选中项同样要显示状态。
-  const detailByThread = useMemo(() => {
-    const map = new Map<string, ThreadDetail>();
-    if (detail.data !== undefined) {
-      map.set(detail.data.thread.id, detail.data);
-    }
-    for (const result of otherDetails) {
-      if (result.data !== undefined) {
-        map.set(result.data.thread.id, result.data);
-      }
-    }
-    return map;
-  }, [detail.data, otherDetails]);
-
   // 有失败或过期消息的线程：列表里的「处理未投递消息」入口用它。
+  // 线程列表自带最近一条消息的状态，不用再逐个取线程详情。
   const undelivered = useMemo(
-    () =>
-      listed.find((thread) => {
-        const messages = detailByThread.get(thread.id)?.messages ?? [];
-        return messages.some(
-          (message) => message.status === "failed" || message.status === "expired",
-        );
-      }) ?? null,
-    [listed, detailByThread],
+    () => listed.find((thread) => canRetry(thread.lastStatus)) ?? null,
+    [listed],
   );
 
   const header = (
@@ -305,8 +270,6 @@ export function MessagesPage() {
       ) : (
         <ul className="msg-list__items">
           {listed.map((thread) => {
-            const messages = detailByThread.get(thread.id)?.messages ?? [];
-            const last = latestMessage(messages);
             const active = thread.id === selectedThreadId;
             return (
               <li key={thread.id}>
@@ -320,17 +283,15 @@ export function MessagesPage() {
                 >
                   <span className="msg-thread__subject">{thread.subject}</span>
                   <span className="msg-thread__meta">
-                    {/* 状态标签要等线程详情取回来才有；还没取回来时只显示时间，不装作没有消息。 */}
-                    {last === null ? null : (
-                      <Tag tone={MESSAGE_STATUS_TONES[last.status]}>
-                        {MESSAGE_STATUS_LABELS[last.status]}
-                      </Tag>
-                    )}
+                    {/* 状态与时间都来自线程列表自带的摘要（最近一条消息）。 */}
+                    <Tag tone={MESSAGE_STATUS_TONES[thread.lastStatus]}>
+                      {MESSAGE_STATUS_LABELS[thread.lastStatus]}
+                    </Tag>
                     <span className="msg-thread__time">
-                      {formatMessageTime(thread.updatedAt, clock)}
+                      {formatMessageTime(thread.lastMessageAt, clock)}
                     </span>
                   </span>
-                  <span className="msg-thread__preview">{threadPreview(messages)}</span>
+                  <span className="msg-thread__preview">{threadSnippet(thread)}</span>
                   <span className="msg-thread__participants">
                     参与方：{participantsLabel(thread.participants)}
                   </span>

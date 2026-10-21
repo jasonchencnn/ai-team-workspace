@@ -6,6 +6,8 @@
 //! - 应用重启时把残留的「投递中」退回「排队」；
 //! - 超过 7 天仍未回复的消息转「过期」。
 
+use std::collections::HashMap;
+
 use rusqlite::{Connection, OptionalExtension, params};
 
 use crate::error::{Error, Result};
@@ -21,6 +23,8 @@ use crate::store::{enum_col, enum_str, new_id, now};
 pub const EXPIRY_DAYS: i64 = 7;
 /// 投递说明包里附带的最近消息条数。
 pub const CONTEXT_MESSAGES: usize = 10;
+/// 线程摘要的正文长度上限（与界面原来的列表摘要一致）。
+const SNIPPET_CHARS: usize = 60;
 
 /// 线程与消息的列。
 const THREAD_COLS: &str = "id, team_id, task_id, subject, participants, created_at, updated_at";
@@ -222,13 +226,16 @@ pub(crate) fn get(conn: &Connection, message_id: &str) -> Result<Message> {
 
 /// 线程详情：线程与其中的消息（按时间正序）。
 pub(crate) fn thread(conn: &Connection, thread_id: &str) -> Result<ThreadDetail> {
-    let thread = thread_of(conn, thread_id)?.ok_or_else(|| Error::not_found("消息线程不存在"))?;
+    let mut thread =
+        thread_of(conn, thread_id)?.ok_or_else(|| Error::not_found("消息线程不存在"))?;
     let mut stmt = conn.prepare(&format!(
         "SELECT {MESSAGE_COLS} FROM messages WHERE thread_id = ?1 ORDER BY created_at, id"
     ))?;
-    let messages = stmt
+    let messages: Vec<Message> = stmt
         .query_map(params![thread_id], from_row)?
         .collect::<rusqlite::Result<_>>()?;
+    // 摘要取最近一条消息（列表里的顺序即时间正序，最后一条就是最近的）。
+    apply_summary(&mut thread, messages.last());
     Ok(ThreadDetail { thread, messages })
 }
 
@@ -246,9 +253,18 @@ pub(crate) fn threads(conn: &Connection, query: &ListThreadsQuery) -> Result<Vec
     sql.push_str(" ORDER BY updated_at DESC, id DESC");
     let mut stmt = conn.prepare(&sql)?;
     let refs: Vec<&dyn rusqlite::ToSql> = args.iter().map(|a| a.as_ref()).collect();
-    let rows: Vec<MessageThread> = stmt
+    let mut rows: Vec<MessageThread> = stmt
         .query_map(refs.as_slice(), from_thread_row)?
         .collect::<rusqlite::Result<_>>()?;
+    // 摘要一次查询取回（不是每个线程一次），省掉界面逐个取详情的往返。
+    let summaries = summaries(conn, &query.team_id)?;
+    for thread in rows.iter_mut() {
+        if let Some(summary) = summaries.get(&thread.id) {
+            thread.last_status = summary.status;
+            thread.last_message_at = summary.message_at.clone();
+            thread.last_snippet = summary.snippet.clone();
+        }
+    }
     // 岗位筛选在内存里做：参与方存在 JSON 里，线程数量不大，这样不必依赖 SQL 的 JSON 函数。
     Ok(match query.role_id.as_deref() {
         Some(role_id) => rows
@@ -529,6 +545,7 @@ fn thread_of(conn: &Connection, thread_id: &str) -> Result<Option<MessageThread>
 
 fn from_thread_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<MessageThread> {
     let participants: String = row.get(4)?;
+    let updated_at: String = row.get(6)?;
     Ok(MessageThread {
         id: row.get(0)?,
         team_id: row.get(1)?,
@@ -536,8 +553,76 @@ fn from_thread_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<MessageThread> {
         subject: row.get(3)?,
         participants: serde_json::from_str(&participants).unwrap_or_default(),
         created_at: row.get(5)?,
-        updated_at: row.get(6)?,
+        updated_at: updated_at.clone(),
+        // 摘要按最近一条消息补上（见 `apply_summary`）；这里先给占位值。
+        last_status: MessageStatus::Queued,
+        last_message_at: updated_at,
+        last_snippet: None,
     })
+}
+
+/// 线程摘要：最近一条消息的状态、发送时间与正文摘要。
+#[derive(Debug, Clone)]
+struct ThreadSummary {
+    status: MessageStatus,
+    message_at: String,
+    snippet: Option<String>,
+}
+
+/// 各线程最近一条消息的摘要。一次查询取回团队全部线程的摘要。
+fn summaries(conn: &Connection, team_id: &str) -> Result<HashMap<String, ThreadSummary>> {
+    let mut stmt = conn.prepare(
+        "SELECT thread_id, status, created_at, body FROM (
+             SELECT thread_id, status, created_at, body,
+                    ROW_NUMBER() OVER (PARTITION BY thread_id ORDER BY created_at DESC, id DESC) AS rn
+             FROM messages WHERE team_id = ?1
+         ) WHERE rn = 1",
+    )?;
+    let rows = stmt.query_map(params![team_id], |row| {
+        let body: String = row.get(3)?;
+        Ok((
+            row.get::<_, String>(0)?,
+            ThreadSummary {
+                status: enum_col(row, 1)?,
+                message_at: row.get(2)?,
+                snippet: Some(snippet_of(&body)),
+            },
+        ))
+    })?;
+    let mut out = HashMap::new();
+    for row in rows {
+        let (thread_id, summary) = row?;
+        out.insert(thread_id, summary);
+    }
+    Ok(out)
+}
+
+/// 把最近一条消息的摘要写进线程。
+fn apply_summary(thread: &mut MessageThread, latest: Option<&Message>) {
+    match latest {
+        Some(message) => {
+            thread.last_status = message.status;
+            thread.last_message_at = message.created_at.clone();
+            thread.last_snippet = Some(snippet_of(&message.body));
+        }
+        None => {
+            // 线程与第一条消息在同一次写入里落库，理论上不会出现没有消息的线程。
+            thread.last_status = MessageStatus::Queued;
+            thread.last_message_at = thread.updated_at.clone();
+            thread.last_snippet = None;
+        }
+    }
+}
+
+/// 正文摘要：空白压成一行，超长截断（与界面原来的列表摘要一致）。
+fn snippet_of(body: &str) -> String {
+    let text = body.split_whitespace().collect::<Vec<_>>().join(" ");
+    if text.chars().count() <= SNIPPET_CHARS {
+        text
+    } else {
+        let head: String = text.chars().take(SNIPPET_CHARS).collect();
+        format!("{head}…")
+    }
 }
 
 pub(crate) fn from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Message> {
