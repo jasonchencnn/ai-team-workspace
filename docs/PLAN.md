@@ -8,12 +8,12 @@
 
 | 项 | 内容 |
 |---|---|
-| 阶段 | M4 进行中（计划 2026-10-21 确认） |
+| 阶段 | **暂停**（2026-10-21 15:20，Human 迁移到新固态盘）；M4 完成，M5 进行中 |
 | 已完成 | M1～M3 已签收；M3-11 自举：7 个任务全部经 Teamspace 自己执行、验收、合并（L-1～L-10、L-13 及 M3 校验记录）；`pnpm run check`（Rust 751、前端 87）与 `pnpm run e2e`（289 通过、5 跳过）全部通过 |
-| 进行中 | M5-04 待我处理页（MiniMax Code）；M5-05 MCP 消息工具（OpenCode）；M5 内核修复批含 M4-G-1（MiniMax Code）。M5-01～03 已合入 |
+| 进行中 | 无（已暂停）。未完成的三个分支已保存为 wip 提交：`team/m5-04`（待我处理页，13 个文件）、`team/m5-05`（MCP 消息工具，7 个文件）、`team/m5-kfix`（内核修复批含 M4-G-1，13 个文件），任务说明在 `../协作工作-wt/_logs/brief-*.md` |
 | 待你确认 | 无 |
 | 遗留 | L-11 窄屏（M7）、L-12 视觉细节批；UI-ROLE-002 空状态分支不可达（`test.fixme`）；见第 16 节使用记录 |
-| 下一步 | M4 Leader 编排（并入第 16 节使用记录） |
+| 下一步 | 迁移后：确认仓库与 worktree 路径（必要时 `git worktree repair`），按 `_logs/brief-m5-04.md`、`brief-m5-05.md`、`brief-m5-kfix.md` 续接三个 wip 分支（让执行者先 `git log -1`、`git show --stat HEAD` 了解已做部分）；之后 M5 交叉审查与 agy 回归 → M6 → M7（第 18 节） |
 
 ## 1. 目标
 
