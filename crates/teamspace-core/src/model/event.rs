@@ -20,6 +20,9 @@ pub enum EventKind {
     RoleRebindApplied,
     /// 待生效的换绑已撤销（`data.mode`、`data.harnessId` 为被撤销的目标实例）。
     RoleRebindCancelled,
+    /// 「取消并重跑」换绑已生效，但部分任务重跑失败（`data.harnessId` 为目标实例，
+    /// `data.failures` 逐条记 `taskId` 与 `reason`）。换绑不回滚，失败的任务留在待执行（D35⑤）。
+    RoleRebindRerunFailed,
     HarnessCreated,
     HarnessUpdated,
     HarnessArchived,

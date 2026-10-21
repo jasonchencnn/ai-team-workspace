@@ -17,9 +17,9 @@ use super::task::{self, FileCheck};
 use super::{harness, role};
 use crate::error::{Error, Result};
 use crate::model::{
-    AcpCapabilities, Actor, ChangedFile, EventKind, FailureKind, HandshakeStatus, HarnessSnapshot,
-    PermissionPrompt, Run, RunIsolation, RunJournal, RunReview, RunStatus, RunUpdate,
-    RunUpdateBody, RunUpdatePage, RunUpdateQuery, Task, TaskStatus,
+    AcpCapabilities, ActiveRunSummary, Actor, ChangedFile, EventKind, FailureKind, HandshakeStatus,
+    HarnessSnapshot, PermissionPrompt, Run, RunIsolation, RunJournal, RunReview, RunStatus,
+    RunUpdate, RunUpdateBody, RunUpdatePage, RunUpdateQuery, Task, TaskStatus,
 };
 use crate::store::{enum_col, enum_str, new_id, now};
 
@@ -239,6 +239,51 @@ pub(crate) fn active_runs_for_role(conn: &Connection, role_id: &str) -> Result<V
         &format!("r.role_id = ?1 AND {ACTIVE_SQL} ORDER BY r.started_at DESC, r.id DESC"),
         &role_id,
     )
+}
+
+/// 岗位进行中的执行摘要：换绑界面要看的「现在有没有在跑的活」（M6-04）。
+///
+/// 「进行中」用同一套判定（[`ACTIVE_SQL`]），但只取界面要的字段：执行 id、任务编号与标题、
+/// 第几次执行、状态与 Harness 实例快照。界面不再自己列状态，也不用逐个任务去查执行。
+pub(crate) fn active_summaries_for_role(
+    conn: &Connection,
+    role_id: &str,
+) -> Result<Vec<ActiveRunSummary>> {
+    let mut stmt = conn.prepare(&format!(
+        "SELECT r.id, r.task_id, t.key, t.title, r.attempt, r.status, r.taken_over,
+                r.harness_id, r.harness_name, r.harness_preset, r.harness_command, r.harness_args,
+                r.started_at
+         FROM runs r JOIN tasks t ON t.id = r.task_id
+         WHERE r.role_id = ?1 AND {ACTIVE_SQL}
+         ORDER BY r.started_at DESC, r.id DESC"
+    ))?;
+    let rows = stmt.query_map(params![role_id], |row| {
+        let status: RunStatus = enum_col(row, 5)?;
+        let taken_over: bool = row.get(6)?;
+        Ok(ActiveRunSummary {
+            run_id: row.get(0)?,
+            task_id: row.get(1)?,
+            task_key: row.get(2)?,
+            task_title: row.get(3)?,
+            attempt: row.get(4)?,
+            status,
+            // 人工接管的执行状态仍是「已取消」，但对 Human 的说法统一为「已被接管」（与执行详情一致）。
+            status_label: if taken_over {
+                "已被接管".to_owned()
+            } else {
+                status.label().to_owned()
+            },
+            harness: HarnessSnapshot {
+                harness_id: row.get(7)?,
+                name: row.get(8)?,
+                preset: enum_col(row, 9)?,
+                command: row.get(10)?,
+                args: json_opt(row, 11)?.unwrap_or_default(),
+            },
+            started_at: row.get(12)?,
+        })
+    })?;
+    Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
 }
 
 /// 活动执行所在的工作空间路径（原地执行），与执行记录一起读出。

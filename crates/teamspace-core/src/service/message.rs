@@ -12,8 +12,9 @@ use rusqlite::{Connection, OptionalExtension, params};
 
 use crate::error::{Error, Result};
 use crate::model::{
-    Actor, EventKind, ListThreadsQuery, Message, MessageSender, MessageStatus, MessageThread, Role,
-    SendMessageInput, ThreadDetail, ThreadParticipant,
+    Actor, EventKind, ListRoleMessagesQuery, ListThreadsQuery, Message, MessageSender,
+    MessageStatus, MessageThread, Role, RoleMessage, SendMessageInput, ThreadDetail,
+    ThreadParticipant,
 };
 use crate::service::event::NewEvent;
 use crate::service::{MAX_LONG_TEXT, MAX_REASON, role, task, team};
@@ -25,6 +26,10 @@ pub const EXPIRY_DAYS: i64 = 7;
 pub const CONTEXT_MESSAGES: usize = 10;
 /// 线程摘要的正文长度上限（与界面原来的列表摘要一致）。
 const SNIPPET_CHARS: usize = 60;
+/// 发往某岗位的消息默认最多返回多少条。
+pub(crate) const DEFAULT_ROLE_MESSAGE_LIMIT: u32 = 200;
+/// 发往某岗位的消息最多返回多少条（上限）。
+pub(crate) const MAX_ROLE_MESSAGE_LIMIT: u32 = 200;
 
 /// 线程与消息的列。
 const THREAD_COLS: &str = "id, team_id, task_id, subject, participants, created_at, updated_at";
@@ -283,6 +288,62 @@ pub(crate) fn threads(conn: &Connection, query: &ListThreadsQuery) -> Result<Vec
             .collect(),
         None => rows,
     })
+}
+
+/// 发往某岗位的消息：换绑界面要看「换绑期间还有哪些消息在排队」（M6-04）。
+///
+/// 默认只看「排队中 + 投递中」：已回复 / 失败 / 已过期是终态，不用再提示。
+/// 一条查询取回，附线程主题与入队时的绑定实例名，界面不必再逐个取线程详情、
+/// 也不用另查实例列表去翻译绑定 id。
+pub(crate) fn for_role(
+    conn: &Connection,
+    query: &ListRoleMessagesQuery,
+) -> Result<Vec<RoleMessage>> {
+    let statuses: Vec<MessageStatus> = match &query.statuses {
+        Some(list) if !list.is_empty() => list.clone(),
+        _ => vec![MessageStatus::Queued, MessageStatus::Delivering],
+    };
+    let limit = query
+        .limit
+        .unwrap_or(DEFAULT_ROLE_MESSAGE_LIMIT)
+        .min(MAX_ROLE_MESSAGE_LIMIT);
+    let placeholders = statuses.iter().map(|_| "?").collect::<Vec<_>>().join(", ");
+    let sql = format!(
+        "SELECT m.id, m.thread_id, th.subject, m.team_id, m.task_id, m.to_role_id, m.body,
+                m.status, m.created_at, m.queued_at, m.binding_harness_id,
+                (SELECT h.name FROM harnesses h WHERE h.id = m.binding_harness_id)
+         FROM messages m JOIN message_threads th ON th.id = m.thread_id
+         WHERE m.to_role_id = ?1 AND m.status IN ({placeholders})
+         ORDER BY m.queued_at DESC, m.created_at DESC, m.id DESC
+         LIMIT ?{}",
+        statuses.len() + 2
+    );
+    let mut args: Vec<Box<dyn rusqlite::ToSql>> = vec![Box::new(query.role_id.clone())];
+    for status in &statuses {
+        args.push(Box::new(enum_str(*status)));
+    }
+    args.push(Box::new(limit));
+    let mut stmt = conn.prepare(&sql)?;
+    let refs: Vec<&dyn rusqlite::ToSql> = args.iter().map(|a| a.as_ref()).collect();
+    let rows = stmt.query_map(refs.as_slice(), |row| {
+        let status: MessageStatus = enum_col(row, 7)?;
+        Ok(RoleMessage {
+            id: row.get(0)?,
+            thread_id: row.get(1)?,
+            thread_subject: row.get(2)?,
+            team_id: row.get(3)?,
+            task_id: row.get(4)?,
+            to_role_id: row.get(5)?,
+            body: row.get(6)?,
+            status,
+            status_label: status.label().to_owned(),
+            created_at: row.get(8)?,
+            queued_at: row.get(9)?,
+            binding_harness_id: row.get(10)?,
+            binding_harness_name: row.get(11)?,
+        })
+    })?;
+    Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
 }
 
 /// 标记消息进入「投递中」。

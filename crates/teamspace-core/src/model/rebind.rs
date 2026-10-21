@@ -2,8 +2,9 @@
 //!
 //! 换绑只改变岗位与 Harness 实例的绑定，不改变岗位、任务与历史（原产品原则）。三种方式：
 //! - `after_current`：当前执行结束后再生效；没有进行中的执行时立即生效。
-//! - `cancel_and_rerun`：取消进行中的执行，立即换绑，并在新 Harness 上对该任务重新开始执行。
-//! - `manual_takeover`：取消进行中的执行，任务转为受阻（人工接管），立即换绑。
+//! - `cancel_and_rerun`：取消进行中的执行，立即换绑，并在新 Harness 上对每个被取消的任务重新开始执行。
+//! - `manual_takeover`：立即换绑，并按现有人工接管处理进行中的执行：执行记为已被接管，
+//!   任务留在执行中（D35①）。
 //!
 //! 换绑属 Human 的控制权（D8、D32）：Leader 不能发起，也不能撤销。
 
@@ -17,9 +18,9 @@ use ts_rs::TS;
 pub enum RebindMode {
     /// 当前执行结束后再生效（默认）。
     AfterCurrent,
-    /// 取消当前执行，立即换绑并在新 Harness 上重新执行该任务。
+    /// 取消当前执行，立即换绑，并在新 Harness 上对每个被取消的任务重新执行。
     CancelAndRerun,
-    /// 取消当前执行，任务转为受阻（人工接管），立即换绑。
+    /// 立即换绑，进行中的执行按人工接管处理：执行记为已被接管，任务留在执行中（D35①）。
     ManualTakeover,
 }
 
@@ -52,6 +53,12 @@ pub struct PendingBinding {
     pub harness_id: String,
     /// 目标 Harness 实例名。
     pub harness_name: String,
+    /// 发起换绑时岗位的当前绑定实例 id；发起时岗位没有绑定过实例为 `null`。
+    ///
+    /// 留痕用：待生效期间当前绑定仍是旧实例，这个字段记下「换绑之前绑的是哪个」。
+    pub previous_harness_id: Option<String>,
+    /// 发起换绑时岗位的当前绑定实例名；发起时岗位没有绑定过实例为 `null`。
+    pub previous_harness_name: Option<String>,
     /// 换绑方式。
     pub mode: RebindMode,
     /// 发起时间（UTC RFC3339）。

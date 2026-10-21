@@ -371,6 +371,14 @@ pub fn list_runs(ts: State<'_, Arc<Teamspace>>, task_id: &str) -> Result<Vec<Run
 }
 
 #[tauri::command(async)]
+pub fn list_active_runs(
+    ts: State<'_, Arc<Teamspace>>,
+    role_id: &str,
+) -> Result<Vec<ActiveRunSummary>, Error> {
+    ts.list_active_runs(role_id)
+}
+
+#[tauri::command(async)]
 pub fn list_run_updates(
     ts: State<'_, Arc<Teamspace>>,
     input: RunUpdateQuery,
@@ -468,6 +476,14 @@ pub fn list_threads(
 #[tauri::command(async)]
 pub fn get_thread(ts: State<'_, Arc<Teamspace>>, thread_id: &str) -> Result<ThreadDetail, Error> {
     ts.get_thread(thread_id)
+}
+
+#[tauri::command(async)]
+pub fn list_role_messages(
+    ts: State<'_, Arc<Teamspace>>,
+    input: ListRoleMessagesQuery,
+) -> Result<Vec<RoleMessage>, Error> {
+    ts.list_role_messages(input)
 }
 
 #[tauri::command(async)]

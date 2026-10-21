@@ -5,19 +5,14 @@ import { useEffect } from "react";
 
 import {
   getRoleHandoffPreview,
-  getTaskBoard,
-  getThread,
-  listRuns,
-  listThreads,
+  listActiveRuns,
+  listRoleMessages,
   onNotifyEvent,
 } from "../../api/commands.js";
 import { queryKeys } from "../../api/queryKeys.js";
-import type { Message } from "../../bindings/Message.js";
-import type { MessageThread } from "../../bindings/MessageThread.js";
+import type { ActiveRunSummary } from "../../bindings/ActiveRunSummary.js";
 import type { NotifyEvent } from "../../bindings/NotifyEvent.js";
-import type { Run } from "../../bindings/Run.js";
-import { isPendingStatus } from "../messages/messagesUi.js";
-import { isActiveRunStatus } from "./rebindUi.js";
+import type { RoleMessage } from "../../bindings/RoleMessage.js";
 
 /** 换绑相关的轮询兜底间隔（毫秒）。事件通道不可用时靠它跟上后端。 */
 export const REBIND_POLL_INTERVAL_MS = 5000;
@@ -30,82 +25,39 @@ export function hasPendingBinding(views: { pendingBinding: unknown }[]): boolean
   return views.some((view) => view.pendingBinding !== null && view.pendingBinding !== undefined);
 }
 
-/** 岗位进行中的执行：执行本身 + 它在做的任务编号与标题。 */
-export interface ActiveRunEntry {
-  run: Run;
-  taskKey: string;
-  taskTitle: string;
-}
-
 /**
  * 岗位进行中的执行。
  *
- * 走「看板 → 该岗位 doing 中的任务 → 任务执行记录」这条路，
- * 而不是岗位工作台的 recentRuns：那里只保留最近 5 条，活动执行可能被挤掉，
- * 而「有没有在跑的活」直接决定换绑方式，必须算准。
+ * 直接问内核「这个岗位现在有没有在跑的活」：进行中的判定、任务编号与标题、次数与
+ * Harness 实例都由后端给，前端不再自己列状态白名单，也不用逐个任务去查执行。
  */
 export function useRoleActiveRuns(teamId: string, roleId: string) {
-  return useQuery<ActiveRunEntry[]>({
+  return useQuery<ActiveRunSummary[]>({
     queryKey: queryKeys.roleActiveRuns(teamId, roleId),
     enabled: teamId !== "" && roleId !== "",
     refetchInterval: REBIND_POLL_INTERVAL_MS,
-    queryFn: async () => {
-      const board = await getTaskBoard({ teamId });
-      const doing = board.columns
-        .filter((column) => column.status === "doing")
-        .flatMap((column) => column.tasks)
-        .filter((task) => task.owner.id === roleId);
-      const entries: ActiveRunEntry[] = [];
-      for (const task of doing) {
-        const runs = await listRuns(task.id);
-        for (const run of runs) {
-          if (isActiveRunStatus(run.status)) {
-            entries.push({ run, taskKey: task.key, taskTitle: task.title });
-          }
-        }
-      }
-      return entries.sort((a, b) => a.run.startedAt.localeCompare(b.run.startedAt));
-    },
+    queryFn: () => listActiveRuns(roleId),
   });
-}
-
-/** 待投递消息：一条待投递消息与它所在的线程。 */
-export interface PendingMessage {
-  message: Message;
-  thread: MessageThread;
 }
 
 /**
  * 换绑期间待投递的消息：发往该岗位、状态还是排队 / 投递中的消息。
  *
- * 用现成的消息 API 按岗位筛：先列出该岗位参与的线程，再取每个线程里的消息。
- * 消息上带 `bindingHarnessId`——那是入队那一刻的绑定快照，
- * 换绑生效后这些消息才会按新绑定投递。
+ * 后端一条查询取回，带上线程主题与入队那一刻的绑定实例名（`bindingHarnessName`）。
+ * 消息上的绑定快照说明这条消息是按哪个绑定入队的，换绑生效后才会按新绑定投递。
  */
 export function useRolePendingMessages(teamId: string, roleId: string, enabled: boolean) {
-  return useQuery<PendingMessage[]>({
+  return useQuery<RoleMessage[]>({
     queryKey: queryKeys.rolePendingMessages(teamId, roleId),
     enabled: enabled && teamId !== "" && roleId !== "",
     refetchInterval: REBIND_POLL_INTERVAL_MS,
-    queryFn: async () => {
-      const threads = await listThreads({ teamId, roleId });
-      const details = await Promise.all(threads.map((thread) => getThread(thread.id)));
-      const pending: PendingMessage[] = [];
-      for (const detail of details) {
-        for (const message of detail.messages) {
-          if (message.toRoleId === roleId && isPendingStatus(message.status)) {
-            pending.push({ message, thread: detail.thread });
-          }
-        }
-      }
-      return pending.sort((a, b) => a.message.createdAt.localeCompare(b.message.createdAt));
-    },
+    queryFn: () => listRoleMessages({ roleId }),
   });
 }
 
 /**
  * 启动包预览：岗位下一次执行会附上的交接内容。
- * 为空字符串表示不会附加交接（当前 Harness 已在此岗位执行过）。
+ * 为空字符串表示不会附加交接（当前 Harness 已经执行过，或岗位还没有可交接的历史）。
  */
 export function useRoleHandoffPreview(teamId: string, roleId: string) {
   return useQuery<string>({

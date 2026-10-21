@@ -683,20 +683,15 @@ fn restart_marks_runs_interrupted_and_resume_continues_the_session() {
 }
 
 #[test]
-fn handoff_is_attached_once_per_harness() {
+fn handoff_is_attached_once_per_harness_change() {
     let e = env(false);
-    // 第一次执行：这个 Harness 在本岗位上是第一次，交底内容里没有历史执行。
+    // 第一次执行：岗位从未执行过，没有历史可交接，不附加交接节（D35③）。
     let first = e.task("登录页");
     let run = e.ts.start_run(&first.id).unwrap();
     let run = e.wait_end(&run.id);
     assert_eq!(run.status, RunStatus::Succeeded, "{run:#?}");
     let brief = messages(&e.updates(&run.id), MessageRole::User).remove(0);
-    assert!(brief.contains("## 岗位交接"), "{brief}");
-    assert!(brief.contains("### 岗位说明"), "{brief}");
-    assert!(brief.contains("### 未完成任务"), "{brief}");
-    assert!(brief.contains("### 相关文件引用"), "{brief}");
-    // 第一次还没有历史执行结果。
-    assert!(brief.contains("### 近期执行结果\n\n（无）"), "{brief}");
+    assert!(!brief.contains("岗位交接"), "{brief}");
 
     // 同一个 Harness 再执行：不重复交底。
     let second = e.task("注册页");
@@ -724,6 +719,9 @@ fn handoff_is_attached_once_per_harness() {
     assert_eq!(run.status, RunStatus::Succeeded, "{run:#?}");
     let brief = messages(&e.updates(&run.id), MessageRole::User).remove(0);
     assert!(brief.contains("## 岗位交接"), "{brief}");
+    assert!(brief.contains("### 岗位说明"), "{brief}");
+    assert!(brief.contains("### 未完成任务"), "{brief}");
+    assert!(brief.contains("### 相关文件引用"), "{brief}");
     assert!(brief.contains("### 近期执行结果"), "{brief}");
     assert!(brief.contains("FE-001 · 成功"), "{brief}");
     assert!(brief.contains("### 工作日志（最近部分）"), "{brief}");

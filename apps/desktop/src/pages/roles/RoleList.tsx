@@ -55,7 +55,6 @@ export function RoleList({
               ? null
               : pendingBindingSummary(
                   view.pendingBinding,
-                  view.harness?.name ?? null,
                   formatLocalDateTime(view.pendingBinding.requestedAt),
                 );
           return (

@@ -12,7 +12,7 @@ use time::OffsetDateTime;
 use crate::error::{Error, Result};
 
 /// 当前 schema 版本。
-pub(crate) const SCHEMA_VERSION: i64 = 17;
+pub(crate) const SCHEMA_VERSION: i64 = 18;
 
 const SCHEMA_V1: &str = r#"
 CREATE TABLE teams (
@@ -451,7 +451,25 @@ ALTER TABLE messages ADD COLUMN queued_at TEXT NOT NULL DEFAULT '';
 UPDATE messages SET queued_at = created_at;
 "#;
 
-/// v17：1 万条任务与事件时的查询索引（M7-03 性能）。
+/// v17：待生效换绑记录发起时的旧绑定（M6-04）。
+///
+/// `role_pending_bindings.previous_harness_id` / `previous_harness_name`：发起换绑时岗位的当前绑定。
+/// 之前界面靠岗位当前绑定反推「换绑前绑的是哪个」，岗位绑定在别处改过时就会显示错的旧实例名。
+/// 迁移时用岗位当前的绑定回填（旧记录没有这个概念，按当时的绑定算）。
+const SCHEMA_V17: &str = r#"
+ALTER TABLE role_pending_bindings ADD COLUMN previous_harness_id TEXT;
+ALTER TABLE role_pending_bindings ADD COLUMN previous_harness_name TEXT;
+UPDATE role_pending_bindings SET
+    previous_harness_id = (
+        SELECT r.harness_id FROM roles r WHERE r.id = role_pending_bindings.role_id
+    ),
+    previous_harness_name = (
+        SELECT h.name FROM harnesses h
+        WHERE h.id = (SELECT r.harness_id FROM roles r WHERE r.id = role_pending_bindings.role_id)
+    );
+"#;
+
+/// v18：1 万条任务与事件时的查询索引（M7-03 性能）。
 ///
 /// - `tasks_team_status_updated`：看板按状态分页（每列按更新时间倒序取一页）与团队概览的
 ///   「进行中的任务」都按 `(团队, 状态, 更新时间, id)` 取，没有它每列都要扫全表再排序。
@@ -463,7 +481,7 @@ UPDATE messages SET queued_at = created_at;
 ///   也不会为了找一个冷门种类把该团队的活动整张表扫一遍。
 /// - `events_team_task_seq`：活动按任务筛选（团队 + 任务）。
 /// - `message_threads_team` 加上 `id`：线程列表按 `(更新时间, id)` 倒序，取完不用再排序。
-const SCHEMA_V17: &str = r#"
+const SCHEMA_V18: &str = r#"
 CREATE INDEX tasks_team_status_updated ON tasks (team_id, status, updated_at DESC, id DESC);
 CREATE INDEX tasks_team_updated ON tasks (team_id, updated_at DESC, id DESC);
 CREATE INDEX tasks_owner_updated ON tasks (owner_role_id, updated_at DESC, id DESC);
@@ -476,7 +494,7 @@ CREATE INDEX message_threads_team ON message_threads (team_id, updated_at DESC, 
 const MIGRATIONS: &[&str] = &[
     SCHEMA_V1, SCHEMA_V2, SCHEMA_V3, SCHEMA_V4, SCHEMA_V5, SCHEMA_V6, SCHEMA_V7, SCHEMA_V8,
     SCHEMA_V9, SCHEMA_V10, SCHEMA_V11, SCHEMA_V12, SCHEMA_V13, SCHEMA_V14, SCHEMA_V15, SCHEMA_V16,
-    SCHEMA_V17,
+    SCHEMA_V17, SCHEMA_V18,
 ];
 
 /// 打开数据库：WAL 日志、synchronous=NORMAL、开启外键，并迁移到当前版本。
@@ -1301,5 +1319,101 @@ mod tests {
             )
             .unwrap();
         assert_eq!(queued_at, created_at);
+    }
+
+    /// v16 的库升到 v17：待生效换绑补上发起时的旧绑定，老记录按岗位当前绑定回填。
+    #[test]
+    fn v16_migrates_to_v17_with_the_pending_binding_previous_harness() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("t.db");
+        {
+            let conn = Connection::open(&path).unwrap();
+            for sql in &MIGRATIONS[..16] {
+                conn.execute_batch(sql).unwrap();
+            }
+            conn.execute_batch(
+                "PRAGMA user_version = 16;
+                 INSERT INTO teams (id, name, workspace_path, created_at, updated_at)
+                 VALUES ('t1', '团队', '/tmp', '2026-10-12T00:00:00.000Z', '2026-10-12T00:00:00.000Z');
+                 INSERT INTO harnesses (id, team_id, name, preset, command, args, created_at, updated_at)
+                 VALUES ('h1', 't1', '旧实例', 'mock', 'x', '[]',
+                         '2026-10-12T00:00:00.000Z', '2026-10-12T00:00:00.000Z');
+                 INSERT INTO roles (id, team_id, name, code, task_prefix, description, guidelines,
+                                    is_leader, harness_id, created_at, updated_at)
+                 VALUES ('r1', 't1', '前端', 'role_fe', 'FE', '', '', 0, 'h1',
+                         '2026-10-12T00:00:00.000Z', '2026-10-12T00:00:00.000Z');
+                 INSERT INTO role_pending_bindings (id, role_id, team_id, harness_id, mode,
+                                                    active_run_id, requested_at, created_at)
+                 VALUES ('p1', 'r1', 't1', 'h1', 'after_current', NULL,
+                         '2026-10-12T00:00:00.000Z', '2026-10-12T00:00:00.000Z');",
+            )
+            .unwrap();
+        }
+        let conn = open(&path).unwrap();
+        let v: i64 = conn
+            .pragma_query_value(None, "user_version", |r| r.get(0))
+            .unwrap();
+        assert_eq!(v, SCHEMA_VERSION);
+        let (previous_id, previous_name): (Option<String>, Option<String>) = conn
+            .query_row(
+                "SELECT previous_harness_id, previous_harness_name
+                 FROM role_pending_bindings WHERE id = 'p1'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        // 老记录没有「发起时的绑定」这个概念，按岗位当时的当前绑定回填。
+        assert_eq!(previous_id.as_deref(), Some("h1"));
+        assert_eq!(previous_name.as_deref(), Some("旧实例"));
+    }
+
+    /// v17 的库升到 v18：补上查询索引，看板与活动筛选不再扫全表。
+    #[test]
+    fn v17_migrates_to_v18_with_the_query_indexes() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("t.db");
+        {
+            let conn = Connection::open(&path).unwrap();
+            for sql in &MIGRATIONS[..17] {
+                conn.execute_batch(sql).unwrap();
+            }
+            conn.execute_batch("PRAGMA user_version = 17;").unwrap();
+        }
+        let conn = open(&path).unwrap();
+        let v: i64 = conn
+            .pragma_query_value(None, "user_version", |r| r.get(0))
+            .unwrap();
+        assert_eq!(v, SCHEMA_VERSION);
+
+        let names: Vec<String> = conn
+            .prepare("SELECT name FROM sqlite_master WHERE type = 'index'")
+            .unwrap()
+            .query_map([], |row| row.get::<_, String>(0))
+            .unwrap()
+            .map(|row| row.unwrap())
+            .collect();
+        for index in [
+            "tasks_team_status_updated",
+            "tasks_team_updated",
+            "tasks_owner_updated",
+            "events_team_kind_seq",
+            "events_team_task_seq",
+            // 线程索引重建过：带上了 id 这一列的次序键。
+            "message_threads_team",
+        ] {
+            assert!(
+                names.iter().any(|name| name == index),
+                "缺少索引 {index}：{names:?}"
+            );
+        }
+        // 重建后的线程索引列序是 (team_id, updated_at, id)。
+        let columns: Vec<String> = conn
+            .prepare("PRAGMA index_info(message_threads_team)")
+            .unwrap()
+            .query_map([], |row| row.get::<_, String>(2))
+            .unwrap()
+            .map(|row| row.unwrap())
+            .collect();
+        assert_eq!(columns, ["team_id", "updated_at", "id"]);
     }
 }

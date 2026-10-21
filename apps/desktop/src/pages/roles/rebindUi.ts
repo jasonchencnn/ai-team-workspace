@@ -1,11 +1,10 @@
 // 换绑（Harness 重新绑定）的纯逻辑：方式文案、候选实例筛选、待生效摘要与待投递消息判定。
 //
-// 怎么换、何时换由内核决定（crates/teamspace-core/src/service/rebind.rs），
+// 怎么换、何时换、哪些执行算「进行中」都由内核决定（crates/teamspace-core/src/service/），
 // 前端只负责把后端返回的事实翻译成中文文案；所有判定都写成纯函数，单元测试直接锁住。
 import type { HarnessInstance } from "../../bindings/HarnessInstance.js";
 import type { PendingBinding } from "../../bindings/PendingBinding.js";
 import type { RebindMode } from "../../bindings/RebindMode.js";
-import type { RunStatus } from "../../bindings/RunStatus.js";
 
 /** 三种换绑方式，与内核的 RebindMode 一一对应。 */
 export const REBIND_MODES: RebindMode[] = ["after_current", "cancel_and_rerun", "manual_takeover"];
@@ -39,13 +38,14 @@ export const REBIND_MODE_OPTIONS: RebindModeOption[] = [
   {
     mode: "cancel_and_rerun",
     label: "取消当前执行，由新 Harness 重新执行",
-    consequence: "取消当前执行并立即换绑；该任务会在新 Harness 上重新开始执行。",
+    consequence:
+      "取消当前执行并立即换绑；被取消的任务都会在新 Harness 上重新开始执行（重跑失败不回滚换绑，会另行通知）。",
     recommended: false,
   },
   {
     mode: "manual_takeover",
     label: "立即人工接管，暂不自动执行",
-    consequence: "取消当前执行并立即换绑；任务转为受阻（人工接管），由你接手处理。",
+    consequence: "立即换绑；当前执行记为已被接管，任务留在执行中，你改完可以直接提交验收。",
     recommended: false,
   },
 ];
@@ -67,18 +67,6 @@ export function rebindModeOption(mode: RebindMode): RebindModeOption {
     REBIND_MODE_OPTIONS.find((option) => option.mode === mode) ??
     (REBIND_MODE_OPTIONS[0] as RebindModeOption)
   );
-}
-
-/**
- * 仍算「进行中」的执行状态。
- * 与内核的 ACTIVE_SQL（queued / running / waiting_permission）保持一致：
- * 只有这三种执行还在跑，换绑才有「完成后更换」这个选项。
- */
-export const ACTIVE_RUN_STATUSES: RunStatus[] = ["queued", "running", "waiting_permission"];
-
-/** 判断一个执行状态是否仍在进行中。 */
-export function isActiveRunStatus(status: RunStatus): boolean {
-  return ACTIVE_RUN_STATUSES.includes(status);
 }
 
 /**
@@ -107,15 +95,14 @@ export interface PendingBindingSummary {
 
 /**
  * 待生效绑定摘要。
- * 旧实例名来自岗位的当前绑定（pendingBinding 只记目标实例）；
- * 岗位没绑实例时显示「未绑定」，不编造名字。
+ * 旧实例名来自内核记下的「发起换绑时的当前绑定」（`previousHarnessName`）：
+ * 岗位没有绑定过实例时显示「未绑定」，不编造名字。
  */
 export function pendingBindingSummary(
   pending: PendingBinding,
-  currentHarnessName: string | null,
   requestedAtText: string,
 ): PendingBindingSummary {
-  const oldName = currentHarnessName ?? "未绑定";
+  const oldName = pending.previousHarnessName ?? "未绑定";
   const newName = pending.harnessName;
   const modeLabel = rebindModeLabel(pending.mode);
   return {
@@ -136,8 +123,13 @@ export function pendingDeliveryNote(bindingName: string | null): string {
   return `入队时绑定：${bindingName ?? "无有效绑定"}，将按生效后的绑定投递`;
 }
 
-/** 启动包预览为空时的提示：已执行过就不需要交接。 */
-export const HANDOFF_EMPTY_TEXT = "当前 Harness 已在此岗位执行过，不会附加交接";
+/**
+ * 启动包预览为空时的提示。
+ *
+ * 空有两种情况，都不附加交接：当前 Harness 已经在这个岗位执行过（同一个环境不用交底），
+ * 或者岗位从没执行过、还没有可交接的历史（D35③）。一句话覆盖两种，不说错原因。
+ */
+export const HANDOFF_EMPTY_TEXT = "该岗位在当前 Harness 上没有需要交接的内容，不会附加交接";
 
 /** 岗位没有绑定实例时的启动包提示：没东西可交接。 */
 export const HANDOFF_EMPTY_TEXT_UNBOUND = "岗位未绑定 Harness，不会附加交接";

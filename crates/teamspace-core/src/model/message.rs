@@ -146,6 +146,54 @@ pub struct Message {
     pub binding_harness_id: Option<String>,
 }
 
+/// 发往某个岗位的消息：换绑界面要看「换绑期间还有哪些消息在排队」（M6-04）。
+///
+/// 一条查询取回线程主题与入队时的绑定实例名，界面不必再逐个取线程详情、
+/// 也不用另查实例列表去翻译绑定 id。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct RoleMessage {
+    pub id: String,
+    pub thread_id: String,
+    /// 线程主题。
+    pub thread_subject: String,
+    pub team_id: String,
+    /// 关联任务；可缺省。
+    pub task_id: Option<String>,
+    /// 接收岗位。
+    pub to_role_id: String,
+    /// 消息正文。
+    pub body: String,
+    /// 投递状态。
+    pub status: MessageStatus,
+    /// 状态显示名。
+    pub status_label: String,
+    /// 原始发送时间。
+    pub created_at: String,
+    /// 入队时间（重发时更新）；过期判定与排序用它。
+    pub queued_at: String,
+    /// 入队时接收岗位绑定的 Harness 实例 id（快照，仅留痕）。
+    pub binding_harness_id: Option<String>,
+    /// 入队时接收岗位绑定的 Harness 实例名；实例已删除或当时没有绑定时为 `null`。
+    pub binding_harness_name: Option<String>,
+}
+
+/// 发往某岗位的消息的筛选条件。
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct ListRoleMessagesQuery {
+    /// 接收岗位；必填。
+    pub role_id: String,
+    /// 只看这些投递状态；缺省或为空时为「排队中 + 投递中」。
+    #[ts(optional = nullable)]
+    pub statuses: Option<Vec<MessageStatus>>,
+    /// 最多返回条数，默认与上限都是 200。
+    #[ts(optional = nullable)]
+    pub limit: Option<u32>,
+}
+
 /// 发送消息的入参。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]

@@ -20,6 +20,16 @@ harnessId: string,
  */
 harnessName: string, 
 /**
+ * 发起换绑时岗位的当前绑定实例 id；发起时岗位没有绑定过实例为 `null`。
+ *
+ * 留痕用：待生效期间当前绑定仍是旧实例，这个字段记下「换绑之前绑的是哪个」。
+ */
+previousHarnessId: string | null, 
+/**
+ * 发起换绑时岗位的当前绑定实例名；发起时岗位没有绑定过实例为 `null`。
+ */
+previousHarnessName: string | null, 
+/**
  * 换绑方式。
  */
 mode: RebindMode, 
