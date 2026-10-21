@@ -4,6 +4,7 @@ import { ActivityPage } from "./pages/activity/ActivityPage.js";
 import { FilesPage } from "./pages/files/FilesPage.js";
 import { HarnessDetailPage } from "./pages/harness-detail/HarnessDetailPage.js";
 import { IndexRedirect } from "./pages/index/IndexRedirect.js";
+import { MessagesPage } from "./pages/messages/MessagesPage.js";
 import { ReviewPage } from "./pages/review/ReviewPage.js";
 import { RoleWorkbenchPage } from "./pages/role-workbench/RoleWorkbenchPage.js";
 import { RolesPage } from "./pages/roles/RolesPage.js";
@@ -29,6 +30,8 @@ export function AppRoutes() {
         <Route path="teams/:teamId/roles" element={<RolesPage />} />
         <Route path="teams/:teamId/roles/:roleId/workbench" element={<RoleWorkbenchPage />} />
         <Route path="teams/:teamId/activity" element={<ActivityPage />} />
+        {/* 岗位通信（M5-03）：可带 ?thread= 打开指定线程。 */}
+        <Route path="teams/:teamId/messages" element={<MessagesPage />} />
         <Route path="teams/:teamId/harnesses/:harnessId" element={<HarnessDetailPage />} />
         <Route path="*" element={<IndexRedirect />} />
       </Route>

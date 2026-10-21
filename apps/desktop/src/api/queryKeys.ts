@@ -1,6 +1,7 @@
 // 查询 key 约定：[资源名, ...参数]。同一资源的 key 全部在这里定义，
 // 页面不要手写字符串 key；变更后用前缀失效，例如 invalidateQueries({ queryKey: queryKeys.tasks(teamId) })。
 import type { EventQuery } from "../bindings/EventQuery.js";
+import type { ListThreadsQuery } from "../bindings/ListThreadsQuery.js";
 import type { TaskBoardQuery } from "../bindings/TaskBoardQuery.js";
 
 export const queryKeys = {
@@ -28,6 +29,14 @@ export const queryKeys = {
   events: (teamId: string, query: EventQuery) => ["teams", teamId, "events", query] as const,
   /** Leader 接入配置（团队空间页的「接入 Leader」卡片）。 */
   leaderIntegration: (teamId: string) => ["teams", teamId, "leader-integration"] as const,
+  /** 岗位消息的全部查询前缀：线程列表与线程详情都挂在它下面，失效时一起刷新。 */
+  messageThreads: (teamId: string) => ["teams", teamId, "message-threads"] as const,
+  /** 线程列表（带岗位与任务筛选）。 */
+  messageThreadList: (teamId: string, query: ListThreadsQuery) =>
+    ["teams", teamId, "message-threads", "list", query] as const,
+  /** 一个线程及其中的消息。 */
+  messageThread: (teamId: string, threadId: string) =>
+    ["teams", teamId, "message-threads", "detail", threadId] as const,
   /** 共享文件页的工作空间 Markdown 列表。挂在团队之下，随「刷新文件列表」重新取。 */
   markdownFiles: (teamId: string) => ["teams", teamId, "markdown-files"] as const,
   markdownFile: (teamId: string, path: string) =>

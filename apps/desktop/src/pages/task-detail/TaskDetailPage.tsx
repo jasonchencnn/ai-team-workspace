@@ -8,6 +8,7 @@ import {
   getTask,
   listRoles,
   listTaskStatuses,
+  listThreads,
 } from "../../api/commands.js";
 import { errorMessage } from "../../api/errors.js";
 import { queryKeys } from "../../api/queryKeys.js";
@@ -22,6 +23,7 @@ import {
   Tag,
   TextareaField,
 } from "../../components/index.js";
+import type { Message } from "../../bindings/Message.js";
 import type { TaskStatus } from "../../bindings/TaskStatus.js";
 import type { TaskSummary } from "../../bindings/TaskSummary.js";
 import { RunExecutionArea } from "./run/RunExecutionArea.js";
@@ -30,6 +32,7 @@ import { canGoReview, showStartRunButton } from "./run/runUi.js";
 import { isRunActive } from "./run/useRunEvents.js";
 import { useRunRecordPolling } from "./run/useRunPolling.js";
 import { useTaskRuns } from "./run/useTaskRuns.js";
+import { SendMessageDialog } from "../messages/SendMessageDialog.js";
 import { isMarkdownRef } from "../files/filesUi.js";
 import { formatTime, statusTone, taskPanelSearch } from "../tasks/taskUi.js";
 import "./task-detail.css";
@@ -42,6 +45,9 @@ export function TaskDetailPage() {
   const [blockingOpen, setBlockingOpen] = useState(false);
   const [reason, setReason] = useState("");
   const [takeoverOpen, setTakeoverOpen] = useState(false);
+  // 岗位通信：给负责岗位发消息的弹窗，以及刚发出的消息所在的线程。
+  const [messageOpen, setMessageOpen] = useState(false);
+  const [sentThreadId, setSentThreadId] = useState<string | null>(null);
 
   const detail = useQuery({
     queryKey: queryKeys.task(teamId, taskId),
@@ -57,6 +63,12 @@ export function TaskDetailPage() {
     queryKey: queryKeys.roles(teamId),
     queryFn: () => listRoles(teamId),
     enabled: teamId !== "",
+  });
+  // 与本任务关联的岗位通信线程：详情页给出去线程的入口，往来正文在岗位通信页看。
+  const threads = useQuery({
+    queryKey: queryKeys.messageThreadList(teamId, { teamId, taskId, roleId: null }),
+    queryFn: () => listThreads({ teamId, taskId, roleId: null }),
+    enabled: teamId !== "" && taskId !== "",
   });
   const runApi = useTaskRuns(teamId, taskId);
   // 事件之外的第二条通道（D23）：执行进行中定时刷新执行列表、任务详情与待验收入口，
@@ -434,6 +446,37 @@ export function TaskDetailPage() {
             <p className="task-detail__caption">当前绑定</p>
             <p>{harness === null ? "未绑定" : harness.name}</p>
           </div>
+          <div className="task-detail__message">
+            <p className="task-detail__caption">岗位通信</p>
+            <Button
+              variant="neutral"
+              onClick={() => {
+                setSentThreadId(null);
+                setMessageOpen(true);
+              }}
+            >
+              给负责岗位发消息
+            </Button>
+            {sentThreadId === null ? null : (
+              <p className="task-detail__message-sent">
+                消息已排队。
+                <Link to={`/teams/${teamId}/messages?thread=${sentThreadId}`}>查看线程</Link>
+              </p>
+            )}
+            {(threads.data ?? []).length === 0 ? (
+              <p className="task-detail__muted">还没有与本任务相关的通信线程。</p>
+            ) : (
+              <ul className="task-detail__thread-list">
+                {(threads.data ?? []).map((thread) => (
+                  <li key={thread.id}>
+                    <Link to={`/teams/${teamId}/messages?thread=${thread.id}`}>
+                      {thread.subject}
+                    </Link>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
           <Button variant="neutral" onClick={() => void navigate(`/teams/${teamId}/roles`)}>
             查看岗位与绑定
           </Button>
@@ -498,6 +541,20 @@ export function TaskDetailPage() {
             执行目录：{run.execDir}
           </p>
         </Modal>
+      ) : null}
+
+      {messageOpen ? (
+        <SendMessageDialog
+          teamId={teamId}
+          defaultRoleId={owner.id}
+          defaultTaskId={task.id}
+          onClose={() => {
+            setMessageOpen(false);
+          }}
+          onSent={(message: Message) => {
+            setSentThreadId(message.threadId);
+          }}
+        />
       ) : null}
     </>
   );
