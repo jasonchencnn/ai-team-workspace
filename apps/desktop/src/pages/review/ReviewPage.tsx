@@ -20,7 +20,6 @@ import {
   Button,
   Card,
   ErrorBanner,
-  Modal,
   PageHeader,
   Panel,
   Spinner,
@@ -31,6 +30,7 @@ import type { ApproveReviewResult } from "../../bindings/ApproveReviewResult.js"
 import type { ReviewView } from "../../bindings/ReviewView.js";
 import { fileChangeLabel, fileChangeTone, NO_CHANGES_TEXT } from "../task-detail/run/runUi.js";
 import { formatTime } from "../tasks/taskUi.js";
+import { HighRiskConfirm } from "../inbox/HighRiskConfirm.js";
 import { DiffCard } from "./DiffCard.js";
 import { advancedTasksOf, formatCount, mergeCommand, reviewActionState } from "./reviewUi.js";
 import "./review.css";
@@ -562,154 +562,132 @@ export function ReviewPage() {
       </div>
 
       {confirm === "merge" ? (
-        <Modal
+        <HighRiskConfirm
           title="确认合并"
-          description={`${task.key} ${task.title} · 第 ${String(run.attempt)} 次执行`}
-          onClose={() => {
+          source={`${task.key} ${task.title} · 第 ${String(run.attempt)} 次执行`}
+          scope={[
+            { label: "动作", value: "通过并合并（--no-ff）" },
+            { label: "范围", value: `${view.branch ?? "—"} → ${view.baseBranch ?? "当前分支"}` },
+            { label: "有效期", value: "一次性" },
+            {
+              label: "理由",
+              value: run.noChanges
+                ? `注意：这次执行没有产生任何改动（${NO_CHANGES_TEXT}）。`
+                : isGit
+                  ? "验收通过，把执行分支合并进基线分支。"
+                  : "普通文件夹工作区：通过后清理执行目录。",
+            },
+          ]}
+          policy={[
+            `Role Policy：${owner === null ? "任务负责岗位" : owner}`,
+            "Harness 权限不会超过 Role Policy",
+            "需要 Human 批准后才会写入仓库并推进任务状态。",
+          ]}
+          note="无论批准或拒绝，都会记录请求人、Role、Binding、Run、范围、时间与决定人。合并成功后会删除执行目录与执行分支，不会推送；合并有冲突时会中止合并、基线保持不变，任务转为受阻。"
+          confirmLabel="确认合并"
+          cancelLabel="取消"
+          confirmLoading={approve.isPending}
+          onConfirm={() => {
+            approve.mutate(run.id);
+          }}
+          onCancel={() => {
             setConfirm(null);
           }}
-          actions={
-            <>
-              <Button
-                loading={approve.isPending}
-                onClick={() => {
-                  approve.mutate(run.id);
-                }}
-              >
-                确认合并
-              </Button>
-              <Button
-                variant="neutral"
-                disabled={approve.isPending}
-                onClick={() => {
-                  setConfirm(null);
-                }}
-              >
-                取消
-              </Button>
-            </>
-          }
-        >
-          <p>
-            将以 --no-ff 把执行分支 <code>{view.branch ?? "—"}</code> 合并进{" "}
-            <code>{view.baseBranch ?? "当前分支"}</code>
-            。合并成功后会删除执行目录与执行分支，不会推送。
-            合并有冲突时会中止合并、基线保持不变，任务转为受阻。
-          </p>
-          {run.noChanges ? (
-            <p className="review__warn" role="note">
-              注意：这次执行没有产生任何改动（{NO_CHANGES_TEXT}）。
-            </p>
-          ) : null}
-        </Modal>
+        />
       ) : null}
       {confirm === "no-changes" ? (
-        <Modal
+        <HighRiskConfirm
           title="确认通过（这次执行没有任何改动）"
-          description={`${task.key} ${task.title} · 第 ${String(run.attempt)} 次执行`}
-          onClose={() => {
+          source={`${task.key} ${task.title} · 第 ${String(run.attempt)} 次执行`}
+          scope={[
+            { label: "动作", value: "通过并标记任务完成" },
+            { label: "范围", value: `${task.key} · ${task.title}` },
+            { label: "有效期", value: "一次性" },
+            {
+              label: "理由",
+              value: `${NO_CHANGES_TEXT}。${
+                isGit
+                  ? "执行分支相对基线提交没有任何差异，合并过去也不会带来改动。"
+                  : "执行前后的目录快照比对没有发现改动。"
+              }`,
+            },
+          ]}
+          policy={[
+            `Role Policy：${owner === null ? "任务负责岗位" : owner}`,
+            "Harness 权限不会超过 Role Policy",
+            "确认通过后任务会完成；如果这次执行本应产出结果，建议改为「退回」并写明原因。",
+          ]}
+          note="无论批准或拒绝，都会记录请求人、Role、Binding、Run、范围、时间与决定人。"
+          confirmLabel="仍然通过"
+          cancelLabel="取消"
+          confirmLoading={approve.isPending}
+          onConfirm={() => {
+            approve.mutate(run.id);
+          }}
+          onCancel={() => {
             setConfirm(null);
           }}
-          actions={
-            <>
-              <Button
-                loading={approve.isPending}
-                onClick={() => {
-                  approve.mutate(run.id);
-                }}
-              >
-                仍然通过
-              </Button>
-              <Button
-                variant="neutral"
-                disabled={approve.isPending}
-                onClick={() => {
-                  setConfirm(null);
-                }}
-              >
-                取消
-              </Button>
-            </>
-          }
-        >
-          <p>{NO_CHANGES_TEXT}。</p>
-          <p>
-            {isGit
-              ? "执行分支相对基线提交没有任何差异，合并过去也不会带来改动。"
-              : "执行前后的目录快照比对没有发现改动。"}
-            确认通过后任务会完成；如果这次执行本应产出结果，建议改为「退回」并写明原因。
-          </p>
-        </Modal>
+        />
       ) : null}
       {confirm === "resolve" ? (
-        <Modal
+        <HighRiskConfirm
           title="已手动合并，标记完成"
-          description={`${task.key} ${task.title}`}
-          onClose={() => {
+          source={`${task.key} ${task.title}`}
+          scope={[
+            { label: "动作", value: "标记任务完成并清理执行分支" },
+            { label: "范围", value: `${view.branch ?? "—"} → ${view.baseBranch ?? "当前分支"}` },
+            { label: "有效期", value: "一次性" },
+            {
+              label: "理由",
+              value: "你在仓库里手动合并了执行分支，Teamspace 复核后标记完成。",
+            },
+          ]}
+          policy={[
+            `Role Policy：${owner === null ? "任务负责岗位" : owner}`,
+            "Harness 权限不会超过 Role Policy",
+            "Teamspace 会检查执行分支已经并入基线分支；还没有并入时会被拒绝。",
+          ]}
+          note="无论批准或拒绝，都会记录请求人、Role、Binding、Run、范围、时间与决定人。"
+          confirmLabel="确认标记完成"
+          cancelLabel="取消"
+          confirmLoading={resolve.isPending}
+          onConfirm={() => {
+            resolve.mutate(run.id);
+          }}
+          onCancel={() => {
             setConfirm(null);
           }}
-          actions={
-            <>
-              <Button
-                loading={resolve.isPending}
-                onClick={() => {
-                  resolve.mutate(run.id);
-                }}
-              >
-                确认标记完成
-              </Button>
-              <Button
-                variant="neutral"
-                disabled={resolve.isPending}
-                onClick={() => {
-                  setConfirm(null);
-                }}
-              >
-                取消
-              </Button>
-            </>
-          }
-        >
-          <p>
-            Teamspace 会检查执行分支已经并入基线分支；通过后任务完成，并清理执行目录与执行分支。
-            还没有并入时会被拒绝。
-          </p>
-        </Modal>
+        />
       ) : null}
       {confirm === "rerun" ? (
-        <Modal
+        <HighRiskConfirm
           title="重新执行"
-          description={`${task.key} ${task.title}`}
-          onClose={() => {
+          source={`${task.key} ${task.title}`}
+          scope={[
+            { label: "动作", value: "丢弃旧执行，基于最新基线重新执行" },
+            { label: "范围", value: `${view.branch ?? "—"}（含其中未合并的改动）` },
+            { label: "有效期", value: "一次性" },
+            {
+              label: "理由",
+              value: "会删除旧的执行目录与执行分支（包括其中未合并的改动），任务回到 READY。",
+            },
+          ]}
+          policy={[
+            `Role Policy：${owner === null ? "任务负责岗位" : owner}`,
+            "Harness 权限不会超过 Role Policy",
+            "之后在任务详情点「开始执行」，基于最新基线新建一次执行。",
+          ]}
+          note="旧分支的名称与提交会记在活动里。无论批准或拒绝，都会记录请求人、Role、Binding、Run、范围、时间与决定人。"
+          confirmLabel="确认，丢弃旧执行"
+          cancelLabel="取消"
+          confirmLoading={rerun.isPending}
+          onConfirm={() => {
+            rerun.mutate(run.id);
+          }}
+          onCancel={() => {
             setConfirm(null);
           }}
-          actions={
-            <>
-              <Button
-                loading={rerun.isPending}
-                onClick={() => {
-                  rerun.mutate(run.id);
-                }}
-              >
-                确认，丢弃旧执行
-              </Button>
-              <Button
-                variant="neutral"
-                disabled={rerun.isPending}
-                onClick={() => {
-                  setConfirm(null);
-                }}
-              >
-                取消
-              </Button>
-            </>
-          }
-        >
-          <p>
-            会删除旧的执行目录与执行分支（包括其中未合并的改动），任务回到 READY；之后在任务详情点
-            「开始执行」，基于最新基线新建一次执行。旧分支的名称与提交会记在活动里。
-          </p>
-        </Modal>
+        />
       ) : null}
     </>
   );
