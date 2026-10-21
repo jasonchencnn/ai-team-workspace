@@ -1,5 +1,5 @@
 import { useQueries, useQuery } from "@tanstack/react-query";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type CSSProperties } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router";
 
 import {
@@ -538,9 +538,11 @@ export function TasksPage() {
       ) : view === "board" ? (
         <div
           className="task-board"
-          style={{
-            gridTemplateColumns: `repeat(${String(displayColumns.length)}, minmax(220px, 1fr))`,
-          }}
+          style={
+            {
+              "--board-column-count": String(displayColumns.length),
+            } as CSSProperties
+          }
           // 列数多时在看板区域内横向滚动，让键盘用户也能滚动。
           tabIndex={0}
           aria-label="任务看板"
@@ -619,7 +621,16 @@ export function TasksPage() {
                       </Link>
                     </td>
                     <td className="task-table__title" title={task.title}>
-                      {task.title}
+                      {/* 标题也做成链接：不只靠整行点击，键盘也能直接打开任务。 */}
+                      <Link
+                        className="task-table__title-link"
+                        to={`/teams/${teamId}/tasks/${task.id}${detailSearch}`}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                        }}
+                      >
+                        {task.title}
+                      </Link>
                     </td>
                     <td>{task.owner.name}</td>
                     <td>

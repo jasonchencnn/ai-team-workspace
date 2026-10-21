@@ -6,6 +6,10 @@
   --color-muted: #626978;
   --color-line: #e1e5ec;
   --color-brand: #465bd8;
+  /* 禁用态：不用 opacity 淡化，改用自带对比度的实色（正文 4.5:1）。 */
+  --color-disabled-surface: #e9ecf1;
+  --color-disabled-ink: #525a6b;
+  --color-disabled-brand-surface: #dde2f7;
   --color-info: #3653c7;
   --color-info-surface: #eef1ff;
   --color-warning: #8a5a00;
@@ -33,6 +37,14 @@
 @media (min-width: 768px) {
   :root {
     --navigation-width: 216px;
+  }
+}
+
+/* 窄屏（< 768px）：内容区留白收紧，侧边栏收成抽屉（见 shell.css）。 */
+@media (max-width: 767px) {
+  :root {
+    --space-content: 16px;
+    --space-section: 16px;
   }
 }
 

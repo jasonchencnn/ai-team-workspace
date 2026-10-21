@@ -238,3 +238,25 @@
   flex-wrap: wrap;
   gap: 12px;
 }
+
+/* 窄屏：表单控件与按钮占满可用宽度，避免被挤成窄条。 */
+@media (max-width: 767px) {
+  .task-form__file-controls,
+  .task-form__actions {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .task-form__option {
+    flex-wrap: wrap;
+  }
+
+  .task-form__option-title {
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+
+  .task-form__actions .ui-button {
+    width: 100%;
+  }
+}
