@@ -3576,6 +3576,11 @@ name = "teamspace-mcp"
 version = "0.1.0"
 dependencies = [
  "rmcp",
+ "serde",
+ "serde_json",
+ "teamspace-core",
+ "tempfile",
+ "tokio",
 ]
 
 [[package]]
