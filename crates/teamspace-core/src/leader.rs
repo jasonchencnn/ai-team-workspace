@@ -10,7 +10,11 @@
 //!
 //! 权限边界不变（D26）：这里只是生成配置与写一个工作空间文件，不扩大 Leader 的能力。
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
+use std::time::SystemTime;
 
 use serde_json::{Value, json};
 
@@ -25,6 +29,8 @@ pub const MCP_SERVER_NAME: &str = "teamspace";
 pub const MCP_BINARY_NAME: &str = "teamspace-mcp";
 /// 工作空间里的 MCP 配置文件名（Claude Code 项目级配置）。
 pub const MCP_CONFIG_FILE: &str = ".mcp.json";
+/// 写 `.mcp.json` 前的备份文件名（原文件的内容留在那里）。
+pub const MCP_CONFIG_BACKUP_FILE: &str = ".mcp.json.bak";
 /// 控制 socket 的文件名（放在应用数据目录里）。
 pub const SOCKET_FILE_NAME: &str = "teamspace-control.sock";
 /// 环境变量名：覆盖控制 socket 的路径。
@@ -78,15 +84,25 @@ pub struct BinaryLocation {
 ///
 /// `exe` 是宿主程序的可执行文件路径（一般是 `target/<profile>/` 下的程序）：
 /// 开发模式时它的同级目录就是 cargo 的产物目录，打包后是应用包内的可执行文件目录。
+///
+/// 只在「确实是可执行文件」的候选里挑，并取其中**修改时间最新**的那个：
+/// 免得把 `cargo build` 中断留下的半成品或旧版本写进配置。
 pub fn locate_binary(exe: Option<&Path>) -> BinaryLocation {
     let candidates = candidate_paths(exe);
+    let mut best: Option<(PathBuf, SystemTime)> = None;
     for path in &candidates {
-        if path.is_file() {
-            return BinaryLocation {
-                path: path.clone(),
-                found: true,
-            };
+        let Some(modified) = executable_mtime(path) else {
+            continue;
+        };
+        let newer = best
+            .as_ref()
+            .is_none_or(|(_, best_time)| modified > *best_time);
+        if newer {
+            best = Some((path.clone(), modified));
         }
+    }
+    if let Some((path, _)) = best {
+        return BinaryLocation { path, found: true };
     }
     BinaryLocation {
         path: candidates
@@ -95,6 +111,28 @@ pub fn locate_binary(exe: Option<&Path>) -> BinaryLocation {
             .unwrap_or_else(|| PathBuf::from(MCP_BINARY_NAME)),
         found: false,
     }
+}
+
+/// 候选是不是可执行文件；是的话返回它的修改时间（取不到就当最旧）。
+fn executable_mtime(path: &Path) -> Option<SystemTime> {
+    let meta = std::fs::metadata(path).ok()?;
+    if !meta.is_file() || !is_executable(&meta) {
+        return None;
+    }
+    Some(meta.modified().unwrap_or(SystemTime::UNIX_EPOCH))
+}
+
+/// 文件有没有可执行位（Unix 上看权限位；其它平台只要是普通文件就算）。
+#[cfg(unix)]
+fn is_executable(meta: &std::fs::Metadata) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    meta.permissions().mode() & 0o111 != 0
+}
+
+/// 文件有没有可执行位（非 Unix 平台没有权限位之说）。
+#[cfg(not(unix))]
+fn is_executable(_meta: &std::fs::Metadata) -> bool {
+    true
 }
 
 /// 候选路径：打包后是应用包内的可执行文件，开发模式是 cargo 的 `target/<profile>/` 产物。
@@ -239,6 +277,113 @@ pub fn merge_mcp_config(existing: Option<&str>, entry: &Value) -> Result<String>
     Ok(text)
 }
 
+/// 进程内按路径的互斥锁：同一个 `.mcp.json` 的并发写入串行。
+///
+/// 两个应用实例或两次快速点击同时写同一个工作空间时，后写的人会拿旧快照覆盖前一个；
+/// 这里按目标路径排队，避免互相覆盖。
+static WRITE_LOCKS: OnceLock<Mutex<HashMap<PathBuf, Arc<Mutex<()>>>>> = OnceLock::new();
+
+/// 写锁表。
+fn write_locks() -> &'static Mutex<HashMap<PathBuf, Arc<Mutex<()>>>> {
+    WRITE_LOCKS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// 拿到某个路径的写锁（调用方拿着它一直锁到写完）。
+fn lock_for(path: &Path) -> Arc<Mutex<()>> {
+    let mut locks = write_locks()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    Arc::clone(
+        locks
+            .entry(path.to_path_buf())
+            .or_insert_with(|| Arc::new(Mutex::new(()))),
+    )
+}
+
+/// 备份文件路径：`.mcp.json` 的备份是 `.mcp.json.bak`。
+fn backup_path(target: &Path) -> PathBuf {
+    target.with_file_name(MCP_CONFIG_BACKUP_FILE)
+}
+
+/// 原子写入：同目录临时文件 + `rename` 替换。
+///
+/// 直接 `write` 会先截断原文件：写到一半失败就把用户的配置弄没了（里面常有别的
+/// MCP 服务的 `env`，可能带 API Key）。临时文件与目标同目录，`rename` 在同一文件系统上
+/// 是原子的：要么整个新文件生效，要么原文件原样不动。
+fn atomic_write(target: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let dir = target.parent().unwrap_or_else(|| Path::new("."));
+    let name = target
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| MCP_CONFIG_FILE.to_owned());
+    let seq = COUNTER.fetch_add(1, Ordering::Relaxed);
+    let temp = dir.join(format!(".{name}.tmp-{}-{seq}", std::process::id()));
+    std::fs::write(&temp, bytes)?;
+    match std::fs::rename(&temp, target) {
+        Ok(()) => Ok(()),
+        Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {
+            // Windows 上 rename 不能覆盖已有文件：删掉旧的再改名。
+            std::fs::remove_file(target)?;
+            if let Err(err) = std::fs::rename(&temp, target) {
+                let _ = std::fs::remove_file(&temp);
+                return Err(err);
+            }
+            Ok(())
+        }
+        Err(err) => {
+            let _ = std::fs::remove_file(&temp);
+            Err(err)
+        }
+    }
+}
+
+/// 把 `mcpServers.teamspace` 合并进工作空间的 `.mcp.json` 并原子写回。
+///
+/// `binary` 是 `teamspace-mcp` 可执行文件的位置；没找到可执行文件时**不写**：
+/// 写出去的配置指向不存在的二进制，Leader 那边只会看到「连不上」。
+fn write_mcp_config(
+    workspace_path: &str,
+    binary: &BinaryLocation,
+    socket_override: Option<&str>,
+    git_workspace: bool,
+) -> Result<McpConfigWrite> {
+    if !binary.found {
+        return Err(Error::invalid(format!(
+            "还没有可执行的 {MCP_BINARY_NAME}，没有写入 {MCP_CONFIG_FILE}；请先构建：{BUILD_HINT}"
+        )));
+    }
+    let target = PathBuf::from(workspace_path).join(MCP_CONFIG_FILE);
+    let entry = server_entry(&binary.path.display().to_string(), socket_override);
+    // 同一个 `.mcp.json` 的并发写入串行：后写的人不会拿旧快照覆盖前一个。
+    let lock = lock_for(&target);
+    let _guard = lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let existing = match std::fs::read_to_string(&target) {
+        Ok(text) => Some(text),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => None,
+        Err(err) => {
+            return Err(Error::internal(format!(
+                "读取 {} 失败：{err}",
+                target.display()
+            )));
+        }
+    };
+    let text = merge_mcp_config(existing.as_deref(), &entry)?;
+    // 原文件先备份一份：写坏了还能找回来。
+    if let Some(original) = existing.as_deref() {
+        let backup = backup_path(&target);
+        std::fs::write(&backup, original.as_bytes())
+            .map_err(|err| Error::internal(format!("备份 {} 失败：{err}", backup.display())))?;
+    }
+    atomic_write(&target, text.as_bytes())
+        .map_err(|err| Error::internal(format!("写入 {} 失败：{err}", target.display())))?;
+    Ok(McpConfigWrite {
+        path: target.display().to_string(),
+        created: existing.is_none(),
+        git_workspace,
+    })
+}
+
 /// Leader 接入需要的内部信息。
 struct LeaderContext {
     team: Team,
@@ -292,31 +437,18 @@ impl Teamspace {
     ///
     /// 文件不存在时新建；已存在时只替换 `mcpServers.teamspace` 一项，其余内容保留。
     /// 原文件不是合法 JSON 时报错，不覆盖它。
+    ///
+    /// 写入是原子的：同目录临时文件 + `rename` 替换，写入前把原文件备份为 `.mcp.json.bak`；
+    /// 同一个文件的并发写入按路径串行（进程内互斥锁），不会互相覆盖。
+    /// 还没构建出 `teamspace-mcp` 时不写：写出去的配置指向不存在的二进制。
     pub fn write_workspace_mcp_config(&self, team_id: &str) -> Result<McpConfigWrite> {
         let context = self.leader_context(team_id)?;
-        let target = PathBuf::from(&context.team.workspace_path).join(MCP_CONFIG_FILE);
-        let entry = server_entry(
-            &context.binary.path.display().to_string(),
+        write_mcp_config(
+            &context.team.workspace_path,
+            &context.binary,
             context.socket_override.as_deref(),
-        );
-        let existing = match std::fs::read_to_string(&target) {
-            Ok(text) => Some(text),
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => None,
-            Err(err) => {
-                return Err(Error::internal(format!(
-                    "读取 {} 失败：{err}",
-                    target.display()
-                )));
-            }
-        };
-        let text = merge_mcp_config(existing.as_deref(), &entry)?;
-        std::fs::write(&target, text.as_bytes())
-            .map_err(|err| Error::internal(format!("写入 {} 失败：{err}", target.display())))?;
-        Ok(McpConfigWrite {
-            path: target.display().to_string(),
-            created: existing.is_none(),
-            git_workspace: self.is_git_workspace(&context.team.workspace_path),
-        })
+            self.is_git_workspace(&context.team.workspace_path),
+        )
     }
 
     /// 工作空间是不是 Git 仓库（检测失败时按「不是」处理）。
@@ -454,6 +586,18 @@ mod tests {
         assert!(err.to_string().contains("mcpServers 不是对象"), "{err}");
     }
 
+    /// 造一个可执行的假二进制（只测「找不找得到」，不真跑）。
+    fn fake_binary(path: &Path) {
+        std::fs::write(path, b"#!/bin/sh\nexit 0\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut permissions = std::fs::metadata(path).unwrap().permissions();
+            permissions.set_mode(0o755);
+            std::fs::set_permissions(path, permissions).unwrap();
+        }
+    }
+
     /// 可执行文件位置：开发模式取 `target/<profile>/` 下的产物，找到就用它。
     #[test]
     fn locate_binary_prefers_an_existing_candidate() {
@@ -468,7 +612,7 @@ mod tests {
         assert_eq!(missing.path, target.join("teamspace-mcp"));
 
         // 构建了 debug 产物时：找到它。
-        std::fs::write(target.join("teamspace-mcp"), b"#!/bin/sh\n").unwrap();
+        fake_binary(&target.join("teamspace-mcp"));
         let found = locate_binary(Some(&exe));
         assert!(found.found);
         assert_eq!(found.path, target.join("teamspace-mcp"));
@@ -477,10 +621,43 @@ mod tests {
         let release = dir.path().join("target/release");
         std::fs::create_dir_all(&release).unwrap();
         std::fs::remove_file(target.join("teamspace-mcp")).unwrap();
-        std::fs::write(release.join("teamspace-mcp"), b"#!/bin/sh\n").unwrap();
+        fake_binary(&release.join("teamspace-mcp"));
         let release_only = locate_binary(Some(&exe));
         assert!(release_only.found);
         assert_eq!(release_only.path, release.join("teamspace-mcp"));
+    }
+
+    /// 不可执行的文件不算候选：不能把半成品写进配置。
+    #[test]
+    fn locate_binary_ignores_files_without_the_executable_bit() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("target/debug");
+        std::fs::create_dir_all(&target).unwrap();
+        let exe = target.join("desktop");
+        std::fs::write(target.join("teamspace-mcp"), "半成品").unwrap();
+
+        let location = locate_binary(Some(&exe));
+        assert!(!location.found, "{location:?}");
+    }
+
+    /// 多个可执行候选时取修改时间最新的那个。
+    #[test]
+    fn locate_binary_prefers_the_newest_executable() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("target/debug");
+        let release = dir.path().join("target/release");
+        std::fs::create_dir_all(&target).unwrap();
+        std::fs::create_dir_all(&release).unwrap();
+        let exe = target.join("desktop");
+
+        fake_binary(&target.join("teamspace-mcp"));
+        // release 的更新：应当选 release。
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        fake_binary(&release.join("teamspace-mcp"));
+
+        let location = locate_binary(Some(&exe));
+        assert!(location.found, "{location:?}");
+        assert_eq!(location.path, release.join("teamspace-mcp"), "{location:?}");
     }
 
     /// 接入配置：三段文本齐备，socket 路径与工作空间路径正确。
@@ -508,11 +685,15 @@ mod tests {
     #[test]
     fn write_workspace_mcp_config_creates_then_merges() {
         let fixture = plain_fixture();
-        let team = fixture.team("接入团队");
         let target = fixture.ws.join(MCP_CONFIG_FILE);
+        let binary = BinaryLocation {
+            path: PathBuf::from("/opt/teamspace-mcp"),
+            found: true,
+        };
 
-        let created = fixture.ts.write_workspace_mcp_config(&team.id).unwrap();
+        let created = write_mcp_config(&fixture.ws.to_string_lossy(), &binary, None, true).unwrap();
         assert!(created.created);
+        assert!(created.git_workspace, "Git 工作空间的标记要传出去");
         assert_eq!(created.path, target.display().to_string());
         let value: Value =
             serde_json::from_str(&std::fs::read_to_string(&target).unwrap()).unwrap();
@@ -524,7 +705,7 @@ mod tests {
             r#"{"mcpServers":{"other":{"command":"/bin/other"}},"keep":1}"#,
         )
         .unwrap();
-        let merged = fixture.ts.write_workspace_mcp_config(&team.id).unwrap();
+        let merged = write_mcp_config(&fixture.ws.to_string_lossy(), &binary, None, false).unwrap();
         assert!(!merged.created);
         let value: Value =
             serde_json::from_str(&std::fs::read_to_string(&target).unwrap()).unwrap();
@@ -533,15 +714,138 @@ mod tests {
         assert!(value["mcpServers"]["teamspace"]["command"].is_string());
     }
 
+    /// 没找到可执行文件时不写：不能写出一份指向不存在二进制的配置。
+    #[test]
+    fn write_workspace_mcp_config_needs_an_existing_binary() {
+        let fixture = plain_fixture();
+        let target = fixture.ws.join(MCP_CONFIG_FILE);
+        let missing = BinaryLocation {
+            path: PathBuf::from("/opt/teamspace-mcp"),
+            found: false,
+        };
+
+        let err = write_mcp_config(&fixture.ws.to_string_lossy(), &missing, None, false)
+            .expect_err("没有可执行文件时应当报错");
+        assert_eq!(err.kind(), crate::error::ErrorKind::Invalid);
+        assert!(err.to_string().contains(BUILD_HINT), "{err}");
+        assert!(!target.exists(), "不该写出 .mcp.json");
+    }
+
+    /// 公开入口也一样：没构建出可执行文件时直接报错，不写文件。
+    #[test]
+    fn write_workspace_mcp_config_reports_a_missing_binary() {
+        let fixture = plain_fixture();
+        let team = fixture.team("接入团队");
+        let target = fixture.ws.join(MCP_CONFIG_FILE);
+
+        // 测试环境里没有 teamspace-mcp 可执行文件（它在 target/<profile>/ 下，不在这里）。
+        let err = fixture
+            .ts
+            .write_workspace_mcp_config(&team.id)
+            .expect_err("没有可执行文件时应当报错");
+        assert_eq!(err.kind(), crate::error::ErrorKind::Invalid);
+        assert!(err.to_string().contains(MCP_BINARY_NAME), "{err}");
+        assert!(!target.exists(), "不该写出 .mcp.json");
+    }
+
+    /// 写入前把原文件备份成 `.mcp.json.bak`，写坏了还能找回来。
+    #[test]
+    fn write_workspace_mcp_config_backs_up_the_original_file() {
+        let fixture = plain_fixture();
+        let target = fixture.ws.join(MCP_CONFIG_FILE);
+        let backup = fixture.ws.join(MCP_CONFIG_BACKUP_FILE);
+        let binary = BinaryLocation {
+            path: PathBuf::from("/opt/teamspace-mcp"),
+            found: true,
+        };
+        let original = r#"{"mcpServers":{"other":{"command":"/bin/other"}},"keep":1}"#;
+        std::fs::write(&target, original).unwrap();
+
+        write_mcp_config(&fixture.ws.to_string_lossy(), &binary, None, false).unwrap();
+
+        assert!(backup.exists(), "应当有备份文件");
+        assert_eq!(std::fs::read_to_string(&backup).unwrap(), original);
+        // 合并后的文件里，其他内容还在。
+        let value: Value =
+            serde_json::from_str(&std::fs::read_to_string(&target).unwrap()).unwrap();
+        assert_eq!(value["mcpServers"]["other"]["command"], "/bin/other");
+        assert_eq!(value["keep"], 1);
+    }
+
+    /// 写入是原子的：目录里不留临时文件，失败时原文件原样不动。
+    #[test]
+    fn write_workspace_mcp_config_writes_atomically() {
+        let fixture = plain_fixture();
+        let target = fixture.ws.join(MCP_CONFIG_FILE);
+        let binary = BinaryLocation {
+            path: PathBuf::from("/opt/teamspace-mcp"),
+            found: true,
+        };
+
+        write_mcp_config(&fixture.ws.to_string_lossy(), &binary, None, false).unwrap();
+
+        let leftovers: Vec<String> = std::fs::read_dir(&fixture.ws)
+            .unwrap()
+            .filter_map(|entry| entry.ok())
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .filter(|name| name.contains(".tmp-"))
+            .collect();
+        assert!(leftovers.is_empty(), "不该留下临时文件：{leftovers:?}");
+
+        // 合并失败（原文件不是合法 JSON）时，原文件原样不动，也没有备份。
+        std::fs::write(&target, "{不是 JSON").unwrap();
+        let err = write_mcp_config(&fixture.ws.to_string_lossy(), &binary, None, false)
+            .expect_err("不是合法 JSON 时应当报错");
+        assert_eq!(err.kind(), crate::error::ErrorKind::Invalid);
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "{不是 JSON");
+        assert!(
+            !fixture.ws.join(MCP_CONFIG_BACKUP_FILE).exists(),
+            "合并失败时不该写备份"
+        );
+    }
+
+    /// 并发写入同一个文件：串行化之后文件不会写坏。
+    #[test]
+    fn concurrent_writes_keep_the_file_valid() {
+        let fixture = plain_fixture();
+        let target = fixture.ws.join(MCP_CONFIG_FILE);
+        let binary = BinaryLocation {
+            path: PathBuf::from("/opt/teamspace-mcp"),
+            found: true,
+        };
+        let workspace = fixture.ws.to_string_lossy().into_owned();
+
+        let handles: Vec<_> = (0..8)
+            .map(|_| {
+                let workspace = workspace.clone();
+                let binary = binary.clone();
+                std::thread::spawn(move || {
+                    write_mcp_config(&workspace, &binary, None, false).map(|_| ())
+                })
+            })
+            .collect();
+        for handle in handles {
+            handle.join().unwrap().unwrap();
+        }
+
+        let value: Value =
+            serde_json::from_str(&std::fs::read_to_string(&target).unwrap()).unwrap();
+        assert!(value["mcpServers"]["teamspace"]["command"].is_string());
+    }
+
     /// 已有 `.mcp.json` 不是合法 JSON 时报错，文件内容不变。
     #[test]
     fn write_workspace_mcp_config_keeps_unparsable_file() {
         let fixture = plain_fixture();
-        let team = fixture.team("接入团队");
         let target = fixture.ws.join(MCP_CONFIG_FILE);
+        let binary = BinaryLocation {
+            path: PathBuf::from("/opt/teamspace-mcp"),
+            found: true,
+        };
         std::fs::write(&target, "{不是 JSON").unwrap();
 
-        let err = fixture.ts.write_workspace_mcp_config(&team.id).unwrap_err();
+        let err = write_mcp_config(&fixture.ws.to_string_lossy(), &binary, None, false)
+            .expect_err("不是合法 JSON 时应当报错");
         assert_eq!(err.kind(), crate::error::ErrorKind::Invalid);
         assert_eq!(std::fs::read_to_string(&target).unwrap(), "{不是 JSON");
     }
@@ -555,7 +859,5 @@ mod tests {
 
         let integration = fixture.ts.leader_integration(&team.id).unwrap();
         assert!(integration.git_workspace);
-        let written = fixture.ts.write_workspace_mcp_config(&team.id).unwrap();
-        assert!(written.git_workspace);
     }
 }

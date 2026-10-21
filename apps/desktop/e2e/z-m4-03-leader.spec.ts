@@ -96,6 +96,8 @@ test("写入工作空间 .mcp.json：确认后文件出现且内容正确", asyn
   const dialog = page.getByRole("dialog");
   await expect(dialog).toContainText(".mcp.json");
   await expect(dialog).toContainText("保留");
+  // 合并会重排键顺序，提示里写明了。
+  await expect(dialog).toContainText("键顺序");
   await dialog.getByRole("button", { name: "确认写入" }).click();
 
   await expect(card.getByText(/已新建 .*\.mcp\.json/)).toBeVisible();
@@ -109,4 +111,45 @@ test("写入工作空间 .mcp.json：确认后文件出现且内容正确", asyn
   expect(server).toBeDefined();
   expect(server?.command ?? "").toContain("teamspace-mcp");
   expect(server?.env?.TEAMSPACE_CONTROL_SOCKET ?? "").toContain("teamspace-control.sock");
+});
+
+test("已有 .mcp.json 时合并：别的服务保留，原文件留下备份", async ({ page }) => {
+  const file = join(workspace, ".mcp.json");
+  // 先造一份已有配置：别的服务（含凭据）与一份旧的 teamspace 条目。
+  const before = {
+    mcpServers: {
+      other: { command: "/bin/other", env: { API_KEY: "keep-me" } },
+      teamspace: { command: "/old/teamspace-mcp" },
+    },
+    keep: 1,
+  };
+  writeFileSync(file, JSON.stringify(before, null, 2));
+
+  await page.goto(`/#/teams/${team}`);
+  const card = page.locator(".li-panel");
+  await card.getByRole("button", { name: "写入工作空间 .mcp.json" }).click();
+  const dialog = page.getByRole("dialog");
+  await expect(dialog).toContainText("键顺序");
+  await dialog.getByRole("button", { name: "确认写入" }).click();
+  await expect(card.getByText(/已把 teamspace 一项合并进/)).toBeVisible();
+
+  const after = JSON.parse(readFileSync(file, "utf8")) as {
+    mcpServers: Record<string, { command: string; env?: Record<string, string> } | undefined>;
+    keep: number;
+  };
+  // 别的服务与它的凭据都在。
+  expect(after.mcpServers.other?.command).toBe("/bin/other");
+  expect(after.mcpServers.other?.env?.API_KEY).toBe("keep-me");
+  expect(after.keep).toBe(1);
+  // teamspace 一项被换成当前的可执行文件。
+  expect(after.mcpServers.teamspace?.command ?? "").toContain("teamspace-mcp");
+  expect(after.mcpServers.teamspace?.command ?? "").not.toBe("/old/teamspace-mcp");
+
+  // 写入前把原文件备份成 .mcp.json.bak。
+  const backup = join(workspace, ".mcp.json.bak");
+  expect(existsSync(backup)).toBe(true);
+  const backed = JSON.parse(readFileSync(backup, "utf8")) as {
+    mcpServers: Record<string, { command: string } | undefined>;
+  };
+  expect(backed.mcpServers.teamspace?.command).toBe("/old/teamspace-mcp");
 });

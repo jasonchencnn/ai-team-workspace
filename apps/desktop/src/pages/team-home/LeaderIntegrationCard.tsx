@@ -11,9 +11,11 @@ import {
   COPY_FAILED_HINT,
   LEADER_CAN_DO,
   LEADER_CANNOT_DO,
+  canWriteMcpConfig,
   configSections,
   copyLabel,
   gitNotice,
+  writeBlockedHint,
   writeConfirmText,
   writeDoneText,
 } from "./leaderIntegrationUi.js";
@@ -72,6 +74,8 @@ export function LeaderIntegrationCard({ teamId }: { teamId: string }) {
   const data = integration.data;
   const sections = configSections(data);
   const notice = gitNotice(data.gitWorkspace);
+  const writable = canWriteMcpConfig(data);
+  const blocked = writeBlockedHint(data);
 
   const copy = async (key: string, text: string) => {
     try {
@@ -141,6 +145,8 @@ export function LeaderIntegrationCard({ teamId }: { teamId: string }) {
 
       <div className="li-actions">
         <Button
+          disabled={!writable}
+          title={blocked ?? undefined}
           onClick={() => {
             setConfirming(true);
           }}
@@ -150,6 +156,7 @@ export function LeaderIntegrationCard({ teamId }: { teamId: string }) {
         <span className="li-note">工作空间：{data.workspacePath}</span>
       </div>
 
+      {blocked === null ? null : <p className="li-warn">{blocked}</p>}
       {notice === null ? null : <p className="li-note">{notice}</p>}
       {written === null ? null : <p className="li-done">{written}</p>}
       {write.error === null ? null : <ErrorBanner error={write.error} />}

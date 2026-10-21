@@ -64,8 +64,8 @@ Codex 等支持 stdio MCP 的客户端同理：在其 MCP 配置里登记同一�
 
 | 工具 | 参数 | 说明 |
 |---|---|---|
-| `create_task` | `title`、`role`、`team`（可选）、`description`、`status`（`todo`/`ready`）、`depends_on`、`file_refs` | 创建任务 |
-| `update_task` | `task`、`title`/`description`/`role`/`depends_on`/`file_refs`（均可选） | 编辑任务；没给的字段保持原样 |
+| `create_task` | `title`、`role`、`team`（可选）、`description`、`status`（`todo`/`ready`）、`depends_on`、`file_refs` | 创建任务；`file_refs` 可写 `路径#锚点` |
+| `update_task` | `task`、`title`/`description`/`role`/`depends_on`/`file_refs`（均可选） | 编辑任务；没给的字段保持原样；`file_refs` 可写 `路径#锚点`，锚点不会被丢掉 |
 | `set_dependencies` | `task`、`depends_on` | 设置依赖（空数组表示清空）；成环会被拒绝 |
 | `change_task_status` | `task`、`to`、`reason`（受阻时必填） | 变更状态：`todo`/`ready`/`doing`/`blocked`/`review`/`cancelled` |
 | `start_run` | `task` | 开始执行任务 |
@@ -80,7 +80,10 @@ Leader 可以用名称或编号指代，服务端负责解析成 id（先调用�
 - 岗位：名称、岗位标识（`role_frontend`）、任务编号前缀（`FE`）或 id。
 - 任务：编号（`FE-001`）、标题或 id。
 
-解析不到或有歧义时，工具会返回中文说明并列出候选，让 Leader 补一句就能继续。
+已取消的任务同样能按编号或标题查到（取消可以撤销，Leader 能把它改回 `todo`）。
+指明了团队时，任务必须属于该团队：拿别的团队的任务 id 来会被挡下并说明是哪个团队。
+
+解析不到或有歧义时，工具会返回中文说明并列出候选（最多 10 条，并给出候选总数），让 Leader 补一句就能继续。
 
 ## 限制
 
@@ -91,6 +94,7 @@ Leader 可以用名称或编号指代，服务端负责解析成 id（先调用�
 - **换绑 / 新建 / 编辑 Harness、岗位与团队**：同样只能由你在应用里做。
 - **把任务置为已完成**：走验收流程，不能用 `change_task_status` 直接置为 `done`。
 - 应用没运行时，所有工具都返回「Teamspace 应用没有运行，请先打开 Teamspace」。
+- 应用卡住不回应时，工具调用会在 30 秒后返回「Teamspace 应用响应超时，可能正在忙或已卡住，请稍后再试」，不会一直挂着。
 
 越权请求会被内核拒绝，并在活动页里留一条操作者为 Leader 的记录。
 
