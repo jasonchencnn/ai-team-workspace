@@ -26,7 +26,7 @@ use std::sync::{Arc, Mutex, MutexGuard, RwLock};
 use rusqlite::{Connection, OptionalExtension};
 
 use crate::acp::AgentLaunch;
-use crate::error::{Error, Result};
+use crate::error::{Error, ErrorKind, Result};
 use crate::model::*;
 use crate::probe::{FILE_SEARCH_LIMIT, MARKDOWN_FILE_LIMIT, SystemProbe};
 use crate::role_folder;
@@ -36,8 +36,8 @@ use crate::run::{Mode, Stop};
 use crate::service::run::{self as run_svc, Ending, NewRun};
 use crate::service::task::FileCheck;
 use crate::service::{
-    decision, event, folder, handoff, harness, inbox, message, notification, role, task, team,
-    workspace,
+    decision, event, folder, handoff, harness, inbox, message, notification, rebind, role, task,
+    team, workspace,
 };
 use crate::store;
 use crate::workspace_file;
@@ -63,6 +63,8 @@ pub const COMMANDS: &[&str] = &[
     "archive_role",
     "bind_role_harness",
     "unbind_role_harness",
+    "rebind_role",
+    "cancel_pending_rebind",
     "get_role_folder",
     "reveal_role_folder",
     "get_role_workbench",
@@ -495,6 +497,29 @@ impl Core {
         role::view(&conn, role::get_active(&conn, role_id)?)
     }
 
+    /// 执行结束后应用该岗位的待生效换绑：换绑立即生效并推通知。
+    ///
+    /// 换绑只在「该岗位没有进行中的执行」时生效，所以还在跑的执行不会被中途换掉。
+    pub(crate) fn apply_pending_rebind(&self, role_id: &str) {
+        let applied = match self.write(|tx| rebind::apply_pending(tx, role_id, Actor::System)) {
+            Ok(applied) => applied,
+            Err(err) => {
+                eprintln!("teamspace: 应用待生效换绑失败：{err}");
+                return;
+            }
+        };
+        let Some(applied) = applied else {
+            return;
+        };
+        self.push_notification(crate::model::rebind_applied_spec(
+            &applied.team_id,
+            &applied.role_id,
+            &applied.role_name,
+            applied.previous_harness_name.as_deref(),
+            &applied.harness_name,
+        ));
+    }
+
     /// 规范化工作空间目录并实时探测：目录须存在；是 Git 仓库（或其子目录）时附带分支与提交。
     /// 返回的 `path` 始终是规范化后的所选目录本身。
     pub(crate) fn inspect(&self, path: &str) -> Result<WorkspaceInfo> {
@@ -640,6 +665,162 @@ impl Teamspace {
         let view = self.write(|tx| role::unbind(tx, role_id))?;
         self.sync_role_folders(&view.role.team_id);
         self.role_view(role_id)
+    }
+
+    /// 更换岗位的 Harness：三种方式，换绑只改绑定，不动岗位、任务与历史（原产品原则）。
+    ///
+    /// - `after_current`（默认）：岗位有进行中的执行时登记「换绑待生效」，当前执行结束
+    ///   （成功 / 失败 / 取消）后自动生效；没有进行中的执行时立即生效。待生效期间新的派工仍走旧绑定。
+    /// - `cancel_and_rerun`：取消该岗位进行中的执行，立即换绑，并在新 Harness 上对该任务重新开始执行
+    ///   （复用现有开始执行逻辑）。换绑已生效但重新执行没成功时返回 conflict，原因里写明这一点。
+    /// - `manual_takeover`：取消该岗位进行中的执行，任务转为受阻并注明「人工接管」，立即换绑；
+    ///   Human 处理完后用现有流程恢复。
+    ///
+    /// 换绑属 Human 的控制权（D8、D32）：Leader 不能发起，换绑也不能由 Leader 代劳。
+    pub fn rebind_role(
+        &self,
+        role_id: &str,
+        harness_instance_id: &str,
+        mode: RebindMode,
+    ) -> Result<RoleView> {
+        let (role, target, active_runs) = {
+            let conn = self.lock();
+            let role = role::get_active(&conn, role_id)?;
+            let target = harness::get_active(&conn, harness_instance_id)?;
+            if target.team_id != role.team_id {
+                return Err(Error::invalid("Harness 不属于该岗位所在的团队"));
+            }
+            if role.harness_id.as_deref() == Some(harness_instance_id) {
+                return Err(Error::invalid("岗位已绑定该 Harness，无需更换"));
+            }
+            let active_runs = run_svc::active_runs_for_role(&conn, role_id)?;
+            (role, target, active_runs)
+        };
+
+        match mode {
+            RebindMode::AfterCurrent => {
+                if active_runs.is_empty() {
+                    // 没有进行中的执行：立即生效。
+                    self.apply_rebind(&role, &target, mode, Actor::Human)?;
+                } else {
+                    // 有进行中的执行：登记待生效，等执行结束后自动生效。
+                    let pending = self.write(|tx| {
+                        rebind::request(
+                            tx,
+                            &role,
+                            &target,
+                            mode,
+                            active_runs.first().map(|run| run.id.clone()),
+                        )
+                    })?;
+                    self.push_notification(crate::model::rebind_requested_spec(
+                        &role.team_id,
+                        &role.id,
+                        &role.name,
+                        &pending.harness_name,
+                        pending.active_run_id.clone(),
+                    ));
+                }
+            }
+            RebindMode::CancelAndRerun => {
+                let rerun_tasks = self.cancel_role_runs(&active_runs)?;
+                self.apply_rebind(&role, &target, mode, Actor::Human)?;
+                if let Some(task_id) = rerun_tasks.first() {
+                    // 复用现有开始执行逻辑：新 Harness 上对该任务重新开始执行。
+                    if let Err(err) = self.start_run_as(Actor::Human, task_id) {
+                        return Err(Error::conflict(format!(
+                            "换绑已生效，但重新执行失败：{err}"
+                        )));
+                    }
+                }
+            }
+            RebindMode::ManualTakeover => {
+                let cancelled = self.cancel_role_runs(&active_runs)?;
+                self.apply_rebind(&role, &target, mode, Actor::Human)?;
+                // 任务转为受阻并注明「人工接管」，Human 处理完后用现有流程恢复。
+                let task_ids = if cancelled.is_empty() {
+                    self.doing_tasks_of(&role)?
+                } else {
+                    cancelled
+                };
+                self.write(|tx| {
+                    for task_id in task_ids {
+                        run_svc::move_task(
+                            tx,
+                            &task_id,
+                            TaskStatus::Blocked,
+                            Some("人工接管".to_owned()),
+                            Actor::Human,
+                            "人工接管换绑",
+                        )?;
+                    }
+                    Ok(())
+                })?;
+            }
+        }
+        self.sync_role_folders(&role.team_id);
+        self.role_view(role_id)
+    }
+
+    /// 撤销待生效的换绑：当前绑定不变。待生效换绑已生效或从未登记时为 conflict。
+    pub fn cancel_pending_rebind(&self, role_id: &str) -> Result<RoleView> {
+        let role = role::get_active(&self.lock(), role_id)?;
+        let cancelled = self.write(|tx| rebind::cancel(tx, &role))?;
+        let Some(cancelled) = cancelled else {
+            return Err(Error::conflict("该岗位没有待生效的换绑"));
+        };
+        self.push_notification(crate::model::rebind_cancelled_spec(
+            &role.team_id,
+            &role.id,
+            &role.name,
+            &cancelled.harness_name,
+        ));
+        self.role_view(role_id)
+    }
+
+    /// 换绑立即生效：换绑定、写活动、推通知。
+    fn apply_rebind(
+        &self,
+        role: &Role,
+        target: &HarnessInstance,
+        mode: RebindMode,
+        actor: Actor,
+    ) -> Result<()> {
+        let applied = self.write(|tx| rebind::apply_to(tx, role, target, mode, actor))?;
+        self.push_notification(crate::model::rebind_applied_spec(
+            &applied.team_id,
+            &applied.role_id,
+            &applied.role_name,
+            applied.previous_harness_name.as_deref(),
+            &applied.harness_name,
+        ));
+        Ok(())
+    }
+
+    /// 取消该岗位进行中的全部执行，返回被取消的执行对应的任务 id（按开始时间倒序）。
+    ///
+    /// 换绑时岗位要整体换到新 Harness，还在旧 Harness 上跑的执行先停掉。
+    /// 执行在取消前已经自己结束的不算失败（换绑照做）。
+    fn cancel_role_runs(&self, active_runs: &[Run]) -> Result<Vec<String>> {
+        let mut task_ids = Vec::new();
+        for run in active_runs {
+            match self.cancel_run_as(Actor::Human, &run.id) {
+                Ok(_) => task_ids.push(run.task_id.clone()),
+                Err(err) if err.kind() == ErrorKind::Conflict => continue,
+                Err(err) => return Err(err),
+            }
+        }
+        Ok(task_ids)
+    }
+
+    /// 岗位仍在执行中（doing）的任务 id。
+    fn doing_tasks_of(&self, role: &Role) -> Result<Vec<String>> {
+        let conn = self.lock();
+        let mut stmt = conn.prepare(
+            "SELECT id FROM tasks WHERE owner_role_id = ?1 AND status = 'doing' ORDER BY key",
+        )?;
+        let rows = stmt.query_map([&role.id], |row| row.get::<_, String>(0))?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
 
     /// 岗位文件夹（含已归档岗位）：先同步一次，再返回绝对路径、是否存在和工作日志最近 `limit` 条
@@ -1229,6 +1410,8 @@ impl Teamspace {
         self.remove_snapshots(&run.id);
         self.sync_role_folders(&run.team_id);
         self.emit_run(run_id);
+        // 执行结束了：该岗位的待生效换绑（如果有）在此刻生效（M6-01）。
+        self.apply_pending_rebind(&run.role_id);
         run_svc::get(&self.lock(), run_id)
     }
 
@@ -1360,6 +1543,8 @@ impl Teamspace {
         self.remove_snapshots(&run.id);
         self.sync_role_folders(&run.team_id);
         self.emit_run(run_id);
+        // 执行结束了：该岗位的待生效换绑（如果有）在此刻生效（M6-01）。
+        self.apply_pending_rebind(&run.role_id);
         run_svc::get(&self.lock(), run_id)
     }
 

@@ -9,6 +9,7 @@ pub(crate) mod harness;
 pub(crate) mod inbox;
 pub(crate) mod message;
 pub(crate) mod notification;
+pub(crate) mod rebind;
 pub(crate) mod review;
 pub(crate) mod role;
 pub(crate) mod run;

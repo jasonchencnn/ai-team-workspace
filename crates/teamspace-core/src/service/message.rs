@@ -30,7 +30,7 @@ const SNIPPET_CHARS: usize = 60;
 const THREAD_COLS: &str = "id, team_id, task_id, subject, participants, created_at, updated_at";
 pub(crate) const MESSAGE_COLS: &str = "id, thread_id, team_id, task_id, sender_kind, sender_role_id, \
                            to_role_id, body, status, failure_reason, reply_body, created_at, \
-                           delivered_at, replied_at";
+                           delivered_at, replied_at, binding_harness_id";
 
 /// 发送一条消息。
 ///
@@ -106,8 +106,8 @@ pub(crate) fn send(conn: &Connection, actor: Actor, input: &SendMessageInput) ->
     conn.execute(
         "INSERT INTO messages (id, thread_id, team_id, task_id, sender_kind, sender_role_id,
                                to_role_id, body, status, failure_reason, reply_body,
-                               created_at, delivered_at, replied_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 'queued', NULL, NULL, ?9, NULL, NULL)",
+                               created_at, delivered_at, replied_at, binding_harness_id)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 'queued', NULL, NULL, ?9, NULL, NULL, ?10)",
         params![
             id,
             thread.id,
@@ -118,6 +118,8 @@ pub(crate) fn send(conn: &Connection, actor: Actor, input: &SendMessageInput) ->
             target.id,
             body,
             created_at,
+            // 入队时接收岗位当时的绑定（快照，仅留痕）：投递时按岗位当前有效绑定解析（D33）。
+            target.harness_id,
         ],
     )?;
     touch_thread(conn, &thread.id)?;
@@ -641,5 +643,6 @@ pub(crate) fn from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Message> {
         created_at: row.get(11)?,
         delivered_at: row.get(12)?,
         replied_at: row.get(13)?,
+        binding_harness_id: row.get(14)?,
     })
 }
