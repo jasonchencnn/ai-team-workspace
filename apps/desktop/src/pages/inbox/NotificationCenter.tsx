@@ -29,8 +29,10 @@ function BellIcon() {
 export function NotificationCenter() {
   const { teamId } = useParams();
   const navigate = useNavigate();
-  const notifications = useSessionNotifications();
-  const unread = useUnreadNotifications();
+  // 通知按团队产生：只看当前团队的通知，未读数也按当前团队算。
+  const currentTeamId = teamId ?? "";
+  const notifications = useSessionNotifications(currentTeamId);
+  const unread = useUnreadNotifications(currentTeamId);
   const [open, setOpen] = useState(false);
   const containerRef = useRef<HTMLDivElement | null>(null);
 
@@ -62,7 +64,7 @@ export function NotificationCenter() {
     const next = !open;
     setOpen(next);
     if (next) {
-      markNotificationsRead();
+      markNotificationsRead(currentTeamId);
     }
   };
 
@@ -89,7 +91,12 @@ export function NotificationCenter() {
             <h2 className="notify-center__title">通知</h2>
             <div className="notify-center__head-actions">
               {notifications.length > 0 ? (
-                <Button variant="subtle" onClick={clearNotifications}>
+                <Button
+                  variant="subtle"
+                  onClick={() => {
+                    clearNotifications(currentTeamId);
+                  }}
+                >
                   清空
                 </Button>
               ) : null}
@@ -119,7 +126,8 @@ export function NotificationCenter() {
                     className="notify-center__item"
                     onClick={() => {
                       setOpen(false);
-                      void navigate(notificationTargetPath(teamId, notification));
+                      // 用通知自带的团队 id：通知是按团队产生的。
+                      void navigate(notificationTargetPath(notification.teamId, notification));
                     }}
                   >
                     <span className="notify-center__item-head">

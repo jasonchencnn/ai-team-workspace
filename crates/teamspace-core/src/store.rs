@@ -12,7 +12,7 @@ use time::OffsetDateTime;
 use crate::error::{Error, Result};
 
 /// 当前 schema 版本。
-pub(crate) const SCHEMA_VERSION: i64 = 15;
+pub(crate) const SCHEMA_VERSION: i64 = 16;
 
 const SCHEMA_V1: &str = r#"
 CREATE TABLE teams (
@@ -441,9 +441,19 @@ CREATE UNIQUE INDEX role_pending_bindings_role ON role_pending_bindings (role_id
 ALTER TABLE messages ADD COLUMN binding_harness_id TEXT;
 "#;
 
+/// v16：消息的入队时间（M5-06 回归修复）。
+///
+/// 过期判定改用「最近一次入队时间」：重发一条已经过期的消息时，`created_at` 仍是很久以前，
+/// 按它判过期会让重发的消息立刻再次过期。新增 `queued_at` 列，入队与重发时写当前时间；
+/// 迁移时用 `created_at` 回填（旧数据没有「入队」概念，按创建时间算）。
+const SCHEMA_V16: &str = r#"
+ALTER TABLE messages ADD COLUMN queued_at TEXT NOT NULL DEFAULT '';
+UPDATE messages SET queued_at = created_at;
+"#;
+
 const MIGRATIONS: &[&str] = &[
     SCHEMA_V1, SCHEMA_V2, SCHEMA_V3, SCHEMA_V4, SCHEMA_V5, SCHEMA_V6, SCHEMA_V7, SCHEMA_V8,
-    SCHEMA_V9, SCHEMA_V10, SCHEMA_V11, SCHEMA_V12, SCHEMA_V13, SCHEMA_V14, SCHEMA_V15,
+    SCHEMA_V9, SCHEMA_V10, SCHEMA_V11, SCHEMA_V12, SCHEMA_V13, SCHEMA_V14, SCHEMA_V15, SCHEMA_V16,
 ];
 
 /// 打开数据库：WAL 日志、synchronous=NORMAL、开启外键，并迁移到当前版本。
@@ -1214,5 +1224,59 @@ mod tests {
             )
             .unwrap();
         assert_eq!(rows, 1);
+    }
+
+    /// v15 的库升到 v16：消息多出入队时间列，老消息按创建时间回填。
+    #[test]
+    fn v15_migrates_to_v16_with_the_message_queue_time() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("t.db");
+        {
+            let conn = Connection::open(&path).unwrap();
+            for sql in &MIGRATIONS[..15] {
+                conn.execute_batch(sql).unwrap();
+            }
+            conn.execute_batch(
+                "PRAGMA user_version = 15;
+                 INSERT INTO teams (id, name, workspace_path, created_at, updated_at)
+                 VALUES ('t1', '团队', '/tmp', '2026-10-12T00:00:00.000Z', '2026-10-12T00:00:00.000Z');
+                 INSERT INTO roles (id, team_id, name, code, task_prefix, description, guidelines,
+                                    is_leader, harness_id, created_at, updated_at)
+                 VALUES ('r1', 't1', '前端', 'role_fe', 'FE', '', '', 0, NULL,
+                         '2026-10-12T00:00:00.000Z', '2026-10-12T00:00:00.000Z');
+                 INSERT INTO message_threads (id, team_id, task_id, subject, participants,
+                                             created_at, updated_at)
+                 VALUES ('th1', 't1', NULL, '进度', '[]',
+                         '2026-10-12T00:00:00.000Z', '2026-10-12T00:00:00.000Z');
+                 INSERT INTO messages (id, thread_id, team_id, task_id, sender_kind, sender_role_id,
+                                       to_role_id, body, status, failure_reason, reply_body,
+                                       created_at, delivered_at, replied_at)
+                 VALUES ('m1', 'th1', 't1', NULL, 'human', NULL, 'r1', '进度如何', 'queued',
+                         NULL, NULL, '2026-10-12T00:00:00.000Z', NULL, NULL);",
+            )
+            .unwrap();
+        }
+        let conn = open(&path).unwrap();
+        let v: i64 = conn
+            .pragma_query_value(None, "user_version", |r| r.get(0))
+            .unwrap();
+        assert_eq!(v, SCHEMA_VERSION);
+        let n: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('messages') WHERE name = 'queued_at'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(n, 1, "messages.queued_at");
+        // 老消息没有入队概念，按创建时间回填。
+        let (created_at, queued_at): (String, String) = conn
+            .query_row(
+                "SELECT created_at, queued_at FROM messages WHERE id = 'm1'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(queued_at, created_at);
     }
 }

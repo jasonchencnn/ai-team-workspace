@@ -1,33 +1,41 @@
 // 本次会话收到的应用内通知。通知不落库：只在页面打开期间攒着，按时间倒序展示，可清空。
+// 通知按团队产生：通知中心只显示当前团队的通知，未读数也按当前团队算。
 import { useSyncExternalStore } from "react";
 
 import { onNotifyEvent } from "../../api/commands.js";
 import type { Notification } from "../../bindings/Notification.js";
+import { notificationsForTeam, unreadForTeam, type SessionNotification } from "./inboxUi.js";
 
 type Listener = () => void;
 
 const listeners = new Set<Listener>();
 
-/** 会话内收到的通知，最新的在前。 */
-let notifications: Notification[] = [];
-/** 未读数量：打开通知中心后归零。 */
-let unread = 0;
+/** 会话内收到的通知，最新的在前；带已读标记。 */
+let entries: SessionNotification[] = [];
+/** 按团队缓存的快照：同一份数据保持同一个引用（React 的 useSyncExternalStore 要求）。 */
+const snapshots = new Map<string, Notification[]>();
 let stopBackend: (() => void) | null = null;
 let starting = false;
 
-function snapshot(): Notification[] {
-  return notifications;
+function snapshotFor(teamId: string): Notification[] {
+  const cached = snapshots.get(teamId);
+  if (cached !== undefined) {
+    return cached;
+  }
+  const list = notificationsForTeam(entries, teamId);
+  snapshots.set(teamId, list);
+  return list;
 }
 
 function notifySubscribers(): void {
+  snapshots.clear();
   for (const listener of listeners) {
     listener();
   }
 }
 
 function push(notification: Notification): void {
-  notifications = [notification, ...notifications];
-  unread += 1;
+  entries = [{ notification, read: false }, ...entries];
   notifySubscribers();
 }
 
@@ -64,32 +72,41 @@ function subscribe(listener: Listener): () => void {
   };
 }
 
-/** 订阅会话内的通知列表。 */
-export function useSessionNotifications(): Notification[] {
-  return useSyncExternalStore(subscribe, snapshot, snapshot);
-}
-
-/** 订阅未读数量。 */
-export function useUnreadNotifications(): number {
+/** 订阅当前团队的通知列表。 */
+export function useSessionNotifications(teamId: string): Notification[] {
   return useSyncExternalStore(
     subscribe,
-    () => unread,
-    () => unread,
+    () => snapshotFor(teamId),
+    () => snapshotFor(teamId),
   );
 }
 
-/** 打开通知中心：未读数归零。 */
-export function markNotificationsRead(): void {
-  if (unread === 0) {
+/** 订阅当前团队的未读数量。 */
+export function useUnreadNotifications(teamId: string): number {
+  return useSyncExternalStore(
+    subscribe,
+    () => unreadForTeam(entries, teamId),
+    () => unreadForTeam(entries, teamId),
+  );
+}
+
+/** 打开通知中心：该团队的未读数归零（别的团队不受影响）。 */
+export function markNotificationsRead(teamId: string): void {
+  if (!entries.some((entry) => !entry.read && entry.notification.teamId === teamId)) {
     return;
   }
-  unread = 0;
+  entries = entries.map((entry) =>
+    entry.notification.teamId === teamId ? { ...entry, read: true } : entry,
+  );
   notifySubscribers();
 }
 
-/** 清空本次会话收到的通知。 */
-export function clearNotifications(): void {
-  notifications = [];
-  unread = 0;
+/** 清空当前团队本次会话收到的通知。 */
+export function clearNotifications(teamId: string): void {
+  const remaining = entries.filter((entry) => entry.notification.teamId !== teamId);
+  if (remaining.length === entries.length) {
+    return;
+  }
+  entries = remaining;
   notifySubscribers();
 }

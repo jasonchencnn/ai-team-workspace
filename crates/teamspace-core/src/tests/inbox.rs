@@ -315,6 +315,48 @@ fn failed_messages_need_a_decision_and_disappear_when_retried() {
     assert!(inbox.items.is_empty());
 }
 
+/// 记过决策的消息又投递失败：重新出现，等着再拍一次板。
+#[test]
+fn a_message_that_fails_again_comes_back_to_the_inbox() {
+    let f = plain_fixture();
+    f.ts.core_handle().deliveries.stop();
+    let (team, fe) = setup(&f);
+    let message =
+        f.ts.send_message(SendMessageInput {
+            team_id: team.id.clone(),
+            to_role_id: fe.id.clone(),
+            body: "进度如何".into(),
+            task_id: None,
+            thread_id: None,
+            subject: None,
+            from_role_id: None,
+        })
+        .unwrap();
+    message_svc::mark_failed(&f.ts.lock(), &message.id, "岗位未绑定 Harness").unwrap();
+    assert_eq!(collect_inbox(&f, &team.id).counts.decision, 1);
+
+    // 记了决策：消息不再要你拍板。
+    f.ts.record_decision(RecordDecisionInput {
+        team_id: team.id.clone(),
+        task_id: None,
+        message_id: Some(message.id.clone()),
+        text: "换个 Harness 再试".into(),
+        resume_task: None,
+    })
+    .unwrap();
+    let inbox = collect_inbox(&f, &team.id);
+    assert_eq!(inbox.counts.decision, 0);
+
+    // 重发后又被投递引擎判失败：又需要拍板了。
+    f.ts.retry_message(&message.id).unwrap();
+    message_svc::mark_failed(&f.ts.lock(), &message.id, "岗位仍未绑定 Harness").unwrap();
+    let inbox = collect_inbox(&f, &team.id);
+    assert_eq!(inbox.counts.decision, 1, "决策之后又失败，消息该重新出现");
+    let item = of_category(&inbox, InboxCategory::Decision)[0];
+    assert_eq!(item.message_id.as_deref(), Some(message.id.as_str()));
+    assert!(item.impact.contains("仍未绑定 Harness"), "{}", item.impact);
+}
+
 // ---------------------------------------------------------------- Leader 越权记录
 
 /// Leader 越权记录出现在待我处理里；超过 7 天后自动消失。

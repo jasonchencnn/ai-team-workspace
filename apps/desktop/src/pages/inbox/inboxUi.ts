@@ -157,7 +157,7 @@ export function inboxActionLabel(item: InboxItem): string {
   }
 }
 
-/** 通知的跳转地址。 */
+/** 通知的跳转地址。用通知自带的 `teamId`：通知是按团队产生的。 */
 export function notificationTargetPath(teamId: string, notification: Notification): string {
   if (notification.taskId !== null) {
     return taskPath(teamId, notification.taskId);
@@ -166,6 +166,31 @@ export function notificationTargetPath(teamId: string, notification: Notificatio
     return threadPath(teamId, notification.threadId);
   }
   return activityPath(teamId);
+}
+
+// ---------------------------------------------------------------- 通知中心
+
+/** 会话内收到的一条通知（带已读标记）。通知不落库，只在页面打开期间攒着。 */
+export interface SessionNotification {
+  notification: Notification;
+  read: boolean;
+}
+
+/**
+ * 只留当前团队的通知：通知按团队产生，通知中心只看当前团队，不串到别的团队去。
+ */
+export function notificationsForTeam(
+  entries: readonly SessionNotification[],
+  teamId: string,
+): Notification[] {
+  return entries
+    .filter((entry) => entry.notification.teamId === teamId)
+    .map((entry) => entry.notification);
+}
+
+/** 当前团队的未读数：别的团队的未读不计入。 */
+export function unreadForTeam(entries: readonly SessionNotification[], teamId: string): number {
+  return entries.filter((entry) => !entry.read && entry.notification.teamId === teamId).length;
 }
 
 // ---------------------------------------------------------------- 记录决策
@@ -270,6 +295,20 @@ export function isRoleEnabled(
   if (draft.categoryEnabled[category] !== true) {
     return false;
   }
+  return draft.roleEnabled[category]?.[roleId] === true;
+}
+
+/**
+ * 岗位开关自己的值：不受类别总开关影响。
+ *
+ * 总开关关着时岗位开关显示为禁用，但要保留原来的值 —— 否则用户看到的岗位设置
+ * 全是「关」，再次保存就把岗位的设置冲掉了。
+ */
+export function roleSwitchValue(
+  draft: SubscriptionDraft,
+  category: NotificationCategory,
+  roleId: string,
+): boolean {
   return draft.roleEnabled[category]?.[roleId] === true;
 }
 

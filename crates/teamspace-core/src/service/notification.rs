@@ -92,7 +92,11 @@ pub(crate) fn build(conn: &Connection, spec: &NotificationSpec) -> Result<Option
     }))
 }
 
-/// 团队的���知订阅设置：按类别列出总开关与各岗位的开关。
+/// 团队的通知订阅设置：按类别列出总开关与各岗位的开关。
+///
+/// 岗位开关回显的是**岗位自己的存储值**（没有记录时为开），不是「与总开关相与」后的生效值：
+/// 总开关关着时也要让用户看到每个岗位原本的设置，别在再次保存时把岗位设置冲掉。
+/// 是否真的发通知仍由 [`subscribed`] 判断。
 pub(crate) fn settings(conn: &Connection, team_id: &str) -> Result<NotificationSettings> {
     let roles = active_roles(conn, team_id)?;
     let mut categories = Vec::with_capacity(NotificationCategory::ALL.len());
@@ -103,7 +107,7 @@ pub(crate) fn settings(conn: &Connection, team_id: &str) -> Result<NotificationS
                 role_id: role.id.clone(),
                 role_name: role.name.clone(),
                 role_code: role.code.clone(),
-                enabled: subscribed(conn, team_id, category, Some(&role.id))?,
+                enabled: switch(conn, team_id, category, &role.id)?.unwrap_or(true),
             });
         }
         categories.push(NotificationCategorySetting {

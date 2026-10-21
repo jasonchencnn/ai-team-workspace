@@ -206,6 +206,75 @@ fn role_settings_filter_the_notifications() {
     );
 }
 
+/// 类别总开关关着时，岗位开关回显自己的存储值：岗位设置不会被总开关冲掉。
+#[test]
+fn role_switches_keep_their_own_value_when_the_category_is_off() {
+    let f = plain_fixture();
+    let (team, fe) = setup(&f);
+    let be = f.role(&team.id, "role_backend");
+
+    // 关掉前端岗位。
+    f.ts.update_notification_settings(UpdateNotificationSettingsInput {
+        team_id: team.id.clone(),
+        categories: vec![NotificationCategoryUpdate {
+            category: NotificationCategory::TaskBlocked,
+            enabled: None,
+            roles: vec![NotificationRoleUpdate {
+                role_id: fe.id.clone(),
+                enabled: false,
+            }],
+        }],
+    })
+    .unwrap();
+
+    // 关掉类别总开关。
+    f.ts.update_notification_settings(UpdateNotificationSettingsInput {
+        team_id: team.id.clone(),
+        categories: vec![NotificationCategoryUpdate {
+            category: NotificationCategory::TaskBlocked,
+            enabled: Some(false),
+            roles: vec![],
+        }],
+    })
+    .unwrap();
+
+    // 回显的是岗位自己的存储值：前端岗位仍是关，后端岗位仍是开。
+    let current = settings(&f, &team.id);
+    let blocked = current
+        .categories
+        .iter()
+        .find(|c| c.category == NotificationCategory::TaskBlocked)
+        .unwrap();
+    assert!(!blocked.enabled, "类别总开关应为关");
+    let fe_switch = blocked.roles.iter().find(|r| r.role_id == fe.id).unwrap();
+    let be_switch = blocked.roles.iter().find(|r| r.role_id == be.id).unwrap();
+    assert!(!fe_switch.enabled, "前端岗位应保持关");
+    assert!(be_switch.enabled, "后端岗位应保持开");
+
+    // 重新打开总开关：岗位设置原样还在。
+    f.ts.update_notification_settings(UpdateNotificationSettingsInput {
+        team_id: team.id.clone(),
+        categories: vec![NotificationCategoryUpdate {
+            category: NotificationCategory::TaskBlocked,
+            enabled: Some(true),
+            roles: vec![],
+        }],
+    })
+    .unwrap();
+
+    let current = settings(&f, &team.id);
+    let blocked = current
+        .categories
+        .iter()
+        .find(|c| c.category == NotificationCategory::TaskBlocked)
+        .unwrap();
+    assert!(blocked.enabled, "类别总开关应为开");
+    let fe_switch = blocked.roles.iter().find(|r| r.role_id == fe.id).unwrap();
+    let be_switch = blocked.roles.iter().find(|r| r.role_id == be.id).unwrap();
+    assert!(!fe_switch.enabled, "前端岗位应仍是关");
+    assert!(be_switch.enabled, "后端岗位应仍是开");
+}
+
 /// 岗位不属于该团队时拒绝修改。
 #[test]
 fn settings_reject_roles_from_another_team() {

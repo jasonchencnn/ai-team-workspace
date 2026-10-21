@@ -252,12 +252,12 @@ fn stale_messages_expire_after_seven_days() {
     let f = fixture();
     let (team, fe, _) = setup(&f);
     let message = send(&f, &team.id, &fe.id, "很久以前的消息");
-    // 把创建时间挪到 8 天前。
+    // 把入队时间挪到 8 天前（过期按入队时间算）。
     let old = (time::OffsetDateTime::now_utc() - time::Duration::days(8))
         .format(&time::format_description::well_known::Rfc3339)
         .unwrap();
     f.raw_sql(&format!(
-        "UPDATE messages SET created_at = '{old}' WHERE id = '{}'",
+        "UPDATE messages SET created_at = '{old}', queued_at = '{old}' WHERE id = '{}'",
         message.id
     ));
 
@@ -274,6 +274,40 @@ fn stale_messages_expire_after_seven_days() {
 
     let kinds: Vec<_> = events(&f, &team.id).iter().map(|e| e.kind).collect();
     assert!(kinds.contains(&EventKind::MessageExpired));
+}
+
+/// 过期判定看的是「最近一次入队时间」：重发过的消息按重发时间算，不会立刻再次过期。
+#[test]
+fn retried_messages_expire_from_their_new_queue_time() {
+    let f = fixture();
+    let (team, fe, _) = setup(&f);
+    let message = send(&f, &team.id, &fe.id, "很久以前的消息");
+    // 把入队时间挪到 8 天前：按旧入队时间它已经过期。
+    let old = (time::OffsetDateTime::now_utc() - time::Duration::days(8))
+        .format(&time::format_description::well_known::Rfc3339)
+        .unwrap();
+    f.raw_sql(&format!(
+        "UPDATE messages SET created_at = '{old}', queued_at = '{old}' WHERE id = '{}'",
+        message.id
+    ));
+    let cutoff = (time::OffsetDateTime::now_utc() - time::Duration::days(7))
+        .format(&time::format_description::well_known::Rfc3339)
+        .unwrap();
+    let expired = message_svc::expire_stale(&f.ts.lock(), &cutoff).unwrap();
+    assert_eq!(expired.len(), 1);
+
+    // 重发：入队时间换成现在，原始发送时间不动。
+    let retried = f.ts.retry_message(&message.id).unwrap();
+    assert_eq!(retried.status, MessageStatus::Queued);
+    let again = f.ts.get_thread(&message.thread_id).unwrap();
+    let stored = again.messages[0].clone();
+    assert_eq!(stored.created_at, old, "原始发送时间不该变");
+
+    // 按旧的入队时间它已经过期，但重发后按新的入队时间算，不再过期。
+    let expired = message_svc::expire_stale(&f.ts.lock(), &cutoff).unwrap();
+    assert!(expired.is_empty(), "重发后不该再立刻过期");
+    let again = f.ts.get_thread(&message.thread_id).unwrap();
+    assert_eq!(again.messages[0].status, MessageStatus::Queued);
 }
 
 /// 没到期��消息不受过期检查影响。
