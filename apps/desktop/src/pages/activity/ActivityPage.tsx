@@ -290,7 +290,15 @@ export function ActivityPage() {
                       </td>
                       <td className="act-table__summary">
                         <span className="act-table__text">{event.summary}</span>
-                        <Tag tone={event.actor === "system" ? "info" : "neutral"}>
+                        <Tag
+                          tone={
+                            event.actor === "system"
+                              ? "info"
+                              : event.actor === "leader"
+                                ? "warning"
+                                : "neutral"
+                          }
+                        >
                           {KIND_LABELS[event.kind]}
                         </Tag>
                       </td>

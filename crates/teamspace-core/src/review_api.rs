@@ -833,6 +833,11 @@ impl Teamspace {
     /// 发送；不支持时在同一目录新开会话，提示带上完整任务说明、上次摘要与意见。不新建 worktree。返回状态为
     /// queued 的新执行。
     pub fn reject_review(&self, input: RejectReviewInput) -> Result<Run> {
+        self.reject_review_as(Actor::Human, input)
+    }
+
+    /// 以指定操作者退回验收（活动记录的操作者为 `actor`）。
+    pub fn reject_review_as(&self, actor: Actor, input: RejectReviewInput) -> Result<Run> {
         let comment = crate::service::text("退回意见", &input.comment, review::MAX_COMMENT, true)?;
         let (task, run) = review::check_pending(&self.lock(), &input.run_id)?;
         let workspace = run_svc::workspace_of(&self.lock(), &run.id)?;
@@ -871,14 +876,7 @@ impl Teamspace {
                 )));
             }
             review::set_outcome(tx, &run.id, ReviewOutcome::Rejected, Some(&comment), None)?;
-            run_svc::move_task(
-                tx,
-                &task.id,
-                TaskStatus::Doing,
-                None,
-                Actor::Human,
-                "验收退回",
-            )?;
+            run_svc::move_task(tx, &task.id, TaskStatus::Doing, None, actor, "验收退回")?;
             let revision = review::insert_revision(
                 tx,
                 &task,
@@ -895,7 +893,7 @@ impl Teamspace {
             run_svc::record_event(
                 tx,
                 &run,
-                Actor::Human,
+                actor,
                 EventKind::ReviewRejected,
                 format!(
                     "{} 第 {} 次执行验收退回，意见：{comment}",
@@ -907,7 +905,7 @@ impl Teamspace {
             run_svc::record_event(
                 tx,
                 &revision,
-                Actor::Human,
+                actor,
                 EventKind::RunStarted,
                 format!(
                     "{} 按退回意见开始第 {} 次执行（Harness「{}」，续接第 {} 次执行的执行目录）",

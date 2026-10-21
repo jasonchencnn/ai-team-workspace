@@ -45,16 +45,42 @@ pub enum EventKind {
     /// 合并冲突后选择重新执行：任务回到 READY，旧执行分支与 worktree 已删除（`data.branch`、`data.commit`
     /// 记下被删除分支的名称与提交，便于找回）。
     ReviewRerun,
+    /// Leader 越权：外部会话经本机控制 socket 请求了白名单之外的操作，被拒绝并留痕
+    /// （`data.command` 为被拒的命令名，`data.message` 为拒绝原因）。
+    LeaderDenied,
 }
 
-/// 操作者：Human，或 Teamspace 自己（执行引擎根据 Agent 的结果做的状态变化）。
+/// 操作者：Human、Leader，或 Teamspace 自己（执行引擎根据 Agent 的结果做的状态变化）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "snake_case")]
 #[ts(export)]
 pub enum Actor {
+    /// 在 Teamspace 应用里操作的人，以及端到端测试桥接。
     Human,
+    /// Leader：外部会话（Claude Code / Codex 等）经本机控制 socket 操作（D7、D8、D26）。
+    Leader,
     /// Teamspace 执行引擎（执行成功转待验收、失败回到 READY、重启时标记中断等）。
     System,
+}
+
+impl Actor {
+    /// 操作者的稳定编号，用于在不引入全局可变状态的地方传递身份（如执行的停止请求）。
+    pub(crate) fn code(self) -> u8 {
+        match self {
+            Actor::Human => 0,
+            Actor::Leader => 1,
+            Actor::System => 2,
+        }
+    }
+
+    /// 由 [`Actor::code`] 还原操作者；未知编号按 Human 处理。
+    pub(crate) fn from_code(code: u8) -> Actor {
+        match code {
+            1 => Actor::Leader,
+            2 => Actor::System,
+            _ => Actor::Human,
+        }
+    }
 }
 
 /// 活动记录。每次变更写一条，只追加不修改。

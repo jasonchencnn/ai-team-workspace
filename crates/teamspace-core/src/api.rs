@@ -688,11 +688,17 @@ impl Teamspace {
     /// 创建任务：标题、负责岗位必填；初始状态只能是 todo 或 ready（ready 需满足就绪条件）；
     /// 编号取负责岗位前缀的下一个序号；引用路径须为工作区内相对路径（最多 50 个）；
     /// 依赖须为同团队任务（最多 20 个）且不成环。
-    pub fn create_task(&self, mut input: CreateTaskInput) -> Result<TaskDetail> {
+    pub fn create_task(&self, input: CreateTaskInput) -> Result<TaskDetail> {
+        self.create_task_as(Actor::Human, input)
+    }
+
+    /// 以指定操作者创建任务（活动记录的操作者为 `actor`）。经控制 socket 进来的调用用
+    /// [`Actor::Leader`]，界面与桥接用 [`Actor::Human`]。
+    pub fn create_task_as(&self, actor: Actor, mut input: CreateTaskInput) -> Result<TaskDetail> {
         input.file_refs = task::normalize_refs(input.file_refs)?;
         let workspace = team::get_active(&self.lock(), &input.team_id)?.workspace_path;
         let files = FileCheck::scan(Path::new(&workspace), &input.file_refs);
-        let detail = self.write(|tx| task::create(tx, input, &files))?;
+        let detail = self.write(|tx| task::create(tx, input, &files, actor))?;
         self.sync_role_folders(&detail.task.team_id);
         Ok(detail)
     }
@@ -700,12 +706,17 @@ impl Teamspace {
     /// 编辑任务内容（不改状态，编号不变）；保存依赖时拒绝成环并指出环路；
     /// 任务处于 ready 而修改后不再满足就绪条件时拒绝（conflict）；任务有活动执行（排队、运行、
     /// 等待授权）时整个编辑被拒绝（conflict）。
-    pub fn update_task(&self, mut input: UpdateTaskInput) -> Result<TaskDetail> {
+    pub fn update_task(&self, input: UpdateTaskInput) -> Result<TaskDetail> {
+        self.update_task_as(Actor::Human, input)
+    }
+
+    /// 以指定操作者编辑任务（活动记录的操作者为 `actor`）。
+    pub fn update_task_as(&self, actor: Actor, mut input: UpdateTaskInput) -> Result<TaskDetail> {
         self.ensure_not_reviewing(&input.task_id)?;
         input.file_refs = task::normalize_refs(input.file_refs)?;
         let (workspace, _) = task::workspace_and_refs(&self.lock(), &input.task_id)?;
         let files = FileCheck::scan(Path::new(&workspace), &input.file_refs);
-        let detail = self.write(|tx| task::update(tx, input, &files))?;
+        let detail = self.write(|tx| task::update(tx, input, &files, actor))?;
         self.sync_role_folders(&detail.task.team_id);
         Ok(detail)
     }
@@ -714,14 +725,23 @@ impl Teamspace {
     /// （负责岗位有效、文件引用可选，填写的引用须存在于工作区、所有依赖已完成）；进入 blocked 必须给出原因，
     /// 离开 blocked 清空原因。
     pub fn change_task_status(&self, input: ChangeTaskStatusInput) -> Result<TaskDetail> {
+        self.change_task_status_as(Actor::Human, input)
+    }
+
+    /// 以指定操作者变更任务状态（活动记录的操作者为 `actor`）。
+    pub fn change_task_status_as(
+        &self,
+        actor: Actor,
+        input: ChangeTaskStatusInput,
+    ) -> Result<TaskDetail> {
         self.ensure_not_reviewing(&input.task_id)?;
         let (workspace, refs) = task::workspace_and_refs(&self.lock(), &input.task_id)?;
         let files = FileCheck::scan(Path::new(&workspace), &refs);
         let dependent_files = (input.to == TaskStatus::Done)
             .then(|| self.dependent_file_checks(&input.task_id))
             .transpose()?;
-        let detail =
-            self.write(|tx| task::change_status(tx, input, &files, dependent_files.as_ref()))?;
+        let detail = self
+            .write(|tx| task::change_status(tx, input, &files, dependent_files.as_ref(), actor))?;
         self.sync_role_folders(&detail.task.team_id);
         Ok(detail)
     }
@@ -787,6 +807,11 @@ impl Teamspace {
     /// 普通文件夹原地）、启动 Agent、建立会话、发送任务说明，进度与状态通过执行事件推送
     /// （[`RUN_EVENT`]），也可用 `get_run` / `list_run_updates` 读取。
     pub fn start_run(&self, task_id: &str) -> Result<Run> {
+        self.start_run_as(Actor::Human, task_id)
+    }
+
+    /// 以指定操作者开始执行（活动记录的操作者为 `actor`）。
+    pub fn start_run_as(&self, actor: Actor, task_id: &str) -> Result<Run> {
         self.ensure_not_reviewing(task_id)?;
         let (workspace, refs) = task::workspace_and_refs(&self.lock(), task_id)?;
         let files = FileCheck::scan(Path::new(&workspace), &refs);
@@ -836,7 +861,7 @@ impl Teamspace {
                     run_svc::record_event(
                         tx,
                         &prev,
-                        Actor::Human,
+                        actor,
                         EventKind::RunFinished,
                         format!(
                             "{} 第 {} 次执行失败，中断后已重新执行（{}）",
@@ -879,7 +904,7 @@ impl Teamspace {
                 },
             )?;
             if task.status != TaskStatus::Doing {
-                run_svc::move_task(tx, task_id, TaskStatus::Doing, None, Actor::Human, "开始执行")?;
+                run_svc::move_task(tx, task_id, TaskStatus::Doing, None, actor, "开始执行")?;
             }
             let how = match isolation {
                 RunIsolation::Worktree => "Git worktree",
@@ -888,7 +913,7 @@ impl Teamspace {
             run_svc::record_event(
                 tx,
                 &run,
-                Actor::Human,
+                actor,
                 EventKind::RunStarted,
                 format!(
                     "{} 开始第 {} 次执行（Harness「{}」，{how}）",
@@ -914,8 +939,13 @@ impl Teamspace {
     /// Agent 未结束则整组终止进程。等执行结束后返回（状态 cancelled，任务回到 READY）。
     /// 执行不在活动中时为 conflict。
     pub fn cancel_run(&self, run_id: &str) -> Result<Run> {
+        self.cancel_run_as(Actor::Human, run_id)
+    }
+
+    /// 以指定操作者取消执行（执行结束与任务回到 READY 的活动记录的操作者为 `actor`）。
+    pub fn cancel_run_as(&self, actor: Actor, run_id: &str) -> Result<Run> {
         let run = run_svc::get(&self.lock(), run_id)?;
-        if !run.status.is_active() || !self.stop_run(run_id, Stop::Cancel) {
+        if !run.status.is_active() || !self.stop_run(run_id, Stop::Cancel, actor) {
             return Err(Error::conflict(format!(
                 "执行已结束（{}），无需取消",
                 run.status.label()
@@ -931,7 +961,7 @@ impl Teamspace {
     pub fn takeover_run(&self, run_id: &str) -> Result<Run> {
         let run = run_svc::get(&self.lock(), run_id)?;
         self.ensure_not_reviewing(&run.task_id)?;
-        if run.status.is_active() && self.stop_run(run_id, Stop::Takeover) {
+        if run.status.is_active() && self.stop_run(run_id, Stop::Takeover, Actor::Human) {
             return run_svc::get(&self.lock(), run_id);
         }
         self.write(|tx| run_svc::takeover(tx, run_id))?;

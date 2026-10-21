@@ -3,6 +3,8 @@
 
 pub mod acp;
 pub mod api;
+pub mod control;
+pub mod dispatch;
 pub mod error;
 pub mod mock_agent;
 pub mod model;
