@@ -20,7 +20,7 @@ pub enum MessageSender {
     Human,
     /// Leader：外部会话（Claude Code / Codex 等）经本机控制 socket 发起（D8）。
     Leader,
-    /// 岗位：回复岗位发出的消息时，发送方是目标岗位。
+    /// 岗位：以某个岗位的身份发出的消息（发信岗位）。
     Role,
 }
 
@@ -102,6 +102,13 @@ pub struct MessageThread {
     pub created_at: String,
     /// 最近一条消息的时间。
     pub updated_at: String,
+    /// 最近一条消息的投递状态。
+    pub last_status: MessageStatus,
+    /// 最近一条消息的发送时间。
+    pub last_message_at: String,
+    /// 最近一条消息的摘要；可缺省。
+    #[ts(optional = nullable)]
+    pub last_snippet: Option<String>,
 }
 
 /// 一条消息。
@@ -155,6 +162,9 @@ pub struct SendMessageInput {
     /// 主题；新建线程时用，缺省取正文第一行。
     #[ts(optional = nullable)]
     pub subject: Option<String>,
+    /// 以某个岗位的身份发消息时给出该岗位 id（发信岗位）；缺省时按操作者判定发送方。
+    #[ts(optional = nullable)]
+    pub from_role_id: Option<String>,
 }
 
 /// 线程列表的筛选条件。各项之间是「且」的关系，缺省表示不按该项过滤。

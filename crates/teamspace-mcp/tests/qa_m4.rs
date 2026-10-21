@@ -890,16 +890,20 @@ fn qa_socket_occupied_by_regular_file_handled_gracefully() {
 }
 
 /// 用例 15：socket 文件已被另一个活动进程占用监听时拒绝覆盖；服务退出时清理 socket 文件。
+///
+/// 缺陷 M4-G-1 的回归：判断「有没有人在监听」不能只看连不连得上——macOS 上并行启动子进程时，
+/// 监听 socket 的文件描述符可能被子进程继承，旧监听关闭后探测仍连得上，重新绑定就被挡住。
+/// 内核现在连上之后先发一次握手请求（`__ping`）：有应答才算真有监听者，没应答就当残留删掉重建。
 #[test]
-#[ignore = "缺陷 M4-G-1：并行启动子进程时监听 fd 可能被继承，旧监听关闭后探测仍连得上，重新绑定被拒（macOS）"]
 fn qa_socket_in_use_by_another_process_refuses_overwrite() {
     let dir = tempfile::tempdir().unwrap();
     let socket_path = dir.path().join("active.sock");
-    // 先占用该 socket
-    let listener = std::os::unix::net::UnixListener::bind(&socket_path).unwrap();
+    let env = Env::new(false, &[("开发", "DEV")]);
+
+    // 另一个「进程」在监听：真的起一个控制服务占住这个 socket（它会应答握手请求）。
+    let occupant = teamspace_core::control::serve(Arc::clone(&env.ts), &socket_path).unwrap();
 
     // 内核尝试绑定已被占用的 socket
-    let env = Env::new(false, &[("开发", "DEV")]);
     let result = teamspace_core::control::serve(Arc::clone(&env.ts), &socket_path);
     assert!(result.is_err(), "应拒绝覆盖正在被监听的 socket");
     let err = result.unwrap_err();
@@ -909,13 +913,21 @@ fn qa_socket_in_use_by_another_process_refuses_overwrite() {
         "错误信息应说明已有进程监听：{}",
         err
     );
+    // 已监听的 socket 不能被删掉，占着它的服务仍然可用。
+    assert!(socket_path.exists(), "已监听的 socket 不能被删掉");
+    let reply = socket_request(&socket_path, "list_teams", json!({}));
+    assert!(reply.get("ok").is_some(), "{reply}");
 
     // 释放旧监听后，再次 serve 成功
-    drop(listener);
+    occupant.shutdown();
+
+    // 残留的 socket 文件（上次退出留下的、已经没人监听的）要能被清掉重建。
+    drop(std::os::unix::net::UnixListener::bind(&socket_path).unwrap());
+    assert!(socket_path.exists(), "残留的 socket 文件应还在");
     let server = teamspace_core::control::serve(Arc::clone(&env.ts), &socket_path);
     assert!(
         server.is_ok(),
-        "旧监听关闭后应能绑定成功：{:?}",
+        "残留 socket 文件应被清掉重建：{:?}",
         server.err()
     );
     let server = server.unwrap();

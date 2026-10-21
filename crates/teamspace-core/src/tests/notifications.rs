@@ -287,6 +287,7 @@ fn message_status_changes_are_pushed_to_the_frontend() {
             task_id: None,
             thread_id: None,
             subject: None,
+            from_role_id: None,
         })
         .unwrap();
 
@@ -343,6 +344,7 @@ fn a_reply_pushes_the_new_status_and_a_notification() {
             task_id: None,
             thread_id: None,
             subject: None,
+            from_role_id: None,
         })
         .unwrap();
 

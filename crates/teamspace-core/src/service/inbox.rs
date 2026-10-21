@@ -204,15 +204,21 @@ fn decision_items(conn: &Connection, team_id: &str, items: &mut Vec<InboxItem>) 
         if decided.contains(&message.id) {
             continue;
         }
-        let role_name = role_name_of(conn, &message.to_role_id);
+        let to_name = role_name_of(conn, &message.to_role_id);
         let from_role = message.sender == MessageSender::Role;
+        // 岗位发来的消息报发信岗位；Human / Leader 发的报接收岗位。
+        let from_name = message
+            .sender_role_id
+            .as_deref()
+            .map(|id| role_name_of(conn, id))
+            .unwrap_or_default();
         let title = if from_role {
-            format!("岗位「{role_name}」发来消息，等你拍板")
+            format!("岗位「{from_name}」发来消息，等你拍板")
         } else {
             match message.status {
-                MessageStatus::Failed => format!("发给岗位「{role_name}」的消息投递失败"),
-                MessageStatus::Expired => format!("发给岗位「{role_name}」的消息已过期"),
-                _ => format!("有一条发给岗位「{role_name}」的消息等你处理"),
+                MessageStatus::Failed => format!("发给岗位「{to_name}」的消息投递失败"),
+                MessageStatus::Expired => format!("发给岗位「{to_name}」的消息已过期"),
+                _ => format!("有一条发给岗位「{to_name}」的消息等你处理"),
             }
         };
         let impact = match message.status {

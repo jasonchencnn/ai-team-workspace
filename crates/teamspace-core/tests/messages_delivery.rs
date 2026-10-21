@@ -132,6 +132,7 @@ impl Fixture {
                 task_id: None,
                 thread_id: None,
                 subject: None,
+                from_role_id: None,
             })
             .unwrap()
     }
@@ -372,6 +373,7 @@ fn a_message_can_be_linked_to_a_task() {
         task_id: Some(task.task.id.clone()),
         thread_id: None,
         subject: Some("关于登录页".into()),
+        from_role_id: None,
     });
     let message = message.unwrap();
     let replied = wait_terminal(&f.ts, &team.id, &message.id);

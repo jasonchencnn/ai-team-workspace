@@ -6,11 +6,13 @@
 //! - 应用重启时把残留的「投递中」退回「排队」；
 //! - 超过 7 天仍未回复的消息转「过期」。
 
+use std::collections::HashMap;
+
 use rusqlite::{Connection, OptionalExtension, params};
 
 use crate::error::{Error, Result};
 use crate::model::{
-    Actor, EventKind, ListThreadsQuery, Message, MessageSender, MessageStatus, MessageThread,
+    Actor, EventKind, ListThreadsQuery, Message, MessageSender, MessageStatus, MessageThread, Role,
     SendMessageInput, ThreadDetail, ThreadParticipant,
 };
 use crate::service::event::NewEvent;
@@ -21,6 +23,8 @@ use crate::store::{enum_col, enum_str, new_id, now};
 pub const EXPIRY_DAYS: i64 = 7;
 /// 投递说明包里附带的最近消息条数。
 pub const CONTEXT_MESSAGES: usize = 10;
+/// 线程摘要的正文长度上限（与界面原来的列表摘要一致）。
+const SNIPPET_CHARS: usize = 60;
 
 /// 线程与消息的列。
 const THREAD_COLS: &str = "id, team_id, task_id, subject, participants, created_at, updated_at";
@@ -30,18 +34,15 @@ pub(crate) const MESSAGE_COLS: &str = "id, thread_id, team_id, task_id, sender_k
 
 /// 发送一条消息。
 ///
-/// `actor` 决定发送方（Human 或 Leader）与活动记录里的操作者。消息进入「排队」，由投递引擎接手。
+/// `actor` 决定发送方（Human 或 Leader）与活动记录里的操作者。给了 `from_role_id` 时以该岗位的
+/// 身份发消息，发信岗位会记进消息与线程参与方。消息进入「排队」，由投递引擎接手。
 pub(crate) fn send(conn: &Connection, actor: Actor, input: &SendMessageInput) -> Result<Message> {
-    let sender = match actor {
-        Actor::Human => MessageSender::Human,
-        Actor::Leader => MessageSender::Leader,
-        Actor::System => MessageSender::Role,
-    };
     let team = team::get_active(conn, &input.team_id)?;
     let target = role::get_active(conn, &input.to_role_id)?;
     if target.team_id != team.id {
         return Err(Error::invalid("接收岗位不在该团队中"));
     }
+    let (sender, from_role) = resolve_sender(conn, actor, input.from_role_id.as_deref(), &team.id)?;
     let body = crate::service::text("消息正文", &input.body, MAX_LONG_TEXT, true)?;
     let task_id = match input.task_id.as_deref() {
         Some(id) => {
@@ -82,15 +83,15 @@ pub(crate) fn send(conn: &Connection, actor: Actor, input: &SendMessageInput) ->
 
     // 参与方：发送方与接收岗位都记上（岗位用角色身份，Human / Leader 只在没有岗位时入列）。
     let sender_participant = ThreadParticipant {
-        role_id: match sender {
-            MessageSender::Role => Some(target.id.clone()),
-            _ => None,
-        },
+        role_id: from_role.as_ref().map(|role| role.id.clone()),
         kind: sender,
         name: match sender {
             MessageSender::Human => "Human".to_owned(),
             MessageSender::Leader => "Leader".to_owned(),
-            MessageSender::Role => target.name.clone(),
+            MessageSender::Role => from_role
+                .as_ref()
+                .map(|role| role.name.clone())
+                .unwrap_or_default(),
         },
     };
     let target_participant = ThreadParticipant {
@@ -113,7 +114,7 @@ pub(crate) fn send(conn: &Connection, actor: Actor, input: &SendMessageInput) ->
             team.id,
             task_id,
             enum_str(sender),
-            Option::<String>::None,
+            from_role.as_ref().map(|role| role.id.clone()),
             target.id,
             body,
             created_at,
@@ -135,12 +136,41 @@ pub(crate) fn send(conn: &Connection, actor: Actor, input: &SendMessageInput) ->
                 "messageId": message.id,
                 "threadId": thread.id,
                 "toRoleId": target.id,
+                "fromRoleId": from_role.as_ref().map(|role| role.id.clone()),
                 "sender": enum_str(sender),
                 "newThread": thread_created,
             }),
         },
     )?;
     Ok(message)
+}
+
+/// 判定发送方：给了发信岗位就以该岗位的身份发，否则按操作者判定（Human / Leader）。
+///
+/// 岗位发出的消息一定带发信岗位：消息里的 `sender_role_id` 与线程参与方都以它为准。
+fn resolve_sender(
+    conn: &Connection,
+    actor: Actor,
+    from_role_id: Option<&str>,
+    team_id: &str,
+) -> Result<(MessageSender, Option<Role>)> {
+    match from_role_id {
+        Some(role_id) => {
+            if actor == Actor::Leader {
+                return Err(Error::invalid("Leader 不能以岗位身份发消息"));
+            }
+            let role = role::get_active(conn, role_id)?;
+            if role.team_id != team_id {
+                return Err(Error::invalid("发信岗位不在该团队中"));
+            }
+            Ok((MessageSender::Role, Some(role)))
+        }
+        None => match actor {
+            Actor::Human => Ok((MessageSender::Human, None)),
+            Actor::Leader => Ok((MessageSender::Leader, None)),
+            Actor::System => Err(Error::invalid("以岗位身份发消息时必须给出发信岗位")),
+        },
+    }
 }
 
 /// 重发一条失败或过期的消息：状态回到「排队」，清掉失败原因，等投递引擎再次接手。
@@ -196,17 +226,22 @@ pub(crate) fn get(conn: &Connection, message_id: &str) -> Result<Message> {
 
 /// 线程详情：线程与其中的消息（按时间正序）。
 pub(crate) fn thread(conn: &Connection, thread_id: &str) -> Result<ThreadDetail> {
-    let thread = thread_of(conn, thread_id)?.ok_or_else(|| Error::not_found("消息线程不存在"))?;
+    let mut thread =
+        thread_of(conn, thread_id)?.ok_or_else(|| Error::not_found("消息线程不存在"))?;
     let mut stmt = conn.prepare(&format!(
         "SELECT {MESSAGE_COLS} FROM messages WHERE thread_id = ?1 ORDER BY created_at, id"
     ))?;
-    let messages = stmt
+    let messages: Vec<Message> = stmt
         .query_map(params![thread_id], from_row)?
         .collect::<rusqlite::Result<_>>()?;
+    // 摘要取最近一条消息（列表里的顺序即时间正序，最后一条就是最近的）。
+    apply_summary(&mut thread, messages.last());
     Ok(ThreadDetail { thread, messages })
 }
 
 /// 线程列表：按团队（必填）、任务与岗位筛选，按最近更新时间倒序。
+///
+/// 每个线程都带上最近一条消息的摘要（状态、时间与正文摘要），界面不必再逐个取线程详情。
 pub(crate) fn threads(conn: &Connection, query: &ListThreadsQuery) -> Result<Vec<MessageThread>> {
     team::get_active(conn, &query.team_id)?;
     let mut sql = format!("SELECT {THREAD_COLS} FROM message_threads WHERE team_id = ?1");
@@ -218,9 +253,18 @@ pub(crate) fn threads(conn: &Connection, query: &ListThreadsQuery) -> Result<Vec
     sql.push_str(" ORDER BY updated_at DESC, id DESC");
     let mut stmt = conn.prepare(&sql)?;
     let refs: Vec<&dyn rusqlite::ToSql> = args.iter().map(|a| a.as_ref()).collect();
-    let rows: Vec<MessageThread> = stmt
+    let mut rows: Vec<MessageThread> = stmt
         .query_map(refs.as_slice(), from_thread_row)?
         .collect::<rusqlite::Result<_>>()?;
+    // 摘要一次查询取回（不是每个线程一次），省掉界面逐个取详情的往返。
+    let summaries = summaries(conn, &query.team_id)?;
+    for thread in rows.iter_mut() {
+        if let Some(summary) = summaries.get(&thread.id) {
+            thread.last_status = summary.status;
+            thread.last_message_at = summary.message_at.clone();
+            thread.last_snippet = summary.snippet.clone();
+        }
+    }
     // 岗位筛选在内存里做：参与方存在 JSON 里，线程数量不大，这样不必依赖 SQL 的 JSON 函数。
     Ok(match query.role_id.as_deref() {
         Some(role_id) => rows
@@ -501,6 +545,7 @@ fn thread_of(conn: &Connection, thread_id: &str) -> Result<Option<MessageThread>
 
 fn from_thread_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<MessageThread> {
     let participants: String = row.get(4)?;
+    let updated_at: String = row.get(6)?;
     Ok(MessageThread {
         id: row.get(0)?,
         team_id: row.get(1)?,
@@ -508,8 +553,76 @@ fn from_thread_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<MessageThread> {
         subject: row.get(3)?,
         participants: serde_json::from_str(&participants).unwrap_or_default(),
         created_at: row.get(5)?,
-        updated_at: row.get(6)?,
+        updated_at: updated_at.clone(),
+        // 摘要按最近一条消息补上（见 `apply_summary`）；这里先给占位值。
+        last_status: MessageStatus::Queued,
+        last_message_at: updated_at,
+        last_snippet: None,
     })
+}
+
+/// 线程摘要：最近一条消息的状态、发送时间与正文摘要。
+#[derive(Debug, Clone)]
+struct ThreadSummary {
+    status: MessageStatus,
+    message_at: String,
+    snippet: Option<String>,
+}
+
+/// 各线程最近一条消息的摘要。一次查询取回团队全部线程的摘要。
+fn summaries(conn: &Connection, team_id: &str) -> Result<HashMap<String, ThreadSummary>> {
+    let mut stmt = conn.prepare(
+        "SELECT thread_id, status, created_at, body FROM (
+             SELECT thread_id, status, created_at, body,
+                    ROW_NUMBER() OVER (PARTITION BY thread_id ORDER BY created_at DESC, id DESC) AS rn
+             FROM messages WHERE team_id = ?1
+         ) WHERE rn = 1",
+    )?;
+    let rows = stmt.query_map(params![team_id], |row| {
+        let body: String = row.get(3)?;
+        Ok((
+            row.get::<_, String>(0)?,
+            ThreadSummary {
+                status: enum_col(row, 1)?,
+                message_at: row.get(2)?,
+                snippet: Some(snippet_of(&body)),
+            },
+        ))
+    })?;
+    let mut out = HashMap::new();
+    for row in rows {
+        let (thread_id, summary) = row?;
+        out.insert(thread_id, summary);
+    }
+    Ok(out)
+}
+
+/// 把最近一条消息的摘要写进线程。
+fn apply_summary(thread: &mut MessageThread, latest: Option<&Message>) {
+    match latest {
+        Some(message) => {
+            thread.last_status = message.status;
+            thread.last_message_at = message.created_at.clone();
+            thread.last_snippet = Some(snippet_of(&message.body));
+        }
+        None => {
+            // 线程与第一条消息在同一次写入里落库，理论上不会出现没有消息的线程。
+            thread.last_status = MessageStatus::Queued;
+            thread.last_message_at = thread.updated_at.clone();
+            thread.last_snippet = None;
+        }
+    }
+}
+
+/// 正文摘要：空白压成一行，超长截断（与界面原来的列表摘要一致）。
+fn snippet_of(body: &str) -> String {
+    let text = body.split_whitespace().collect::<Vec<_>>().join(" ");
+    if text.chars().count() <= SNIPPET_CHARS {
+        text
+    } else {
+        let head: String = text.chars().take(SNIPPET_CHARS).collect();
+        format!("{head}…")
+    }
 }
 
 pub(crate) fn from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Message> {

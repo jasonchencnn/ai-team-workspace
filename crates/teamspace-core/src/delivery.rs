@@ -90,9 +90,23 @@ impl Deliveries {
     }
 
     /// 等待新消息或超时。
+    ///
+    /// 等待前先看唤醒标志：新消息可能在「查队列」与「进入等待」之间入队，那时标志已经置位，
+    /// 再睡到空闲超时（60 秒）就等于把刚到的消息晾在队列里。条件变量的标准用法：
+    /// 持锁判标志，标志为真就直接回去干活，不进等待。
     fn wait(&self, timeout: Duration) {
-        let wake = lock(&self.wake);
-        let _ = self.wake_cv.wait_timeout(wake, timeout);
+        let mut wake = lock(&self.wake);
+        if *wake {
+            // 新消息已经到过：吃掉标志，立刻回去看队列。
+            *wake = false;
+            return;
+        }
+        let (mut wake, _) = self
+            .wake_cv
+            .wait_timeout(wake, timeout)
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        // 标志是一次性的：本次等待已经消费掉它。
+        *wake = false;
     }
 }
 
@@ -679,4 +693,73 @@ fn brief(
 /// 说明包的内容块：只发文本。
 fn acp_text_block(text: &str) -> Value {
     json!({ "type": "text", "text": text, "annotations": { "audience": ["user"] } })
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+    use std::time::{Duration, Instant};
+
+    use super::*;
+
+    /// 新消息在「查队列」与「进入等待」之间到时，等待不能把它睡掉。
+    ///
+    /// 这是投递唤醒丢失的稳定复现：旧实现不检查唤醒标志就进入等待，
+    /// 于是刚到的消息要等空闲超时（60 秒）才开始投递。
+    #[test]
+    fn a_wakeup_before_the_wait_is_not_lost() {
+        let deliveries = Deliveries::default();
+        // 消息已入队（队列已写好），唤醒标志也已置位。
+        deliveries.schedule();
+
+        let started = Instant::now();
+        deliveries.wait(Duration::from_secs(5));
+        let elapsed = started.elapsed();
+
+        assert!(
+            elapsed < Duration::from_secs(1),
+            "等待前就到了的新消息不该被睡掉（实际等了 {elapsed:?}）"
+        );
+    }
+
+    /// 等待期间到来的唤醒要立刻叫醒等待者。
+    #[test]
+    fn a_wakeup_during_the_wait_wakes_the_waiter() {
+        let deliveries = Arc::new(Deliveries::default());
+        let started = Instant::now();
+        let waiter = {
+            let deliveries = Arc::clone(&deliveries);
+            std::thread::spawn(move || deliveries.wait(Duration::from_secs(30)))
+        };
+        // 等等待者真的进入等待。
+        std::thread::sleep(Duration::from_millis(100));
+        deliveries.schedule();
+        waiter.join().unwrap();
+
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "等待期间的唤醒没有叫醒等待者（实际等了 {:?}）",
+            started.elapsed()
+        );
+    }
+
+    /// 标志是一次性的：吃掉之后不会一直返回，队列空时仍然会真的睡下去。
+    #[test]
+    fn the_wakeup_flag_is_consumed_once() {
+        let deliveries = Deliveries::default();
+        deliveries.schedule();
+        // 第一次等待：标志已置位，立刻返回。
+        let started = Instant::now();
+        deliveries.wait(Duration::from_secs(5));
+        assert!(started.elapsed() < Duration::from_secs(1), "标志应立刻返回");
+
+        // 第二次等待：标志已被吃掉，没有新消息时只能等到超时。
+        let started = Instant::now();
+        deliveries.wait(Duration::from_millis(200));
+        assert!(
+            started.elapsed() >= Duration::from_millis(150),
+            "标志吃掉后应真的等待（实际等了 {:?}）",
+            started.elapsed()
+        );
+    }
 }
