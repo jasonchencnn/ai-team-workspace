@@ -263,17 +263,8 @@ test("UI-ROLE-002 空状态：团队无岗位时显示「还没有岗位 / 先�
   await page.getByRole("button", { name: "取消" }).click();
 });
 
-test("UI-ROLE-002 空状态：无 teamId 的岗位路由应显示「未选择团队 / 请先在左侧选择一个团队。」", async ({
-  page,
-}) => {
-  test.fixme(
-    true,
-    "缺陷 UI-ROLE-002: 路由表只有 teams/:teamId/roles，teamId 恒有值，#/roles 落到 IndexRedirect，「未选择团队」分支不可达",
-  );
-  await page.goto("/#/roles");
-  await expect(page.getByRole("heading", { name: "未选择团队" })).toBeVisible();
-  await expect(page.getByText("请先在左侧选择一个团队。")).toBeVisible();
-});
+// UI-ROLE-002 已删除：路由表只有 `teams/:teamId/roles`，`teamId` 恒有值，
+// `#/roles` 落到 IndexRedirect，「未选择团队」分支不可达。分支与用例一并删除。
 
 test("UI-ROLE-010 从示例添加：加载中显示「正在加载示例…」，选中示例预填表单，按钮变「收起示例」", async ({
   page,
@@ -729,7 +720,8 @@ test("UI-WORK-009 最近执行：无执行时显示「暂无执行」；执行�
   const runs = runsPanel(page);
   await expect(runs.getByText("暂无执行")).toBeVisible();
   await expect(runs.getByText("任务派给这个岗位后，每次执行都会出现在这里。")).toBeVisible();
-  await expect(runs).toContainText("点击进入任务详情，可查看这次执行的完整进度与改动。");
+  // 空状态下不出现「点击进入任务详情」：没有可点的执行，这句提示自相矛盾（L-12）。
+  await expect(runs).not.toContainText("点击进入任务详情，可查看这次执行的完整进度与改动。");
   await shot(page, "workbench-no-runs", runs);
 
   // 派一次真实执行（内置 Mock ACP 预设），让「最近执行」有内容
@@ -758,6 +750,8 @@ test("UI-WORK-009 最近执行：无执行时显示「暂无执行」；执行�
   await expect(runRow).toContainText("第 1 次");
   await expect(runRow).toContainText(MOCK);
   await expect(runRow).toContainText("已完成");
+  // 有执行记录时，「点击进入任务详情」的提示才出现。
+  await expect(runsPanel(page)).toContainText("点击进入任务详情，可查看这次执行的完整进度与改动。");
   await shot(page, "workbench-run-row", runsPanel(page));
   await runRow.click();
   await expect(page).toHaveURL(new RegExp(`/teams/${teamId}/tasks/[^/]+$`));
