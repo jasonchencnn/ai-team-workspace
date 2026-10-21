@@ -9,7 +9,10 @@
 //!   - Git worktree 执行时，worktree 内的任何位置（`.git` 除外）；
 //!   - 例外：岗位文件夹中的 `岗位说明.md` 由 Teamspace 维护，不自动允许；
 //!   - 岗位文件夹中的 `工作日志.md`（D14）：只自动允许纯追加——新内容以磁盘上的现有内容为前缀。
-//!     权限请求阶段按 ACP diff 内容判断（[`journal_edit_appends`]），判断不了就转交 Human；
+//!     权限请求阶段按 ACP diff 内容判断（[`journal_edit_appends`]）：diff 可以是整文件
+//!     （`oldText` 为空或等于现有内容），也可以是片段替换（`oldText` 只带文件末尾的一段，
+//!     `newText` 是「这一段 + 追加的内容」，Claude Code 的 Edit 工具就是这种）；
+//!     判断不了就转交 Human；
 //!     `fs/write_text_file` 阶段由 driver 在写入锁内重新读取再判断（见
 //!     [`crate::role_folder::write_journal_from_agent`]），这一步不因权限请求曾被允许而跳过；
 //! - 其他（执行命令、删除、移动、联网、切换模式、未声明类型、编辑范围外的路径）→ 转交 Human。
@@ -281,17 +284,54 @@ fn journal_reason(path: &str) -> String {
 
 /// 一次 diff（`old` → `new`）作用在工作日志现有内容 `disk` 上是否只是在末尾追加。
 ///
+/// 判定按「改完之后的内容」来算，而不是逐字比较片段：
 /// - `old` 为空（整文件写入）或等于 `disk`：`new` 须以 `disk` 为前缀；
-/// - `old` 是片段（按片段替换的编辑工具）：`old` 须在 `disk` 中只出现一次且位于末尾，
-///   `new` 须以 `old` 为前缀——替换结果即 `disk` 加上 `new` 多出的部分。
+/// - `old` 是片段（按片段替换的编辑工具，如 Claude Code 的 Edit：`oldText` 只带文件末尾的
+///   一小段，`newText` 是「这一段 + 追加的内容」）：`old` 须在 `disk` 中**唯一**出现，否则
+///   替换结果无法确定；把这一段换成 `new` 之后，整个文件须仍以 `disk` 开头——也就是
+///   「已有内容一字未动，只在末尾接上新的内容」。
 ///
-/// 其他情况（片段不在末尾、出现多次、`new` 改动了片段）都不是纯追加。
+/// 片段不必正好是文件末尾的字节：只要替换之后整体仍以现有内容开头（如 `oldText` 少了行尾
+/// 换行、`newText` 把它补回来），就是纯追加。任何改动已有内容的情况（覆盖、截断、删改、
+/// 插在中间、片段出现在多处）都不是纯追加。
 pub fn journal_edit_appends(disk: &str, old: Option<&str>, new: &str) -> bool {
-    match old {
-        None | Some("") => new.starts_with(disk),
-        Some(old) if old == disk => new.starts_with(disk),
-        Some(old) => disk.ends_with(old) && disk.matches(old).count() == 1 && new.starts_with(old),
+    let result = match old {
+        None | Some("") => new.to_owned(),
+        Some(old) if old == disk => new.to_owned(),
+        Some(old) => {
+            let Some(at) = unique_occurrence(disk, old) else {
+                return false;
+            };
+            let mut result = String::with_capacity(disk.len() + new.len());
+            result.push_str(&disk[..at]);
+            result.push_str(new);
+            result.push_str(&disk[at + old.len()..]);
+            result
+        }
+    };
+    result.starts_with(disk)
+}
+
+/// `needle` 在 `haystack` 中唯一出现（按字节位置，重叠的出现也算）时的起始位置；
+/// 没出现或出现多次时为 `None`（无法确定替换结果）。
+fn unique_occurrence(haystack: &str, needle: &str) -> Option<usize> {
+    if needle.is_empty() {
+        return None;
     }
+    let bytes = haystack.as_bytes();
+    let needle = needle.as_bytes();
+    let mut found: Option<usize> = None;
+    let mut at = 0usize;
+    while at + needle.len() <= bytes.len() {
+        if &bytes[at..at + needle.len()] == needle {
+            if found.is_some() {
+                return None;
+            }
+            found = Some(at);
+        }
+        at += 1;
+    }
+    found
 }
 
 /// 把路径规范化为绝对路径：相对路径按 `base` 解析；含 `..` 时拒绝；已存在的最长前缀解析符号链接，
@@ -655,6 +695,106 @@ mod tests {
         assert!(!journal_edit_appends("a\nb\n", Some("a\n"), "a\nc\n"));
         assert!(!journal_edit_appends("a\n", None, "b\n"));
         assert!(!journal_edit_appends("a\n", None, ""));
+    }
+
+    /// M3-11 自举复现：Claude Code 用编辑工具改工作日志时，diff 只带文件末尾的片段
+    /// （`oldText` 不含行尾换行，`newText` 是「这一段 + 追加的内容」），内核原先判断不了，
+    /// 只能转交 Human。这里按「改完之后的内容」判定：已有内容一字未动、只在末尾追加就允许。
+    #[test]
+    fn journal_appends_recognize_agent_edit_styles() {
+        let disk = "# 工作日志\n\n- 2026-10-14 10:00:00 UTC+08:00 · FE-001 · 开始第 1 次执行\n";
+        let tail = "- 2026-10-14 10:00:00 UTC+08:00 · FE-001 · 开始第 1 次执行";
+
+        // Claude Code 的 Edit：oldText 是文件末尾的一段（不含行尾换行），newText 是这一段加追加内容。
+        assert!(journal_edit_appends(
+            disk,
+            Some(tail),
+            &format!("{tail}\n- 2026-10-14 10:01:00 UTC+08:00 · FE-001 · 进展")
+        ));
+        // 末尾片段带行尾换行时同样成立。
+        assert!(journal_edit_appends(
+            disk,
+            Some(&format!("{tail}\n")),
+            &format!("{tail}\n- 2026-10-14 10:01:00 UTC+08:00 · FE-001 · 进展\n")
+        ));
+        // Claude Code 的 Write：oldText 为空，newText 是整个新文件。
+        let written = format!("{disk}- 2026-10-14 10:01:00 UTC+08:00 · FE-001 · 进展\n");
+        assert!(journal_edit_appends(disk, None, &written));
+        assert!(journal_edit_appends(disk, Some(""), &written));
+        // MiniMax Code：oldText 是整个现有内容，newText 是现有内容加追加。
+        assert!(journal_edit_appends(disk, Some(disk), &written));
+
+        // 改动已有内容的一律不是纯追加。
+        assert!(!journal_edit_appends(disk, Some(tail), "- 改写最后一行\n"));
+        assert!(!journal_edit_appends(disk, Some(disk), "# 工作日志\n"));
+        assert!(!journal_edit_appends(disk, None, "# 工作日志\n"));
+        // 片段出现在多处：无法确定替换结果。
+        assert!(!journal_edit_appends("x\nx\n", Some("x\n"), "x\ny\n"));
+        // 片段不在末尾：改的是中间内容。
+        assert!(!journal_edit_appends(
+            "# 头\n- 甲\n- 乙\n",
+            Some("- 甲\n"),
+            "- 甲改\n- 乙\n"
+        ));
+    }
+
+    /// 片段唯一出现但不在末尾时，改完之后的内容不再以现有内容开头 → 转交 Human。
+    #[test]
+    fn journal_appends_reject_edits_in_the_middle() {
+        let disk = "# 头\n- 甲\n- 乙\n";
+        assert!(!journal_edit_appends(
+            disk,
+            Some("- 甲\n"),
+            "- 甲改\n- 乙\n"
+        ));
+        // 删掉末尾的一行：截断，不是追加。
+        assert!(!journal_edit_appends(disk, Some("- 乙\n"), ""));
+        // 末尾片段被换成别的内容。
+        assert!(!journal_edit_appends(disk, Some("- 乙\n"), "- 丙\n"));
+    }
+
+    /// 工作日志的权限判断（`Scope::decide_with`）按上面这套规则放行：Claude Code 风格的片段编辑
+    /// 与 MiniMax Code 风格的整文件写入都自动允许，改动已有内容仍然转交 Human。
+    #[test]
+    fn journal_edits_follow_the_append_rules() {
+        let e = env();
+        let journal = e.role.join(JOURNAL_FILE);
+        let disk = "# 工作日志\n\n- 2026-10-14 10:00:00 UTC+08:00 · FE-001 · 开始第 1 次执行\n";
+        fs::write(&journal, disk).unwrap();
+        let scope = in_place(&e);
+        let paths = [s(&journal)];
+        let tail = "- 2026-10-14 10:00:00 UTC+08:00 · FE-001 · 开始第 1 次执行";
+        let appended = format!("{disk}- 2026-10-14 10:01:00 UTC+08:00 · FE-001 · 进展\n");
+
+        // 片段编辑（Claude Code）：允许。
+        let Verdict::Allow(reason) = scope.decide_with(
+            Some("edit"),
+            &paths,
+            &[diff(
+                &journal,
+                Some(tail),
+                &format!("{tail}\n- 2026-10-14 10:01:00 UTC+08:00 · FE-001 · 进展"),
+            )],
+        ) else {
+            panic!("片段追加应当自动允许");
+        };
+        assert!(reason.contains("追加"), "{reason}");
+
+        // 整文件写入（oldText 为空）：允许。
+        assert!(matches!(
+            scope.decide_with(Some("edit"), &paths, &[diff(&journal, None, &appended)]),
+            Verdict::Allow(_)
+        ));
+
+        // 覆盖已有内容：转交 Human。
+        let Verdict::Ask(reason) = scope.decide_with(
+            Some("edit"),
+            &paths,
+            &[diff(&journal, Some(tail), "- 改写\n")],
+        ) else {
+            panic!("改写已有内容需要确认");
+        };
+        assert!(reason.contains("只允许在末尾追加"), "{reason}");
     }
 
     #[test]

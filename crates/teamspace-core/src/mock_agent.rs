@@ -37,6 +37,9 @@
 //! - `[mock:appendjournal]`：经 `fs/read_text_file` 读出工作日志（路径取自任务说明包「本岗位工作日志 `…`」），
 //!   申请编辑权限（diff 的 `oldText` 为现有内容、`newText` 为其后追加一条进展），随后把追加后的全文经
 //!   `fs/write_text_file` 写回（D14 的纯追加）；
+//! - `[mock:editjournalfragment]`：同 `[mock:appendjournal]`，但权限请求只带 `rawInput`
+//!   （`file_path` + `old_string` 末尾片段 + `new_string`），没有 ACP diff 块也没有 `locations`
+//!   （Claude Code 的编辑工具就是这样），片段替换后整体仍以现有内容开头；
 //! - `[mock:outsideread=<文件>]`：申请一次 `read` 类权限（`rawInput.file_path` 为该文件，相对路径按工作目录
 //!   解析），不论决定如何都随后经 `fs/read_text_file` 读取它，结果（`ok:<首行>` 或错误）写进总结（D18）；
 //! - `[mock:fsprobe=<范围外文件>]`：不申请权限，直接依次：`fs/read_text_file` 读取范围外文件，
@@ -565,6 +568,88 @@ impl Mock<'_> {
         Ok(Probe::Done(result))
     }
 
+    /// `[mock:editjournalfragment]`：模拟 Claude Code 的编辑工具——权限请求只带 `rawInput`
+    /// （`file_path` + `old_string` 末尾片段 + `new_string`），既没有 ACP diff 块也没有 `locations`。
+    /// 片段替换后整体仍以现有内容开头，属于 D14 的纯追加。
+    fn edit_journal_fragment(
+        &mut self,
+        session: &str,
+        path: &Path,
+        task_key: &str,
+        cancelled: &mut bool,
+    ) -> std::io::Result<Probe> {
+        let shown = path.display().to_string();
+        let current = match self.request(
+            "fs/read_text_file",
+            json!({ "sessionId": session, "path": shown }),
+            cancelled,
+        )? {
+            Reply::Eof => return Ok(Probe::Eof),
+            Reply::Result(r) => r
+                .get("content")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_owned(),
+            Reply::Error(message) => return Ok(Probe::Done(Err(message))),
+        };
+        // 旧内容取文件末尾的一行（不含行尾换行）——编辑工具给的片段就是这样。
+        let tail = current
+            .trim_end_matches('\n')
+            .rsplit_once('\n')
+            .map_or_else(
+                || current.trim_end().to_owned(),
+                |(_, line)| line.to_owned(),
+            );
+        let now = crate::role_folder::local_time(&chrono::Utc::now().to_rfc3339());
+        let replacement = format!("{tail}\n- {now} · {task_key} · Mock 进展：已写入过程文件\n");
+        let at = current.rfind(&tail).unwrap_or(0);
+        let content = format!(
+            "{}{}{}",
+            &current[..at],
+            replacement,
+            &current[at + tail.len()..]
+        );
+        self.update(session, json!({
+            "sessionUpdate": "tool_call", "toolCallId": "mock-editjournalfragment", "title": "追加工作日志",
+            "kind": "edit", "status": "pending",
+            "rawInput": { "file_path": shown, "old_string": tail, "new_string": replacement }
+        }))?;
+        let reply = self.request(
+            "session/request_permission",
+            json!({ "sessionId": session, "toolCall": { "toolCallId": "mock-editjournalfragment" }, "options": options() }),
+            cancelled,
+        )?;
+        match reply {
+            Reply::Eof => return Ok(Probe::Eof),
+            Reply::Result(r)
+                if r.pointer("/outcome/outcome").and_then(Value::as_str) == Some("cancelled") =>
+            {
+                *cancelled = true;
+            }
+            _ => {}
+        }
+        if *cancelled {
+            self.tool(
+                session,
+                json!({ "toolCallId": "mock-editjournalfragment", "status": "failed" }),
+            )?;
+            return Ok(Probe::Cancelled);
+        }
+        let Some(result) = self.write_file(session, path, &content, cancelled)? else {
+            return Ok(Probe::Eof);
+        };
+        let status = if result.is_ok() {
+            "completed"
+        } else {
+            "failed"
+        };
+        self.tool(
+            session,
+            json!({ "toolCallId": "mock-editjournalfragment", "status": status }),
+        )?;
+        Ok(Probe::Done(result))
+    }
+
     fn finish(&mut self, id: Value, stop_reason: &str) -> std::io::Result<()> {
         self.write(&ok(id, json!({ "stopReason": stop_reason })))
     }
@@ -809,6 +894,15 @@ impl Mock<'_> {
                 Probe::Eof => return Ok(()),
                 Probe::Cancelled => return self.finish(id, "cancelled"),
                 Probe::Done(result) => notes.push(note("appendjournal", &result)),
+            }
+        }
+        if has("editjournalfragment") {
+            let target = journal_path(&text).map_or_else(|| journal.clone(), PathBuf::from);
+            let key = task_key(task).unwrap_or("?");
+            match self.edit_journal_fragment(&session, &target, key, &mut cancelled)? {
+                Probe::Eof => return Ok(()),
+                Probe::Cancelled => return self.finish(id, "cancelled"),
+                Probe::Done(result) => notes.push(note("editjournalfragment", &result)),
             }
         }
         if let Some(arg) = marker_arg(task, "outsideread") {
@@ -1535,6 +1629,43 @@ mod tests {
         );
         assert_eq!(added.lines().count(), 1);
         assert!(all_text(&replies).contains("[appendjournal:ok]"));
+    }
+
+    #[test]
+    fn editjournalfragment_only_sends_raw_input() {
+        let journal = "/tmp/ws/Teamspace/前端/工作日志.md";
+        let input = [
+            format!("{NEW}\n"),
+            prompt(
+                2,
+                &format!(
+                    "{BRIEF}\n2. 执行过程中可以在本岗位工作日志 `{journal}` 的末尾追加进展\n\
+                     ## 任务\n- 编号：FE-001\n- 标题：[mock:editjournalfragment]\n"
+                ),
+            ),
+            line(json!({ "jsonrpc": "2.0", "id": 1000, "result": allow() })),
+            line(json!({ "jsonrpc": "2.0", "id": 1001, "result": {} })),
+            line(
+                json!({ "jsonrpc": "2.0", "id": 1002, "result": { "content": "# 工作日志\n\n- a\n" } }),
+            ),
+            line(json!({ "jsonrpc": "2.0", "id": 1003, "result": allow() })),
+            line(json!({ "jsonrpc": "2.0", "id": 1004, "result": {} })),
+        ];
+        let (replies, result) = exchange(&input.concat());
+        result.unwrap();
+        assert_eq!(replies.last().unwrap()["result"]["stopReason"], "end_turn");
+        let call = tool_call(&replies, "mock-editjournalfragment");
+        assert_eq!(call["kind"], "edit");
+        // 没有 ACP diff 块，也没有 locations：编辑内容只在 rawInput 里。
+        assert!(call["content"].is_null(), "{call}");
+        assert!(call["locations"].is_null(), "{call}");
+        assert_eq!(call["rawInput"]["file_path"], journal);
+        assert_eq!(call["rawInput"]["old_string"], "- a");
+        let write = of_method(&replies, "fs/write_text_file")[1];
+        assert_eq!(write["params"]["path"], journal);
+        let content = write["params"]["content"].as_str().unwrap();
+        assert!(content.starts_with("# 工作日志\n\n- a\n"), "{content}");
+        assert!(all_text(&replies).contains("[editjournalfragment:ok]"));
     }
 
     #[test]
