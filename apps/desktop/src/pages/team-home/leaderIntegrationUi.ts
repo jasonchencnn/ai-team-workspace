@@ -73,9 +73,22 @@ export function gitNotice(gitWorkspace: boolean): string | null {
   return gitWorkspace ? "此文件会出现在 Git 改动中，可加入 .gitignore 或提交。" : null;
 }
 
+/** 没构建出 teamspace-mcp 时，写入按钮不可用（写出去的配置指向不存在的二进制）。 */
+export function canWriteMcpConfig(integration: LeaderIntegration): boolean {
+  return integration.binaryFound;
+}
+
+/** 写入按钮不可用时的说明。 */
+export function writeBlockedHint(integration: LeaderIntegration): string | null {
+  if (integration.binaryFound) {
+    return null;
+  }
+  return "还没有可执行的 teamspace-mcp，不能写入 .mcp.json（请先构建它）。";
+}
+
 /** 写入工作空间 `.mcp.json` 前的确认说明。 */
 export function writeConfirmText(integration: LeaderIntegration): string {
-  return `将把 mcpServers.teamspace 写入 ${integration.workspacePath}/.mcp.json。已有文件只合并 teamspace 一项，其余内容保留（文件会按规范缩进重写）。`;
+  return `将把 mcpServers.teamspace 写入 ${integration.workspacePath}/.mcp.json。已有文件只合并 teamspace 一项，其余内容保留（文件会按规范缩进重写，键顺序可能被重排；写入前原文件会备份为 .mcp.json.bak）。`;
 }
 
 /** 写入成功后的提示。 */

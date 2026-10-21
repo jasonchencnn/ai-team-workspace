@@ -9,9 +9,11 @@ import type { LeaderIntegration } from "../src/bindings/LeaderIntegration.js";
 import {
   LEADER_CAN_DO,
   LEADER_CANNOT_DO,
+  canWriteMcpConfig,
   configSections,
   copyLabel,
   gitNotice,
+  writeBlockedHint,
   writeConfirmText,
   writeDoneText,
 } from "../src/pages/team-home/leaderIntegrationUi.js";
@@ -92,11 +94,24 @@ describe("提示文案", () => {
     const text = writeConfirmText(integration({ workspacePath: "/repo" }));
     expect(text).toContain("/repo/.mcp.json");
     expect(text).toContain("保留");
+    // 键顺序可能被重排，要写清楚。
+    expect(text).toContain("键顺序");
+    // 写入前会备份原文件。
+    expect(text).toContain(".mcp.json.bak");
   });
 
   it("写入完成后区分新建与合并", () => {
     expect(writeDoneText("/repo/.mcp.json", true)).toContain("已新建");
     expect(writeDoneText("/repo/.mcp.json", false)).toContain("合并");
+  });
+
+  it("没构建出 teamspace-mcp 时不能写入", () => {
+    const missing = integration({ binaryFound: false, binaryHint: "请先构建 teamspace-mcp" });
+    expect(canWriteMcpConfig(missing)).toBe(false);
+    expect(writeBlockedHint(missing)).toContain("不能写入");
+    // 找到可执行文件时照常写。
+    expect(canWriteMcpConfig(integration())).toBe(true);
+    expect(writeBlockedHint(integration())).toBeNull();
   });
 });
 
@@ -108,5 +123,11 @@ describe("卡片组件", () => {
     expect(source).toContain("navigator.clipboard.writeText");
     expect(source).toContain("写入工作空间 .mcp.json");
     expect(source).toContain("确认写入");
+  });
+
+  it("没找到可执行文件时禁用写入按钮", async () => {
+    const source = await readFile(cardPath, "utf8");
+    expect(source).toContain("disabled={!writable}");
+    expect(source).toContain("canWriteMcpConfig(data)");
   });
 });

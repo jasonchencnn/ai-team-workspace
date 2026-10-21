@@ -82,6 +82,12 @@ export default async function globalSetup(): Promise<() => void> {
     cwd: repoRoot,
     stdio: "inherit",
   });
+  // 「接入 Leader」卡片要写 .mcp.json 时需要 teamspace-mcp 可执行文件：
+  // 开发模式的产物在 target/debug/，构建出来写入按钮才可用。
+  execFileSync("cargo", ["build", "-q", "--locked", "-p", "teamspace-mcp"], {
+    cwd: repoRoot,
+    stdio: "inherit",
+  });
   const bridge = spawn(
     "cargo",
     [
