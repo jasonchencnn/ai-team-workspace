@@ -494,6 +494,18 @@ pub(crate) fn next_queued(conn: &Connection, busy_roles: &[String]) -> Result<Op
         .find(|m| !busy_roles.contains(&m.to_role_id)))
 }
 
+/// 排队等待投递与正在投递的消息数量。
+///
+/// 恢复备份前用它确认没有消息正在半路上：覆盖数据库会把投递中的消息吞掉。
+pub(crate) fn pending_count(conn: &Connection) -> Result<u64> {
+    let count: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM messages WHERE status IN ('queued', 'delivering')",
+        [],
+        |row| row.get(0),
+    )?;
+    Ok(count.max(0) as u64)
+}
+
 /// 线程上下文：某个线程里最近的消息（时间正序），供投递说明包附上。
 pub(crate) fn context(conn: &Connection, thread_id: &str, limit: usize) -> Result<Vec<Message>> {
     let mut stmt = conn.prepare(&format!(

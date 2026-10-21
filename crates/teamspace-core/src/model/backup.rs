@@ -132,6 +132,32 @@ pub struct BackupExportResult {
     pub teams: Vec<BackupTeam>,
 }
 
+/// 备份的校验结果（恢复前给 Human 看的那一份）。
+///
+/// 备份要能自证完整：清单里说的与备份目录里放着的要一致，数据库快照本身要是一个能独立打开的
+/// SQLite 文件，清单里的相对路径也不能越出备份目录与工作空间。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct BackupValidation {
+    /// 数据库快照能不能独立打开（有效的 SQLite 文件）。
+    pub database_readable: bool,
+    /// 完整性检查的结果（`ok` 或失败原因）。
+    pub database_integrity: String,
+    /// 数据库快照的 schema 版本（`PRAGMA user_version`）。
+    pub database_schema_version: i64,
+    /// 快照的 schema 版本与清单里记录的是否一致。
+    pub schema_matches: bool,
+    /// 清单里的文件清单与备份目录是否一致（数量与大小都对得上）。
+    pub files_match: bool,
+    /// 清单里没能通过检查的岗位文件夹数（路径不安全或工作空间对不上）。
+    pub skipped_folders: u32,
+    /// 能不能直接恢复（没有致命问题）。
+    pub restorable: bool,
+    /// 校验发现的问题（中文；空数组表示没问题）。
+    pub problems: Vec<String>,
+}
+
 /// 备份摘要（恢复前给 Human 看的那一份）。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
@@ -159,6 +185,8 @@ pub struct BackupSummary {
     pub needs_migration: bool,
     /// 数据库快照相对备份目录的路径。
     pub database_file: String,
+    /// 校验结果（快照完整性、文件清单、路径安全）。
+    pub validation: BackupValidation,
 }
 
 /// 恢复时跳过的岗位文件夹。

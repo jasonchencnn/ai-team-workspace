@@ -3,7 +3,7 @@
 //! 全部用临时目录：备份写到临时目录，工作空间也在临时目录里，不碰真实数据。
 
 use super::*;
-use crate::backup::{BACKUP_PREFIX, MANIFEST_FILE, PRE_RESTORE_PREFIX};
+use crate::backup::{BACKUP_PREFIX, MANIFEST_FILE, PRE_RESTORE_PREFIX, RestoreFailPoint};
 use crate::dispatch::Caller;
 use crate::model::{EventKind, EventQuery, TaskBoardQuery};
 use serde_json::json;
@@ -22,6 +22,62 @@ fn manifest_of(backup_dir: &str) -> BackupManifest {
     let path = Path::new(backup_dir).join(MANIFEST_FILE);
     let text = fs::read_to_string(&path).unwrap();
     serde_json::from_str(&text).unwrap()
+}
+
+/// 改写备份目录里的清单（模拟被改过的备份）。
+fn write_manifest(backup_dir: &str, manifest: &BackupManifest) {
+    let path = Path::new(backup_dir).join(MANIFEST_FILE);
+    fs::write(&path, serde_json::to_string_pretty(manifest).unwrap()).unwrap();
+}
+
+/// 备份目录里除清单外的文件（相对路径）。
+fn backup_files(backup_dir: &str) -> Vec<String> {
+    fn walk(root: &Path, current: &Path, out: &mut Vec<String>) {
+        let mut entries: Vec<PathBuf> = fs::read_dir(current)
+            .unwrap()
+            .filter_map(|entry| entry.ok().map(|entry| entry.path()))
+            .collect();
+        entries.sort();
+        for path in entries {
+            let meta = fs::symlink_metadata(&path).unwrap();
+            if meta.is_dir() {
+                walk(root, &path, out);
+            } else if meta.is_file() {
+                let relative = path.strip_prefix(root).unwrap();
+                out.push(
+                    relative
+                        .components()
+                        .map(|part| part.as_os_str().to_string_lossy().into_owned())
+                        .collect::<Vec<String>>()
+                        .join("/"),
+                );
+            }
+        }
+    }
+    let mut out = Vec::new();
+    walk(Path::new(backup_dir), Path::new(backup_dir), &mut out);
+    out
+}
+
+/// 造一条「还在进行中」的执行记录（不启动 Agent，只占住数据库里的状态）。
+fn insert_running_run(f: &Fixture, team_id: &str, task_id: &str, role_id: &str, harness_id: &str) {
+    let conn = f.ts.lock();
+    conn.execute(
+        "INSERT INTO runs (id, team_id, task_id, role_id, harness_id, harness_name, harness_preset,
+                           harness_command, harness_args, attempt, status, workspace_path, exec_dir,
+                           isolation, started_at)
+         VALUES ('run_in_progress', ?1, ?2, ?3, ?4, 'Mock', 'mock', 'mock', '[]', 1, 'running',
+                 ?5, ?5, 'in_place', ?6)",
+        rusqlite::params![
+            team_id,
+            task_id,
+            role_id,
+            harness_id,
+            f.ws.to_string_lossy(),
+            crate::store::now()
+        ],
+    )
+    .unwrap();
 }
 
 #[test]
@@ -278,29 +334,243 @@ fn restore_refuses_a_backup_from_a_newer_schema() {
     assert!(err.to_string().contains("更新版本"), "{err}");
 }
 
+// ---------------------------------------------------------------- 路径穿越
+
 #[test]
-fn restore_falls_back_to_the_current_database_when_the_backup_cannot_be_opened() {
+fn restore_skips_role_folders_whose_paths_escape_the_backup_directory() {
     let f = fixture();
-    let team = f.team("T");
+    f.team("T");
     let dest = f.dir.path().join("backups");
     let backup = export(&f, &dest);
 
-    // 把备份里的数据库换成内核打不开的版本（user_version 高于当前支持版本）。
-    // 清单里的版本号没动，所以校验能过——问题只在打开数据库时才暴露。
-    let broken = f.dir.path().join("broken.db");
-    {
-        let conn = rusqlite::Connection::open(&broken).unwrap();
-        conn.pragma_update(None, "user_version", crate::store::SCHEMA_VERSION + 1)
-            .unwrap();
+    // 备份目录与工作空间之外各放一个「哨兵」目录：恢复不该往里写任何东西。
+    let outside = f.dir.path().join("escaped");
+    fs::create_dir_all(&outside).unwrap();
+
+    // 篡改清单：岗位文件夹的相对路径里带上 `..`，指向备份目录与工作空间之外。
+    let mut manifest = manifest_of(&backup.backup_dir);
+    let folder = &mut manifest.teams[0].role_folders[0];
+    folder.relative_path = "../escaped".to_owned();
+    folder.backup_path = "../../escaped".to_owned();
+    write_manifest(&backup.backup_dir, &manifest);
+
+    let result =
+        f.ts.restore_backup(RestoreBackupInput {
+            backup_dir: backup.backup_dir.clone(),
+        })
+        .unwrap();
+
+    // 逃逸的岗位文件夹被跳过，原因写进结果。
+    assert!(
+        result
+            .skipped_folders
+            .iter()
+            .any(|skipped| skipped.reason.contains("..")),
+        "{:?}",
+        result.skipped_folders
+    );
+    // 其余岗位文件夹照常写回工作空间。
+    assert!(
+        result.restored_folders.len() >= 4,
+        "{:?}",
+        result.restored_folders
+    );
+
+    // 工作空间与备份目录之外没有落下任何文件。
+    assert_eq!(
+        fs::read_dir(&outside).unwrap().count(),
+        0,
+        "工作空间之外不该被创建文件"
+    );
+    assert!(!f.ws.join("escaped").exists(), "工作空间里不该多出逃逸目录");
+}
+
+#[test]
+fn restore_refuses_a_manifest_whose_database_path_is_not_relative() {
+    for bad in [
+        "/etc/passwd",
+        "../escaped.db",
+        "C:\\Windows\\win.ini",
+        "\\\\server\\share\\db",
+    ] {
+        let f = fixture();
+        let team = f.team("T");
+        let dest = f.dir.path().join("backups");
+        let backup = export(&f, &dest);
+
+        let mut manifest = manifest_of(&backup.backup_dir);
+        manifest.database_file = bad.to_owned();
+        write_manifest(&backup.backup_dir, &manifest);
+
+        let err =
+            f.ts.restore_backup(RestoreBackupInput {
+                backup_dir: backup.backup_dir.clone(),
+            })
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("相对路径")
+                || err.to_string().contains("盘符")
+                || err.to_string().contains(".."),
+            "{bad}: {err}"
+        );
+        // 当前数据没被动过。
+        let teams = f.ts.list_teams().unwrap();
+        assert_eq!(teams.len(), 1, "{bad}");
+        assert_eq!(teams[0].id, team.id, "{bad}");
     }
-    fs::copy(&broken, Path::new(&backup.database_path)).unwrap();
+}
+
+#[test]
+fn restore_refuses_a_manifest_whose_file_list_points_outside_the_backup_directory() {
+    let f = fixture();
+    f.team("T");
+    let dest = f.dir.path().join("backups");
+    let backup = export(&f, &dest);
+
+    let mut manifest = manifest_of(&backup.backup_dir);
+    manifest.files.push(BackupFile {
+        path: "../../escaped.txt".to_owned(),
+        size: 12,
+    });
+    write_manifest(&backup.backup_dir, &manifest);
 
     let err =
         f.ts.restore_backup(RestoreBackupInput {
             backup_dir: backup.backup_dir.clone(),
         })
         .unwrap_err();
-    assert!(err.to_string().contains("退回原数据库"), "{err}");
+    assert!(err.to_string().contains("校验"), "{err}");
+    // 当前数据没被动过。
+    assert_eq!(f.ts.list_teams().unwrap().len(), 1);
+}
+
+#[test]
+fn restore_skips_a_workspace_path_that_is_not_in_the_backup_database() {
+    let f = fixture();
+    f.team("T");
+    let dest = f.dir.path().join("backups");
+    let backup = export(&f, &dest);
+
+    // 篡改清单：把工作空间指向备份数据库里没有的目录。
+    let attacker = f.dir.path().join("attacker");
+    fs::create_dir_all(&attacker).unwrap();
+    let mut manifest = manifest_of(&backup.backup_dir);
+    manifest.teams[0].workspace_path = attacker.to_string_lossy().into_owned();
+    write_manifest(&backup.backup_dir, &manifest);
+
+    let result =
+        f.ts.restore_backup(RestoreBackupInput {
+            backup_dir: backup.backup_dir.clone(),
+        })
+        .unwrap();
+
+    // 工作空间与备份数据库对不上 → 这个团队的岗位文件夹全部跳过并列出。
+    assert_eq!(
+        result.restored_folders.len(),
+        0,
+        "{:?}",
+        result.restored_folders
+    );
+    assert_eq!(
+        result.skipped_folders.len(),
+        5,
+        "{:?}",
+        result.skipped_folders
+    );
+    for skipped in &result.skipped_folders {
+        assert!(skipped.reason.contains("不一致"), "{skipped:?}");
+    }
+    // 篡改出来的目录里没有落下任何文件。
+    assert_eq!(fs::read_dir(&attacker).unwrap().count(), 0);
+}
+
+// ---------------------------------------------------------------- 覆盖失败后的回滚
+
+#[test]
+fn restore_puts_the_original_database_back_when_the_overwrite_fails() {
+    for point in [
+        RestoreFailPoint::SaveOriginal,
+        RestoreFailPoint::CopySnapshot,
+        RestoreFailPoint::ReplaceMain,
+    ] {
+        let f = fixture();
+        let team = f.team("T");
+        let dest = f.dir.path().join("backups");
+        let backup = export(&f, &dest);
+
+        // 导出之后再加一个团队：恢复本该把它抹掉，但覆盖失败了。
+        f.ts.create_team(CreateTeamInput {
+            name: "导出后创建的团队".into(),
+            description: String::new(),
+            workspace_path: f.ws.to_string_lossy().into_owned(),
+            roles: vec![],
+        })
+        .unwrap();
+
+        crate::backup::fail_restore_at(point);
+        let err =
+            f.ts.restore_backup(RestoreBackupInput {
+                backup_dir: backup.backup_dir.clone(),
+            })
+            .unwrap_err();
+        crate::backup::clear_restore_fail_point();
+
+        assert!(
+            err.to_string().contains("已退回原数据库"),
+            "{point:?}: {err}"
+        );
+        // 关键：连接没有停在空库上——原来的数据还在，导出后加的团队也还在。
+        let teams = f.ts.list_teams().unwrap();
+        assert_eq!(teams.len(), 2, "{point:?}: {teams:?}");
+        assert!(teams.iter().any(|entry| entry.id == team.id), "{point:?}");
+        // 磁盘上的库文件也没坏：直接打开它还能读到数据。
+        let conn = rusqlite::Connection::open(f.db_path()).unwrap();
+        let count: i64 = conn
+            .query_row("SELECT count(*) FROM teams", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(count, 2, "{point:?}");
+        // 没有留下半成品文件。
+        let leftover = f.db_path().with_extension("db.restore-orig");
+        assert!(!leftover.exists(), "{point:?}: {}", leftover.display());
+    }
+}
+
+#[test]
+fn restore_puts_the_original_database_back_when_the_new_database_cannot_be_opened() {
+    let f = fixture();
+    let team = f.team("T");
+    let dest = f.dir.path().join("backups");
+    let backup = export(&f, &dest);
+
+    // 把备份里的数据库换成「能通过校验但打不开」的版本：user_version 说自己是 1，
+    // 里面还留着一张 events_v2 表——迁移到当前版本时会撞上「table already exists」。
+    let broken = f.dir.path().join("broken.db");
+    {
+        let conn = rusqlite::Connection::open(&broken).unwrap();
+        conn.execute_batch("CREATE TABLE events_v2 (id TEXT);")
+            .unwrap();
+        conn.pragma_update(None, "user_version", 1).unwrap();
+    }
+    let db_path = Path::new(&backup.database_path);
+    fs::copy(&broken, db_path).unwrap();
+
+    // 清单里的版本与大小跟着改，骗过前面的内容校验。
+    let mut manifest = manifest_of(&backup.backup_dir);
+    manifest.schema_version = 1;
+    let size = fs::metadata(db_path).unwrap().len();
+    for file in &mut manifest.files {
+        if file.path == "database/teamspace.db" {
+            file.size = size;
+        }
+    }
+    write_manifest(&backup.backup_dir, &manifest);
+
+    let err =
+        f.ts.restore_backup(RestoreBackupInput {
+            backup_dir: backup.backup_dir.clone(),
+        })
+        .unwrap_err();
+    assert!(err.to_string().contains("已退回原数据库"), "{err}");
 
     // 当前数据没丢：应用还能正常读到原来的团队。
     let teams = f.ts.list_teams().unwrap();
@@ -308,8 +578,10 @@ fn restore_falls_back_to_the_current_database_when_the_backup_cannot_be_opened()
     assert_eq!(teams[0].id, team.id);
 }
 
+// ---------------------------------------------------------------- 内容校验
+
 #[test]
-fn inspect_reports_the_backup_summary() {
+fn inspect_reports_the_validation_results() {
     let f = fixture();
     f.team("T");
     let dest = f.dir.path().join("backups");
@@ -320,13 +592,123 @@ fn inspect_reports_the_backup_summary() {
             backup_dir: backup.backup_dir.clone(),
         })
         .unwrap();
-    assert_eq!(summary.team_count, 1);
-    assert_eq!(summary.app_version, "9.9.9");
-    assert_eq!(summary.schema_version, crate::store::SCHEMA_VERSION);
-    assert!(!summary.needs_migration);
-    assert!(summary.total_bytes > 0);
-    assert_eq!(summary.teams[0].role_folders.len(), 5);
+    let validation = &summary.validation;
+    assert!(validation.database_readable, "{validation:?}");
+    assert_eq!(validation.database_integrity, "ok");
+    assert_eq!(
+        validation.database_schema_version,
+        crate::store::SCHEMA_VERSION
+    );
+    assert!(validation.schema_matches, "{validation:?}");
+    assert!(validation.files_match, "{validation:?}");
+    assert_eq!(validation.skipped_folders, 0);
+    assert!(validation.restorable, "{validation:?}");
+    assert!(validation.problems.is_empty(), "{:?}", validation.problems);
 }
+
+#[test]
+fn restore_refuses_a_backup_whose_snapshot_is_not_a_database() {
+    let f = fixture();
+    let team = f.team("T");
+    let dest = f.dir.path().join("backups");
+    let backup = export(&f, &dest);
+
+    // 把数据库快照换成不是数据库的文件。
+    fs::write(Path::new(&backup.database_path), b"not a database").unwrap();
+
+    let err =
+        f.ts.restore_backup(RestoreBackupInput {
+            backup_dir: backup.backup_dir.clone(),
+        })
+        .unwrap_err();
+    assert!(err.to_string().contains("校验"), "{err}");
+    // 当前数据没被动过。
+    let teams = f.ts.list_teams().unwrap();
+    assert_eq!(teams.len(), 1);
+    assert_eq!(teams[0].id, team.id);
+}
+
+#[test]
+fn restore_refuses_a_backup_whose_file_list_does_not_match_the_directory() {
+    let f = fixture();
+    f.team("T");
+    let dest = f.dir.path().join("backups");
+    let backup = export(&f, &dest);
+
+    // 备份目录里少了一个文件（清单里还写着它）。
+    let victim = backup_files(&backup.backup_dir)
+        .into_iter()
+        .find(|path| path.starts_with("workspaces/"))
+        .expect("备份里有岗位文件夹的文件");
+    fs::remove_file(Path::new(&backup.backup_dir).join(&victim)).unwrap();
+
+    let err =
+        f.ts.restore_backup(RestoreBackupInput {
+            backup_dir: backup.backup_dir.clone(),
+        })
+        .unwrap_err();
+    assert!(err.to_string().contains("对不上"), "{err}");
+    // 当前数据没被动过。
+    assert_eq!(f.ts.list_teams().unwrap().len(), 1);
+}
+
+// ---------------------------------------------------------------- 有活儿时不恢复
+
+#[test]
+fn restore_refuses_while_a_run_is_in_progress() {
+    let f = fixture();
+    let team = f.team("T");
+    let role = f.role(&team.id, "role_frontend");
+    let task = f.task(&team.id, &role, "正在跑的任务");
+    let harness = f.harness(&team.id, "Mock", AcpPreset::Mock);
+    insert_running_run(&f, &team.id, &task.task.id, &role.id, &harness.id);
+
+    let dest = f.dir.path().join("backups");
+    let backup = export(&f, &dest);
+
+    let err =
+        f.ts.restore_backup(RestoreBackupInput {
+            backup_dir: backup.backup_dir.clone(),
+        })
+        .unwrap_err();
+    assert_eq!(err.kind(), crate::error::ErrorKind::Conflict);
+    assert!(err.to_string().contains("执行正在进行"), "{err}");
+    assert!(err.to_string().contains("取消"), "{err}");
+    // 数据没被动过。
+    assert_eq!(f.ts.list_teams().unwrap().len(), 1);
+}
+
+#[test]
+fn restore_refuses_while_a_message_is_waiting_to_be_delivered() {
+    let f = plain_fixture_without_delivery();
+    let team = f.team("T");
+    let role = f.role(&team.id, "role_frontend");
+    f.ts.send_message(SendMessageInput {
+        team_id: team.id.clone(),
+        to_role_id: role.id.clone(),
+        body: "在吗".into(),
+        task_id: None,
+        thread_id: None,
+        subject: None,
+        from_role_id: None,
+    })
+    .unwrap();
+
+    let dest = f.dir.path().join("backups");
+    let backup = export(&f, &dest);
+
+    let err =
+        f.ts.restore_backup(RestoreBackupInput {
+            backup_dir: backup.backup_dir.clone(),
+        })
+        .unwrap_err();
+    assert_eq!(err.kind(), crate::error::ErrorKind::Conflict);
+    assert!(err.to_string().contains("消息正在投递"), "{err}");
+    // 数据没被动过。
+    assert_eq!(f.ts.list_teams().unwrap().len(), 1);
+}
+
+// ---------------------------------------------------------------- Leader 越权
 
 #[test]
 fn leader_cannot_export_or_restore_and_it_leaves_a_trace() {

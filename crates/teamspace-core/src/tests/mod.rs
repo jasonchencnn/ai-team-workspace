@@ -203,6 +203,23 @@ pub(crate) fn plain_fixture() -> Fixture {
     Fixture { dir, ws, ts }
 }
 
+/// 工作空间是普通文件夹，且**不启动消息投递线程**。
+///
+/// 测「消息还在队列里」这类状态时用：投递线程会立刻把排队中的消息发掉或标记失败，
+/// 状态留不住。
+pub(crate) fn plain_fixture_without_delivery() -> Fixture {
+    let dir = tempfile::tempdir().unwrap();
+    let ws = dir.path().join("ws");
+    fs::create_dir_all(&ws).unwrap();
+    let ts = Teamspace::open_without_delivery(
+        &dir.path().join("teamspace.db"),
+        Box::new(FakeProbe),
+        HostConfig::default(),
+    )
+    .unwrap();
+    Fixture { dir, ws, ts }
+}
+
 impl Fixture {
     pub fn db_path(&self) -> PathBuf {
         self.dir.path().join("teamspace.db")
