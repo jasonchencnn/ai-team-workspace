@@ -532,25 +532,18 @@ test("UI-ACT-004 时间本地化且不泄露凭据：团队空间与工作台都
 // 导航
 // ==========================================================================
 
-test("UI-NAV-002 未交付项不可点击：保持禁用态、不跳转不报错", async ({ page }) => {
+test("UI-NAV-002 「待我处理」自 M5-04 起已交付：是可点入口，跳到待我处理页", async ({ page }) => {
   await page.goto(`/#/teams/${teamA}/tasks`);
   await expect(page.getByRole("heading", { name: "任务面板" })).toBeVisible();
 
-  // 「共享文件」自 M3-05 起已交付并变为可点入口，这里只验证仍未交付的「待我处理」。
-  for (const item of [{ name: "待我处理", note: "M5 提供" }]) {
-    const entry = page.getByRole("link", { name: item.name });
-    await expect(entry).toHaveAttribute("aria-disabled", "true");
-    await expect(entry).toHaveClass(/nav-item--disabled/);
-    await expect(entry).toHaveAttribute("title", item.note);
-    await expect(entry.locator(".nav-item__note")).toHaveText(item.note);
-    // 点击无效：不跳转、不报错。
-    // aria-disabled 的元素 Playwright 会拒绝常规点击，这里 force 绕过可操作性检查，
-    // 证明「即使真被点到」也没有反应。
-    await entry.click({ force: true });
-    await expect(page).toHaveURL(new RegExp(`/teams/${teamA}/tasks$`));
-    await expect(page.getByRole("alert")).toHaveCount(0);
-    await expect(page.getByRole("heading", { name: "任务面板" })).toBeVisible();
-  }
+  // 「待我处理」自 M5-04 起交付：不再是禁用项，点击进入待我处理页。
+  const entry = page.getByRole("link", { name: "待我处理" });
+  await expect(entry).not.toHaveClass(/nav-item--disabled/);
+  await expect(entry).not.toHaveAttribute("aria-disabled", "true");
+  await entry.click();
+  await expect(page).toHaveURL(new RegExp(`/teams/${teamA}/inbox$`));
+  await expect(page.getByRole("heading", { name: "待我处理" })).toBeVisible();
+  await expect(page.getByRole("alert")).toHaveCount(0);
 });
 
 test("UI-NAV-003 岗位工作台归属团队空间高亮：工作台亮「团队空间」，/roles 亮「岗位与绑定」", async ({

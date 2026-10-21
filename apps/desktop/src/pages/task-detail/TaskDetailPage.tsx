@@ -28,6 +28,7 @@ import type { TaskStatus } from "../../bindings/TaskStatus.js";
 import type { TaskSummary } from "../../bindings/TaskSummary.js";
 import { RunExecutionArea } from "./run/RunExecutionArea.js";
 import { TaskDependencies } from "./TaskDependencies.js";
+import { DecisionsPanel } from "../inbox/DecisionsPanel.js";
 import { canGoReview, showStartRunButton } from "./run/runUi.js";
 import { isRunActive } from "./run/useRunEvents.js";
 import { useRunRecordPolling } from "./run/useRunPolling.js";
@@ -412,6 +413,8 @@ export function TaskDetailPage() {
               </p>
             ) : null}
           </section>
+
+          <DecisionsPanel teamId={teamId} taskId={taskId} />
 
           <section className="task-detail__section">
             <h2>活动记录</h2>
