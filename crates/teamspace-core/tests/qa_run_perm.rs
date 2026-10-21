@@ -425,7 +425,9 @@ fn k_fld_011_progress_stays_in_run_updates_and_agent_can_only_append_to_the_jour
 
     // 5) D14：Agent 在末尾追加进展——权限请求与 fs 写入都由规则自动允许，
     //    Agent 的行与 Teamspace 的开始、结束条目都在，已有内容不变，日志不算改动文件。
-    let before_append = std::fs::read_to_string(&journal_path).unwrap();
+    // 上一轮（改日志）的完成条目是执行结束后异步同步到工作日志的：先等它落盘再取基线，
+    // 否则它会混进下面「本次追加的内容」里，让顺序断言误判。
+    let before_append = e.wait_journal(&format!("{} · 第 1 次执行完成", editing.key));
     let appending = e.task("记进展 [mock:appendjournal]");
     let run = e.wait_end(&e.ts.start_run(&appending.id).unwrap().id);
     assert_eq!(run.status, RunStatus::Succeeded, "{run:#?}");
