@@ -333,8 +333,8 @@ export function TeamCreatePage() {
                       patchDraft(entry.key, { name: event.currentTarget.value });
                     }}
                     onBlur={() => {
-                      suggestPrefix(entry.key, draft.name, (resolvePrefix) => {
-                        // 函数式 setState：按返回那一刻的行前缀判定，不用失焦时的快照。
+                      suggestPrefix.suggest(entry.key, draft.name, (resolvePrefix) => {
+                        // 函数式 setState：按返回那一刻的行前缀与名称判定，不用失焦时的快照。
                         setEntries((previous) =>
                           previous.map((item) =>
                             item.key === entry.key
@@ -342,7 +342,10 @@ export function TeamCreatePage() {
                                   ...item,
                                   draft: {
                                     ...item.draft,
-                                    taskPrefix: resolvePrefix(item.draft.taskPrefix),
+                                    taskPrefix: resolvePrefix(
+                                      item.draft.taskPrefix,
+                                      item.draft.name,
+                                    ),
                                   },
                                 }
                               : item,
@@ -356,8 +359,16 @@ export function TeamCreatePage() {
                     required
                     hint={TASK_PREFIX_HINT}
                     value={draft.taskPrefix}
+                    onFocus={() => {
+                      // 用户开始动前缀输入框：这一行在途的建议作废，迟到的建议不能写进这个框。
+                      suggestPrefix.touchPrefix(entry.key);
+                    }}
                     onChange={(event) => {
-                      patchDraft(entry.key, { taskPrefix: event.currentTarget.value });
+                      const value = event.currentTarget.value;
+                      suggestPrefix.touchPrefix(entry.key);
+                      // 清空前缀等于把这一行交回自动填入；填了内容就算用户接管。
+                      suggestPrefix.setPrefixManual(entry.key, value.trim() !== "");
+                      patchDraft(entry.key, { taskPrefix: value });
                     }}
                   />
                   <TextareaField

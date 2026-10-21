@@ -7,6 +7,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   EMPTY_PREFIX_FILL,
+  checkSuggestion,
   commitPendingFillStates,
   createPrefixSuggestionGate,
   resolveAutoFillPrefix,
@@ -333,5 +334,144 @@ describe("updater 被 React 重放时不误判用户手填", () => {
     // 没有待落盘记录时是空操作，已落盘的状态不会被清空。
     commitPendingFillStates(fillState, {});
     expect(fillState["draft-1"]).toEqual({ autoFilled: "ED", manual: false });
+  });
+});
+
+describe("迟到建议的判定闸门", () => {
+  it("岗位名称变了：按旧名称算出的建议丢弃", () => {
+    expect(checkSuggestion("非法前缀测试", "副团队长", EMPTY_PREFIX_FILL, "")).toBe("stale-name");
+  });
+
+  it("名称没变、用户没接管：可以写入", () => {
+    expect(checkSuggestion("非法前缀测试", "非法前缀测试", EMPTY_PREFIX_FILL, "")).toBe("apply");
+  });
+
+  it("用户接管过这一行：不再覆盖手填值", () => {
+    const manual: PrefixFillState = { autoFilled: null, manual: true };
+
+    expect(checkSuggestion("剪辑师", "剪辑师", manual, "X")).toBe("manual");
+  });
+
+  it("用户自己清空前缀：交回自动填入，可以写入", () => {
+    const manual: PrefixFillState = { autoFilled: "R1", manual: true };
+
+    expect(checkSuggestion("剪辑师", "剪辑师", manual, "")).toBe("apply");
+  });
+
+  it("用户手填的值与上次自动填入的相同：仍按手填处理", () => {
+    const auto = settle(EMPTY_PREFIX_FILL, "", "R1").state;
+    const takenOver: PrefixFillState = { ...auto, manual: true };
+
+    const result = settle(takenOver, "R1", "R2");
+
+    expect(result.prefix).toBe("R1");
+    expect(result.changed).toBe(false);
+  });
+
+  it("用户动了前缀输入框：这一行在途的建议立刻作废，其它行不受影响", () => {
+    const gate = createPrefixSuggestionGate();
+    const mine = gate.open("row-1", "剪辑师");
+    const other = gate.open("row-2", "调色师");
+
+    gate.touch("row-1");
+
+    expect(gate.isCurrent(mine)).toBe(false);
+    expect(gate.isCurrent(other)).toBe(true);
+  });
+});
+
+describe("QA 06：岗位名称失焦后手填前缀，迟到的建议不得覆盖", () => {
+  /**
+   * 模拟前缀输入框：DOM 上的值与 React 里的值可能不同步——
+   * 用户的按键还没被 React 处理时，迟到的建议已经写进了输入框，
+   * 用户随后输入的内容会被拼在建议值后面（QA 06 偶发失败时的「R3X」）。
+   */
+  function createPrefixInput() {
+    let domValue = "";
+    let reactValue = "";
+    return {
+      get dom(): string {
+        return domValue;
+      },
+      get react(): string {
+        return reactValue;
+      },
+      /** React 把建议写回输入框。 */
+      applySuggestion(value: string): void {
+        reactValue = value;
+        domValue = value;
+      },
+      /** 用户按键：先进输入框，React 随后才收到这个值。 */
+      type(text: string): void {
+        domValue += text;
+        reactValue = domValue;
+      },
+    };
+  }
+
+  it("用户把光标移进前缀框：在途建议作废，输入框不被改写", async () => {
+    const gate = createPrefixSuggestionGate();
+    const kernel = deferredKernel();
+    const input = createPrefixInput();
+    let fillState: PrefixFillState = EMPTY_PREFIX_FILL;
+
+    // 岗位名称失焦 → 建议请求在途。
+    const pending = runLatestSuggestion(
+      gate,
+      "row-1",
+      "非法前缀测试",
+      kernel.request,
+      (suggested, requestedName) => {
+        const outcome = checkSuggestion(requestedName, "非法前缀测试", fillState, input.react);
+        if (outcome !== "apply") {
+          return;
+        }
+        const resolved = resolveAutoFillPrefix(fillState, input.react, suggested);
+        fillState = resolved.state;
+        input.applySuggestion(resolved.prefix);
+      },
+    );
+
+    // 用户失焦后立刻去填前缀：光标进框就算动了这个输入框，在途的建议作废。
+    gate.touch("row-1");
+
+    // 建议回来得比按键早：作废，输入框保持原样。
+    await kernel.settle("非法前缀测试", "R3");
+    await pending;
+    expect(input.dom).toBe("");
+
+    // 用户随后输入 X：输入框里就是 X，不会被建议拼成「R3X」。
+    input.type("X");
+    expect(input.dom).toBe("X");
+  });
+
+  it("用户改了岗位名称但还没再次失焦：旧名称的建议不写回", async () => {
+    const gate = createPrefixSuggestionGate();
+    const kernel = deferredKernel();
+    let name = "非法前缀测试";
+    const prefix = "";
+    const applied: string[] = [];
+
+    const pending = runLatestSuggestion(
+      gate,
+      "row-1",
+      name,
+      kernel.request,
+      (suggested, requestedName) => {
+        const outcome = checkSuggestion(requestedName, name, EMPTY_PREFIX_FILL, prefix);
+        if (outcome !== "apply") {
+          return;
+        }
+        applied.push(suggested);
+      },
+    );
+
+    name = "副团队长";
+
+    await kernel.settle("非法前缀测试", "R3");
+    await pending;
+
+    expect(applied).toEqual([]);
+    expect(prefix).toBe("");
   });
 });
