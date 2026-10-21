@@ -29,7 +29,7 @@ import {
 } from "../../components/index.js";
 import type { ApproveReviewResult } from "../../bindings/ApproveReviewResult.js";
 import type { ReviewView } from "../../bindings/ReviewView.js";
-import { fileChangeLabel, fileChangeTone } from "../task-detail/run/runUi.js";
+import { fileChangeLabel, fileChangeTone, NO_CHANGES_TEXT } from "../task-detail/run/runUi.js";
 import { formatTime } from "../tasks/taskUi.js";
 import { DiffCard } from "./DiffCard.js";
 import { advancedTasksOf, formatCount, mergeCommand, reviewActionState } from "./reviewUi.js";
@@ -38,7 +38,7 @@ import "./review.css";
 /** 评审意见的上限（与后端一致，仅用于输入框限制，校验以后端为准）。 */
 const COMMENT_MAX = 2000;
 
-type Confirm = "merge" | "resolve" | "rerun" | null;
+type Confirm = "merge" | "resolve" | "rerun" | "no-changes" | null;
 
 export function ReviewPage() {
   const { teamId = "", taskId = "" } = useParams();
@@ -269,6 +269,18 @@ export function ReviewPage() {
 
       <div className="review">
         <div className="review__main">
+          {run.noChanges ? (
+            <Panel className="review__panel review__panel--warning">
+              <h2 className="review__title">⚠ 这次执行没有产生任何改动</h2>
+              <p className="review__text">{NO_CHANGES_TEXT}。</p>
+              <p className="review__caption">
+                {isGit
+                  ? "执行分支相对基线提交没有任何差异。"
+                  : "执行前后的目录快照比对没有发现改动。"}
+                通过前会再确认一次；也可以直接「退回」并写明原因。
+              </p>
+            </Panel>
+          ) : null}
           <Panel className="review__panel">
             <div className="review__panel-head">
               <h2 className="review__title">执行摘要</h2>
@@ -464,6 +476,9 @@ export function ReviewPage() {
                     approve.reset();
                     if (view.approveAction === "merge") {
                       setConfirm("merge");
+                    } else if (run.noChanges) {
+                      // 成功但没有任何改动：通过前先二次确认（使用记录 2）。
+                      setConfirm("no-changes");
                     } else {
                       approve.mutate(run.id);
                     }
@@ -472,9 +487,11 @@ export function ReviewPage() {
                   {state.approveLabel}
                 </Button>
                 <p className="review__caption">
-                  {isGit
-                    ? `会弹出确认：把执行分支合并到 ${view.baseBranch ?? "当前分支"}，成功后清理执行目录；不会推送。`
-                    : "改动已经发生在原地，通过后任务直接完成。"}
+                  {run.noChanges
+                    ? "这次执行没有产生任何改动，通过前会再确认一次。"
+                    : isGit
+                      ? `会弹出确认：把执行分支合并到 ${view.baseBranch ?? "当前分支"}，成功后清理执行目录；不会推送。`
+                      : "改动已经发生在原地，通过后任务直接完成。"}
                 </p>
               </div>
               <hr className="review__rule" />
@@ -578,6 +595,49 @@ export function ReviewPage() {
             <code>{view.baseBranch ?? "当前分支"}</code>
             。合并成功后会删除执行目录与执行分支，不会推送。
             合并有冲突时会中止合并、基线保持不变，任务转为受阻。
+          </p>
+          {run.noChanges ? (
+            <p className="review__warn" role="note">
+              注意：这次执行没有产生任何改动（{NO_CHANGES_TEXT}）。
+            </p>
+          ) : null}
+        </Modal>
+      ) : null}
+      {confirm === "no-changes" ? (
+        <Modal
+          title="确认通过（这次执行没有任何改动）"
+          description={`${task.key} ${task.title} · 第 ${String(run.attempt)} 次执行`}
+          onClose={() => {
+            setConfirm(null);
+          }}
+          actions={
+            <>
+              <Button
+                loading={approve.isPending}
+                onClick={() => {
+                  approve.mutate(run.id);
+                }}
+              >
+                仍然通过
+              </Button>
+              <Button
+                variant="neutral"
+                disabled={approve.isPending}
+                onClick={() => {
+                  setConfirm(null);
+                }}
+              >
+                取消
+              </Button>
+            </>
+          }
+        >
+          <p>{NO_CHANGES_TEXT}。</p>
+          <p>
+            {isGit
+              ? "执行分支相对基线提交没有任何差异，合并过去也不会带来改动。"
+              : "执行前后的目录快照比对没有发现改动。"}
+            确认通过后任务会完成；如果这次执行本应产出结果，建议改为「退回」并写明原因。
           </p>
         </Modal>
       ) : null}

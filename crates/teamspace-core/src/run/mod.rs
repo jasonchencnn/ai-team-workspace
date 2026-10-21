@@ -361,8 +361,15 @@ impl Core {
         let stale = store_run::all_active(&self.lock())?;
         for run in &stale {
             let changes = self.interrupted_changes(run);
+            let preserved = self.preserve_interrupted_changes(run);
             self.write(|tx| {
-                interrupt_with_changes(tx, &run.id, INTERRUPTED_RESTART, Some(&changes))
+                interrupt_with_changes(
+                    tx,
+                    &run.id,
+                    INTERRUPTED_RESTART,
+                    Some(&changes),
+                    Some(&preserved),
+                )
             })?;
         }
         self.discard_stale_snapshots(SNAPSHOT_KEEP);
@@ -375,9 +382,90 @@ impl Core {
         // 先读出执行记录再统计：统计过程中还要读数据库，不能持着锁。
         let run = store_run::get(&self.lock(), run_id).ok();
         let changes = run
+            .as_ref()
             .filter(|run| run.status.is_active())
-            .map(|run| self.interrupted_changes(&run));
-        let _ = self.write(|tx| interrupt_with_changes(tx, run_id, reason, changes.as_ref()));
+            .map(|run| self.interrupted_changes(run));
+        let preserved = run
+            .as_ref()
+            .filter(|run| run.status.is_active())
+            .map(|run| self.preserve_interrupted_changes(run));
+        let _ = self.write(|tx| {
+            interrupt_with_changes(tx, run_id, reason, changes.as_ref(), preserved.as_ref())
+        });
+    }
+
+    /// 中断时把执行目录里未提交的改动提交到执行分支（使用记录 1）。
+    ///
+    /// 先校验执行目录仍在执行分支上（[`Core::commit_run_dir`] 里的 `check_on_branch`）：不在分支上
+    /// 或提交失败时只记下问题，不影响标记中断。普通文件夹原地执行不涉及提交。
+    fn preserve_interrupted_changes(&self, run: &Run) -> Preserved {
+        if run.isolation != RunIsolation::Worktree {
+            return Preserved::default();
+        }
+        let Some(branch) = run.branch.as_deref() else {
+            return Preserved::default();
+        };
+        let message = format!(
+            "teamspace: {} attempt {} (interrupted)",
+            run.task_key, run.attempt
+        );
+        match self.commit_run_dir(run, &message) {
+            Ok(Some(commit)) => Preserved {
+                commit: Some(commit),
+                problem: None,
+            },
+            Ok(None) => {
+                // 没有未提交的改动：执行分支上已有的提交就是这次执行改动的落点（与基线相同即没有改动）。
+                let path_env = self.probe.command_path_env();
+                let head = self.review_git().branch_head(
+                    Path::new(&run.exec_dir),
+                    branch,
+                    Some(&path_env),
+                );
+                let commit = match (head, run.base_commit.as_deref()) {
+                    (Some(head), Some(base)) if head != base => Some(head),
+                    (Some(head), None) => Some(head),
+                    _ => None,
+                };
+                Preserved {
+                    commit,
+                    problem: None,
+                }
+            }
+            Err(err) => Preserved {
+                commit: None,
+                problem: Some(err),
+            },
+        }
+    }
+
+    /// 上一次执行（同一任务的前一次）留下的执行分支（使用记录 1）。
+    ///
+    /// 重新执行会开一个新的 worktree、换一条分支，上一次中断的改动还留在旧分支上：把这个分支告诉
+    /// Agent，它就能用 `git cherry-pick` 取回需要的部分。续接、退回后续接沿用同一条分支，仓库里
+    /// 已经没有这个分支（如上次执行已合并并清理）时都不提示。
+    pub(crate) fn previous_run_branch(&self, run: &Run, workspace: &Path) -> Option<String> {
+        if run.isolation != RunIsolation::Worktree {
+            return None;
+        }
+        let previous: Option<String> = self
+            .lock()
+            .query_row(
+                "SELECT branch FROM runs
+                 WHERE task_id = ?1 AND attempt < ?2 AND branch IS NOT NULL
+                 ORDER BY attempt DESC LIMIT 1",
+                rusqlite::params![run.task_id, run.attempt],
+                |row| row.get(0),
+            )
+            .ok();
+        let branch = previous?;
+        if Some(branch.as_str()) == run.branch.as_deref() {
+            return None;
+        }
+        let path_env = self.probe.command_path_env();
+        self.review_git()
+            .branch_head(workspace, &branch, Some(&path_env))
+            .map(|_| branch)
     }
 
     /// 执行目录快照的保存位置（应用数据目录，不在执行目录里）。
@@ -548,19 +636,30 @@ impl Core {
     }
 }
 
+/// 中断时对执行目录做的改动保全结果（使用记录 1）。
+#[derive(Debug, Clone, Default)]
+struct Preserved {
+    /// 保全提交（执行分支上的提交哈希）；没有可保全的改动时为 `None`。
+    commit: Option<String>,
+    /// 没能保全时的原因（中文）；保全成功或不需要保全时为 `None`。
+    problem: Option<String>,
+}
+
 /// 把活动执行标记为已中断（只改状态与原因，保留其余记录）；不是活动执行时不做任何事。
 #[cfg(test)]
 fn interrupt(conn: &rusqlite::Connection, run_id: &str, reason: &str) -> Result<()> {
-    interrupt_with_changes(conn, run_id, reason, None)
+    interrupt_with_changes(conn, run_id, reason, None, None)
 }
 
-/// 把活动执行标记为已中断（改状态与原因；`changes` 给出时一并写入改动文件与统计说明，G-6），
-/// 保留其余记录；不是活动执行时不做任何事。
+/// 把活动执行标记为已中断（改状态与原因；`changes` 给出时一并写入改动文件与统计说明，G-6；
+/// `preserved` 给出时一并写入中断时的改动保全结果，使用记录 1），保留其余记录；不是活动执行时
+/// 不做任何事。
 fn interrupt_with_changes(
     conn: &rusqlite::Connection,
     run_id: &str,
     reason: &str,
     changes: Option<&Changes>,
+    preserved: Option<&Preserved>,
 ) -> Result<()> {
     let run = store_run::get(conn, run_id)?;
     if !run.status.is_active() {
@@ -574,10 +673,17 @@ fn interrupt_with_changes(
             run.change_incomplete,
         ),
     };
+    let (commit, problem) = match preserved {
+        Some(p) => (p.commit.clone(), p.problem.clone()),
+        None => (
+            run.interrupted_commit.clone(),
+            run.interrupted_problem.clone(),
+        ),
+    };
     let changed = conn.execute(
         "UPDATE runs SET status = 'interrupted', ended_at = ?2, failure = ?3, failure_kind = NULL,
                          pending_permission = NULL, changed_files = ?4, change_note = ?5,
-                         change_incomplete = ?6
+                         change_incomplete = ?6, interrupted_commit = ?7, interrupted_problem = ?8
          WHERE id = ?1 AND status IN ('queued', 'running', 'waiting_permission')",
         rusqlite::params![
             run_id,
@@ -585,7 +691,9 @@ fn interrupt_with_changes(
             reason,
             serde_json::to_string(&files)?,
             note,
-            incomplete
+            incomplete,
+            commit,
+            problem
         ],
     )?;
     if changed == 0 {
@@ -597,6 +705,18 @@ fn interrupt_with_changes(
         RunStatus::Interrupted,
         Some(reason.to_owned()),
     )?;
+    // 没能把改动保全到执行分支时只记一条警告，不影响「已中断」这个结论。
+    if let Some(problem) = preserved.and_then(|p| p.problem.clone()) {
+        store_run::insert_update(
+            conn,
+            run_id,
+            None,
+            &RunUpdateBody::Warning {
+                text: format!("中断时没能把改动提交到执行分支：{problem}"),
+                files: Vec::new(),
+            },
+        )?;
+    }
     store_run::record_event(
         conn,
         &run,
@@ -1202,6 +1322,7 @@ impl Driver {
             branch: self.run.branch.clone(),
             role_folder: ctx.role_folder.clone(),
             journal_path: journal_path(ctx),
+            previous_branch: self.core.previous_run_branch(&self.run, &ctx.workspace),
         }
     }
 
@@ -2263,6 +2384,36 @@ impl Driver {
         }
     }
 
+    /// Git 执行成功结束时：执行分支相对基线提交的 diff 为空即「这次执行没有产生任何改动」
+    /// （使用记录 2）。判断不出来时按「有改动」处理，不误报。
+    fn branch_has_no_changes(&self) -> bool {
+        let (Some(base), Some(branch)) =
+            (self.run.base_commit.as_deref(), self.run.branch.as_deref())
+        else {
+            return false;
+        };
+        let path_env = self.core.probe.command_path_env();
+        let dir = Path::new(&self.run.exec_dir);
+        let Some(head) = self
+            .core
+            .review_git()
+            .branch_head(dir, branch, Some(&path_env))
+        else {
+            return false;
+        };
+        if head == base {
+            return true;
+        }
+        match self
+            .core
+            .review_git()
+            .diff_files(dir, base, &head, Some(&path_env))
+        {
+            Ok(files) => files.is_empty(),
+            Err(_) => false,
+        }
+    }
+
     fn finish(&mut self, end: End) {
         if let Some(process) = &self.process {
             process.kill();
@@ -2287,12 +2438,21 @@ impl Driver {
                 None => problem.clone(),
             });
         }
+        // 成功但相对基线没有任何改动：Git 执行看执行分支相对基线提交的 diff，原地执行看快照比对结果。
+        let no_changes = match &end {
+            End::Succeeded(_) => match self.run.isolation {
+                RunIsolation::Worktree => self.branch_has_no_changes(),
+                RunIsolation::InPlace => audit.files.is_empty(),
+            },
+            _ => false,
+        };
         let mut ending = Ending {
             summary,
             changed_files: audit.files.clone(),
             out_of_scope: audit.out_of_scope.clone(),
             change_note: audit.note.clone(),
             change_incomplete: audit.incomplete,
+            no_changes,
             tool_call_count: self.tool_call_count,
             ..Ending::default()
         };

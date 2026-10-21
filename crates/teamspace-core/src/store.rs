@@ -12,7 +12,7 @@ use time::OffsetDateTime;
 use crate::error::{Error, Result};
 
 /// 当前 schema 版本。
-pub(crate) const SCHEMA_VERSION: i64 = 11;
+pub(crate) const SCHEMA_VERSION: i64 = 12;
 
 const SCHEMA_V1: &str = r#"
 CREATE TABLE teams (
@@ -335,9 +335,19 @@ ALTER TABLE runs ADD COLUMN merging_at TEXT;
 ALTER TABLE runs ADD COLUMN conflict_files TEXT NOT NULL DEFAULT '[]';
 "#;
 
+/// v12：执行记录的「成功但无改动」标记与中断时的改动保全信息（使用记录 1、2）。
+/// `no_changes`：执行成功但相对基线没有任何改动（worktree 是执行分支相对基线提交的 diff 为空，原地执行是
+/// 快照比对没有发现改动）。`interrupted_commit`：中断时把执行目录里的未提交改动提交到执行分支得到的提交。
+/// `interrupted_problem`：没能保全时的原因（如执行目录已不在执行分支上）。
+const SCHEMA_V12: &str = r#"
+ALTER TABLE runs ADD COLUMN no_changes INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE runs ADD COLUMN interrupted_commit TEXT;
+ALTER TABLE runs ADD COLUMN interrupted_problem TEXT;
+"#;
+
 const MIGRATIONS: &[&str] = &[
     SCHEMA_V1, SCHEMA_V2, SCHEMA_V3, SCHEMA_V4, SCHEMA_V5, SCHEMA_V6, SCHEMA_V7, SCHEMA_V8,
-    SCHEMA_V9, SCHEMA_V10, SCHEMA_V11,
+    SCHEMA_V9, SCHEMA_V10, SCHEMA_V11, SCHEMA_V12,
 ];
 
 /// 打开数据库：WAL 日志、synchronous=NORMAL、开启外键，并迁移到当前版本。
