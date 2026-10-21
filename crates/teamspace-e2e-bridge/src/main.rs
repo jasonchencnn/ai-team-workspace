@@ -8,14 +8,15 @@
 //! `__poll_run_events`（参数 `{ after: number }`，返回 `{ events: [{ seq, event }], next }`）轮询，
 //! 再交给 mock 的事件系统分发给 `listen` 的订阅者，前端代码无需区分。
 //! 通知事件（应用内通知与消息状态变化）另有一份缓存，命令是 `__poll_notify_events`，参数与返回同上。
-//! 测试专用命令 `__simulate_restart`：等同应用退出时的收尾（终止所有 Agent 进程，把进行中的执行标记为
-//! 已中断），用来验证「已中断」状态与续接、重新执行、标记为失败。
+//! 测试专用命令 `__simulate_restart`：等同应用退出再启动（终止所有 Agent 进程，把进行中的执行标记为
+//! 已中断），用来验证「已中断」状态与续接、重新执行、标记为失败。重启会重新打开同一个数据库，
+//! 消息投递线程随之重新起来——真实重启也是这样，否则重启之后发的消息永远不会被投递。
 //! 不属于正式应用。
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::Path;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 use std::thread;
 
 use serde_json::{Value, json};
@@ -88,6 +89,11 @@ type Events = Arc<Mutex<EventLog>>;
 /// 通知事件（应用内通知与消息状态变化）缓存：与执行事件分开，页面各自订阅。
 type NotifyEvents = Arc<Mutex<EventLog>>;
 
+/// 当前的内核实例。模拟重启时换一个新的：真实重启会重新打开数据库并重启消息投递线程，
+/// 桥接要还原这一点——只停不启的话，重启之后再发的消息永远停在「排队中」。
+/// 重启的短暂窗口里是 `None`：在途请求会看到「内核正在重启」。
+type Shared = Arc<RwLock<Option<Arc<Teamspace>>>>;
+
 type CmdResult = Result<Value, ErrorPayload>;
 
 fn main() {
@@ -103,53 +109,82 @@ fn main() {
         eprintln!("usage: teamspace-e2e-bridge <db-path> <port>");
         std::process::exit(2);
     };
-    let ts = Teamspace::open_with(
-        Path::new(&db),
-        Box::new(BridgeProbe(LocalProbe::new())),
-        HostConfig::with_current_exe_mock_agent(),
-    )
-    .unwrap_or_else(|err| panic!("open database: {err}"));
+    let db = Path::new(&db).to_path_buf();
     let events: Events = Arc::default();
-    let sink = Arc::clone(&events);
-    ts.set_run_listener(move |event| {
-        let mut log = sink.lock().unwrap_or_else(|p| p.into_inner());
-        log.next += 1;
-        let seq = log.next;
-        log.events
-            .push_back((seq, serde_json::to_value(event).unwrap_or(Value::Null)));
-        while log.events.len() > EVENT_BUFFER {
-            log.events.pop_front();
-        }
-    });
-    let ts = Arc::new(ts);
     let notify_events: NotifyEvents = Arc::default();
-    let notify_sink = Arc::clone(&notify_events);
-    ts.set_notify_listener(move |event| {
-        let mut log = notify_sink.lock().unwrap_or_else(|p| p.into_inner());
-        log.next += 1;
-        let seq = log.next;
-        log.events
-            .push_back((seq, serde_json::to_value(event).unwrap_or(Value::Null)));
-        while log.events.len() > EVENT_BUFFER {
-            log.events.pop_front();
-        }
-    });
+    let shared: Shared = Arc::new(RwLock::new(Some(open_core(&db, &events, &notify_events))));
     let listener = TcpListener::bind(format!("127.0.0.1:{port}"))
         .unwrap_or_else(|err| panic!("bind port {port}: {err}"));
     println!("bridge listening on 127.0.0.1:{port}");
     for stream in listener.incoming().flatten() {
-        let ts = Arc::clone(&ts);
+        let shared = Arc::clone(&shared);
         let events = Arc::clone(&events);
         let notify_events = Arc::clone(&notify_events);
+        let db = db.clone();
         thread::spawn(move || {
-            let _ = handle(stream, &ts, &events, &notify_events);
+            let _ = handle(stream, &shared, &db, &events, &notify_events);
         });
     }
 }
 
+/// 打开内核实例并挂上执行事件与通知事件的监听。
+///
+/// 旧实例的实例锁要等它析构后才释放，所以这里重试几次：模拟重启时旧实例可能还被在途请求引用着。
+fn open_core(db: &Path, events: &Events, notify_events: &NotifyEvents) -> Arc<Teamspace> {
+    let mut last = String::from("未知错误");
+    for _ in 0..40 {
+        match Teamspace::open_with(
+            db,
+            Box::new(BridgeProbe(LocalProbe::new())),
+            HostConfig::with_current_exe_mock_agent(),
+        ) {
+            Ok(ts) => {
+                let sink = Arc::clone(events);
+                ts.set_run_listener(move |event| {
+                    let mut log = sink.lock().unwrap_or_else(|p| p.into_inner());
+                    log.next += 1;
+                    let seq = log.next;
+                    log.events
+                        .push_back((seq, serde_json::to_value(event).unwrap_or(Value::Null)));
+                    while log.events.len() > EVENT_BUFFER {
+                        log.events.pop_front();
+                    }
+                });
+                let notify_sink = Arc::clone(notify_events);
+                ts.set_notify_listener(move |event| {
+                    let mut log = notify_sink.lock().unwrap_or_else(|p| p.into_inner());
+                    log.next += 1;
+                    let seq = log.next;
+                    log.events
+                        .push_back((seq, serde_json::to_value(event).unwrap_or(Value::Null)));
+                    while log.events.len() > EVENT_BUFFER {
+                        log.events.pop_front();
+                    }
+                });
+                return Arc::new(ts);
+            }
+            Err(err) => {
+                last = err.to_string();
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+        }
+    }
+    panic!("open database: {last}");
+}
+
+/// 当前的内核实例；正在重启时返回错误（调用方稍后重试即可）。
+fn current(shared: &Shared) -> Result<Arc<Teamspace>, ErrorPayload> {
+    let guard = shared.read().unwrap_or_else(|p| p.into_inner());
+    guard
+        .as_ref()
+        .map(Arc::clone)
+        .ok_or_else(|| Error::Conflict("内核正在重启，请稍后重试".to_owned()).payload())
+}
+
 fn handle(
     mut stream: TcpStream,
-    ts: &Teamspace,
+    shared: &Shared,
+    db: &Path,
     events: &Events,
     notify_events: &NotifyEvents,
 ) -> std::io::Result<()> {
@@ -188,7 +223,7 @@ fn handle(
             } else if cmd == "__poll_notify_events" {
                 poll_events(notify_events, &args)
             } else {
-                dispatch(ts, cmd, &args)
+                dispatch(shared, db, events, notify_events, cmd, &args)
             };
             match result {
                 Ok(value) => json!({ "ok": value }),
@@ -236,18 +271,46 @@ fn poll_events(events: &Events, args: &Value) -> CmdResult {
 
 /// 分发命令：内核命令交给 [`teamspace_core::dispatch`]（桥接的身份是 human），
 /// 只有桥接专用的两条命令留在这里。
-fn dispatch(ts: &Teamspace, cmd: &str, args: &Value) -> CmdResult {
+fn dispatch(
+    shared: &Shared,
+    db: &Path,
+    events: &Events,
+    notify_events: &NotifyEvents,
+    cmd: &str,
+    args: &Value,
+) -> CmdResult {
     match cmd {
         // 模拟用户在系统对话框里选了 E2E_WORKSPACE 指定的目录。
-        "pick_workspace_folder" => match std::env::var("E2E_WORKSPACE") {
-            Ok(path) => out(ts.inspect_workspace(&path)),
-            Err(_) => Ok(Value::Null),
-        },
-        // 测试专用命令：等同应用退出时的收尾。
+        "pick_workspace_folder" => {
+            let ts = current(shared)?;
+            match std::env::var("E2E_WORKSPACE") {
+                Ok(path) => out(ts.inspect_workspace(&path)),
+                Err(_) => Ok(Value::Null),
+            }
+        }
+        // 测试专用命令：等同应用退出再启动——先停掉当前实例（终止所有 Agent 进程、
+        // 把进行中的执行标记为已中断），再用同一个数据库打开一个新实例。
+        // 真实重启会重新启动消息投递线程，桥接要还原这一点：只停不启的话，
+        // 重启之后再发的消息永远停在「排队中」。
         "__simulate_restart" => {
-            ts.shutdown();
+            let old = {
+                let mut guard = shared.write().unwrap_or_else(|p| p.into_inner());
+                guard.take()
+            };
+            if let Some(old) = old {
+                old.shutdown();
+                drop(old);
+            }
+            let fresh = open_core(db, events, notify_events);
+            {
+                let mut guard = shared.write().unwrap_or_else(|p| p.into_inner());
+                *guard = Some(fresh);
+            }
             Ok(Value::Null)
         }
-        other => teamspace_core::dispatch::dispatch(ts, Caller::Human, other, args),
+        other => {
+            let ts = current(shared)?;
+            teamspace_core::dispatch::dispatch(&ts, Caller::Human, other, args)
+        }
     }
 }
