@@ -19,6 +19,7 @@ const ROLE_REPLY = "回复岗位";
 const ROLE_FAIL = "失败岗位";
 const ROLE_UNBOUND = "待绑定岗位";
 const ROLE_SLOW = "慢岗位";
+const ROLE_POLL = "轮询岗位";
 const HARNESS = "m5-mock";
 const TIMEOUT = 60_000;
 
@@ -75,7 +76,7 @@ test.afterAll(() => {
   rmSync(workspace, { recursive: true, force: true });
 });
 
-test("准备：建团队、四个岗位与 Mock 接入", async ({ page }) => {
+test("准备：建团队、五个岗位与 Mock 接入", async ({ page }) => {
   await page.goto("/#/teams/new");
   await page.getByLabel("团队名称").fill(TEAM);
   await page.getByLabel("手动输入工作空间路径").fill(workspace);
@@ -85,6 +86,7 @@ test("准备：建团队、四个岗位与 Mock 接入", async ({ page }) => {
   await addRole(page, ROLE_FAIL, "负责回失败");
   await addRole(page, ROLE_UNBOUND, "先不绑定接入");
   await addRole(page, ROLE_SLOW, "慢回复");
+  await addRole(page, ROLE_POLL, "验证轮询兜底");
   await page.getByRole("button", { name: "创建团队", exact: true }).click();
   await expect(page).toHaveURL(/\/teams\/(?!new$)[^/]+$/);
   team = /\/teams\/([^/?]+)/.exec(page.url())?.[1] ?? "";
@@ -95,6 +97,7 @@ test("准备：建团队、四个岗位与 Mock 接入", async ({ page }) => {
   await bindHarness(page, ROLE_REPLY);
   await bindHarness(page, ROLE_FAIL);
   await bindHarness(page, ROLE_SLOW);
+  await bindHarness(page, ROLE_POLL);
 });
 
 test("侧边栏能进岗位通信页；发出的消息不刷新页面就变成已回复并显示回复正文", async ({ page }) => {
@@ -112,7 +115,7 @@ test("侧边栏能进岗位通信页；发出的消息不刷新页面就变成�
 
   const bubble = page.locator(".msg-detail__bubbles .msg-bubble").first();
   await expect(bubble).toContainText("[mock:reply=已收到]");
-  // 排队 → 投递中 → 已回复，页面靠轮询跟上，不用刷新。
+  // 排队 → 投递中 → 已回复：状态由后端推事件带回来，页面不整页刷新。
   await expect(bubble.locator(".ui-tag")).toHaveText("已回复", { timeout: TIMEOUT });
   await expect(page.getByTestId("message-reply")).toContainText("已收到", { timeout: TIMEOUT });
   await expect
@@ -195,4 +198,19 @@ test("Agent 还没给回复时，消息停在投递中", async ({ page }) => {
     timeout: TIMEOUT,
   });
   await page.screenshot({ path: `${artifacts}m5-messages-delivering.png`, fullPage: false });
+});
+
+test("事件通道不可用时靠定时刷新兜底，状态照样跟上", async ({ page }) => {
+  // 关掉模拟事件通道：订阅会被拒绝，界面只能靠定时刷新（与执行详情 D23 同一条件）。
+  await page.addInitScript(() => {
+    (window as unknown as Record<string, unknown>).__teamspace_no_realtime = true;
+  });
+  await page.goto(`/#/teams/${team}/messages`);
+  await sendMessage(page, ROLE_POLL, "[mock:reply=轮询兜底收到]");
+
+  const bubble = page.locator(".msg-detail__bubbles .msg-bubble").first();
+  await expect(bubble.locator(".ui-tag")).toHaveText("已回复", { timeout: TIMEOUT });
+  await expect(page.getByTestId("message-reply")).toContainText("轮询兜底收到", {
+    timeout: TIMEOUT,
+  });
 });

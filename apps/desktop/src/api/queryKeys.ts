@@ -31,7 +31,8 @@ export const queryKeys = {
   leaderIntegration: (teamId: string) => ["teams", teamId, "leader-integration"] as const,
   /** 岗位消息的全部查询前缀：线程列表与线程详情都挂在它下面，失效时一起刷新。 */
   messageThreads: (teamId: string) => ["teams", teamId, "message-threads"] as const,
-  /** 线程列表（带岗位与任务筛选）。 */
+  /** 线程列表（带岗位与任务筛选）；前缀可用于一次失效所有筛选下的列表。 */
+  messageThreadLists: (teamId: string) => ["teams", teamId, "message-threads", "list"] as const,
   messageThreadList: (teamId: string, query: ListThreadsQuery) =>
     ["teams", teamId, "message-threads", "list", query] as const,
   /** 一个线程及其中的消息。 */

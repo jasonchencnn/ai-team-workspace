@@ -121,8 +121,8 @@ export function MessagesPage() {
     enabled: teamId !== "" && selectedThreadId !== "",
   });
 
-  // 状态更新有两条通道：事件订阅（useMessageEvents，内核还没开始推送消息事件）
-  // 与轮询兜底（useMessagePolling）。消息进入终态后轮询就停。
+  // 状态更新有两条通道：事件订阅（teamspace:notify 的 message_status 事件）
+  // 与 3 秒轮询兜底。消息进入终态后轮询就停。
   const pending = useMemo(() => {
     const messages = [
       ...(detail.data?.messages ?? []),
