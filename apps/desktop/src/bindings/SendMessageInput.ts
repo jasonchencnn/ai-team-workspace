@@ -27,4 +27,8 @@ threadId?: string | null,
 /**
  * 主题；新建线程时用，缺省取正文第一行。
  */
-subject?: string | null, };
+subject?: string | null, 
+/**
+ * 以某个岗位的身份发消息时给出该岗位 id（发信岗位）；缺省时按操作者判定发送方。
+ */
+fromRoleId?: string | null, };

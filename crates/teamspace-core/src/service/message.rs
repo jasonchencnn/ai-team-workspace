@@ -10,7 +10,7 @@ use rusqlite::{Connection, OptionalExtension, params};
 
 use crate::error::{Error, Result};
 use crate::model::{
-    Actor, EventKind, ListThreadsQuery, Message, MessageSender, MessageStatus, MessageThread,
+    Actor, EventKind, ListThreadsQuery, Message, MessageSender, MessageStatus, MessageThread, Role,
     SendMessageInput, ThreadDetail, ThreadParticipant,
 };
 use crate::service::event::NewEvent;
@@ -30,18 +30,15 @@ pub(crate) const MESSAGE_COLS: &str = "id, thread_id, team_id, task_id, sender_k
 
 /// 发送一条消息。
 ///
-/// `actor` 决定发送方（Human 或 Leader）与活动记录里的操作者。消息进入「排队」，由投递引擎接手。
+/// `actor` 决定发送方（Human 或 Leader）与活动记录里的操作者。给了 `from_role_id` 时以该岗位的
+/// 身份发消息，发信岗位会记进消息与线程参与方。消息进入「排队」，由投递引擎接手。
 pub(crate) fn send(conn: &Connection, actor: Actor, input: &SendMessageInput) -> Result<Message> {
-    let sender = match actor {
-        Actor::Human => MessageSender::Human,
-        Actor::Leader => MessageSender::Leader,
-        Actor::System => MessageSender::Role,
-    };
     let team = team::get_active(conn, &input.team_id)?;
     let target = role::get_active(conn, &input.to_role_id)?;
     if target.team_id != team.id {
         return Err(Error::invalid("接收岗位不在该团队中"));
     }
+    let (sender, from_role) = resolve_sender(conn, actor, input.from_role_id.as_deref(), &team.id)?;
     let body = crate::service::text("消息正文", &input.body, MAX_LONG_TEXT, true)?;
     let task_id = match input.task_id.as_deref() {
         Some(id) => {
@@ -82,15 +79,15 @@ pub(crate) fn send(conn: &Connection, actor: Actor, input: &SendMessageInput) ->
 
     // 参与方：发送方与接收岗位都记上（岗位用角色身份，Human / Leader 只在没有岗位时入列）。
     let sender_participant = ThreadParticipant {
-        role_id: match sender {
-            MessageSender::Role => Some(target.id.clone()),
-            _ => None,
-        },
+        role_id: from_role.as_ref().map(|role| role.id.clone()),
         kind: sender,
         name: match sender {
             MessageSender::Human => "Human".to_owned(),
             MessageSender::Leader => "Leader".to_owned(),
-            MessageSender::Role => target.name.clone(),
+            MessageSender::Role => from_role
+                .as_ref()
+                .map(|role| role.name.clone())
+                .unwrap_or_default(),
         },
     };
     let target_participant = ThreadParticipant {
@@ -113,7 +110,7 @@ pub(crate) fn send(conn: &Connection, actor: Actor, input: &SendMessageInput) ->
             team.id,
             task_id,
             enum_str(sender),
-            Option::<String>::None,
+            from_role.as_ref().map(|role| role.id.clone()),
             target.id,
             body,
             created_at,
@@ -135,12 +132,41 @@ pub(crate) fn send(conn: &Connection, actor: Actor, input: &SendMessageInput) ->
                 "messageId": message.id,
                 "threadId": thread.id,
                 "toRoleId": target.id,
+                "fromRoleId": from_role.as_ref().map(|role| role.id.clone()),
                 "sender": enum_str(sender),
                 "newThread": thread_created,
             }),
         },
     )?;
     Ok(message)
+}
+
+/// 判定发送方：给了发信岗位就以该岗位的身份发，否则按操作者判定（Human / Leader）。
+///
+/// 岗位发出的消息一定带发信岗位：消息里的 `sender_role_id` 与线程参与方都以它为准。
+fn resolve_sender(
+    conn: &Connection,
+    actor: Actor,
+    from_role_id: Option<&str>,
+    team_id: &str,
+) -> Result<(MessageSender, Option<Role>)> {
+    match from_role_id {
+        Some(role_id) => {
+            if actor == Actor::Leader {
+                return Err(Error::invalid("Leader 不能以岗位身份发消息"));
+            }
+            let role = role::get_active(conn, role_id)?;
+            if role.team_id != team_id {
+                return Err(Error::invalid("发信岗位不在该团队中"));
+            }
+            Ok((MessageSender::Role, Some(role)))
+        }
+        None => match actor {
+            Actor::Human => Ok((MessageSender::Human, None)),
+            Actor::Leader => Ok((MessageSender::Leader, None)),
+            Actor::System => Err(Error::invalid("以岗位身份发消息时必须给出发信岗位")),
+        },
+    }
 }
 
 /// 重发一条失败或过期的消息：状态回到「排队」，清掉失败原因，等投递引擎再次接手。
@@ -207,6 +233,8 @@ pub(crate) fn thread(conn: &Connection, thread_id: &str) -> Result<ThreadDetail>
 }
 
 /// 线程列表：按团队（必填）、任务与岗位筛选，按最近更新时间倒序。
+///
+/// 每个线程都带上最近一条消息的摘要（状态、时间与正文摘要），界面不必再逐个取线程详情。
 pub(crate) fn threads(conn: &Connection, query: &ListThreadsQuery) -> Result<Vec<MessageThread>> {
     team::get_active(conn, &query.team_id)?;
     let mut sql = format!("SELECT {THREAD_COLS} FROM message_threads WHERE team_id = ?1");

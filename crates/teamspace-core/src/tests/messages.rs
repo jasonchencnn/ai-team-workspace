@@ -25,6 +25,7 @@ fn send(f: &Fixture, team_id: &str, to_role_id: &str, body: &str) -> Message {
         task_id: None,
         thread_id: None,
         subject: None,
+        from_role_id: None,
     })
     .unwrap()
 }
@@ -158,6 +159,7 @@ fn messages_are_grouped_into_threads_by_role_and_task() {
             task_id: Some(task.task.id.clone()),
             thread_id: None,
             subject: None,
+            from_role_id: None,
         })
         .unwrap();
     let other_role = send(&f, &team.id, &be.id, "给后端");
@@ -326,6 +328,7 @@ fn delivering_messages_return_to_queued_after_restart() {
                 task_id: None,
                 thread_id: None,
                 subject: None,
+                from_role_id: None,
             })
             .unwrap();
         message_svc::mark_delivering(&ts.lock(), &message.id).unwrap();
@@ -454,6 +457,7 @@ fn sending_to_a_role_in_another_team_is_rejected() {
             task_id: None,
             thread_id: None,
             subject: None,
+            from_role_id: None,
         }),
         ErrorKind::Invalid,
     );
@@ -473,6 +477,7 @@ fn empty_message_body_is_rejected() {
             task_id: None,
             thread_id: None,
             subject: None,
+            from_role_id: None,
         }),
         ErrorKind::Invalid,
     );
@@ -496,8 +501,135 @@ fn linking_a_task_from_another_team_is_rejected() {
             task_id: Some(other_task.task.id.clone()),
             thread_id: None,
             subject: None,
+            from_role_id: None,
         }),
         ErrorKind::Invalid,
     );
     assert!(err.contains("关联任务"), "{err}");
+}
+
+// ---------------------------------------------------------------- 岗位发出的消息
+
+/// 岗位发出的消息记下发信岗位；线程参与方同时登记发信岗位与接收岗位。
+#[test]
+fn a_message_sent_by_a_role_records_the_sending_role() {
+    let f = fixture();
+    let (team, fe, _) = setup(&f);
+    let be = f.role(&team.id, "role_backend");
+
+    let message =
+        f.ts.send_message_as(
+            Actor::System,
+            SendMessageInput {
+                team_id: team.id.clone(),
+                to_role_id: be.id.clone(),
+                body: "接口字段改成了驼峰，请确认要不要同步改前端。".into(),
+                task_id: None,
+                thread_id: None,
+                subject: None,
+                from_role_id: Some(fe.id.clone()),
+            },
+        )
+        .unwrap();
+
+    // 发信岗位记在消息上（不是接收岗位）。
+    assert_eq!(message.sender, MessageSender::Role);
+    assert_eq!(message.sender_role_id.as_deref(), Some(fe.id.as_str()));
+    assert_eq!(message.to_role_id, be.id);
+
+    // 参与方：发信岗位与接收岗位都在。
+    let detail = f.ts.get_thread(&message.thread_id).unwrap();
+    let participants: Vec<_> = detail
+        .thread
+        .participants
+        .iter()
+        .map(|p| (p.kind, p.role_id.clone(), p.name.clone()))
+        .collect();
+    assert_eq!(
+        participants,
+        [
+            (
+                MessageSender::Role,
+                Some(be.id.clone()),
+                "后端开发".to_owned()
+            ),
+            (
+                MessageSender::Role,
+                Some(fe.id.clone()),
+                "前端开发".to_owned()
+            ),
+        ]
+    );
+}
+
+/// 以岗位身份发消息却不给发信岗位会被拒绝：岗位发出的消息一定带发信岗位。
+#[test]
+fn sending_as_a_role_without_the_sending_role_is_rejected() {
+    let f = fixture();
+    let (team, fe, _) = setup(&f);
+
+    let err = assert_kind(
+        f.ts.send_message_as(
+            Actor::System,
+            SendMessageInput {
+                team_id: team.id.clone(),
+                to_role_id: fe.id.clone(),
+                body: "没有发信岗位".into(),
+                task_id: None,
+                thread_id: None,
+                subject: None,
+                from_role_id: None,
+            },
+        ),
+        ErrorKind::Invalid,
+    );
+    assert!(err.contains("发信岗位"), "{err}");
+}
+
+/// 发信岗位不在该团队里会被拒绝。
+#[test]
+fn sending_with_a_sending_role_from_another_team_is_rejected() {
+    let f = fixture();
+    let (team, fe, _) = setup(&f);
+    let other = f.team("另一个团队");
+    let other_role = f.role(&other.id, "role_frontend");
+
+    let err = assert_kind(
+        f.ts.send_message_as(
+            Actor::System,
+            SendMessageInput {
+                team_id: team.id.clone(),
+                to_role_id: fe.id.clone(),
+                body: "跨团队发信".into(),
+                task_id: None,
+                thread_id: None,
+                subject: None,
+                from_role_id: Some(other_role.id.clone()),
+            },
+        ),
+        ErrorKind::Invalid,
+    );
+    assert!(err.contains("发信岗位"), "{err}");
+}
+
+/// Leader 不能冒充岗位发消息。
+#[test]
+fn a_leader_cannot_send_on_behalf_of_a_role() {
+    let f = fixture();
+    let (team, fe, _) = setup(&f);
+
+    let err = dispatch(
+        &f.ts,
+        Caller::Leader,
+        "send_message",
+        &json!({ "input": {
+            "teamId": team.id,
+            "toRoleId": fe.id,
+            "body": "冒充岗位",
+            "fromRoleId": fe.id,
+        } }),
+    )
+    .unwrap_err();
+    assert_eq!(err.kind, ErrorKind::Invalid);
+    assert!(err.message.contains("岗位"), "{}", err.message);
 }

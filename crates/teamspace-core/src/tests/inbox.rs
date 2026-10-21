@@ -242,20 +242,24 @@ fn role_messages_wait_for_a_decision_and_disappear_after_it() {
     let f = plain_fixture();
     f.ts.core_handle().deliveries.stop();
     let (team, fe) = setup(&f);
+    let be = f.role(&team.id, "role_backend");
     let message =
         f.ts.send_message_as(
             Actor::System,
             SendMessageInput {
                 team_id: team.id.clone(),
-                to_role_id: fe.id.clone(),
+                to_role_id: be.id.clone(),
                 body: "接口字段改成了驼峰，请确认要不要同步改前端。".into(),
                 task_id: None,
                 thread_id: None,
                 subject: None,
+                from_role_id: Some(fe.id.clone()),
             },
         )
         .unwrap();
     assert_eq!(message.sender, MessageSender::Role);
+    // 发信岗位记进消息里，待拍板的事项报的是发信岗位的名字。
+    assert_eq!(message.sender_role_id.as_deref(), Some(fe.id.as_str()));
 
     let inbox = collect_inbox(&f, &team.id);
     assert_eq!(inbox.counts.decision, 1);
@@ -293,6 +297,7 @@ fn failed_messages_need_a_decision_and_disappear_when_retried() {
             task_id: None,
             thread_id: None,
             subject: None,
+            from_role_id: None,
         })
         .unwrap();
     message_svc::mark_failed(&f.ts.lock(), &message.id, "岗位未绑定 Harness").unwrap();
