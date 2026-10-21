@@ -152,6 +152,7 @@ pub async fn resolve_role(
 /// 解析任务：按 id、任务编号（`FE-002`）或标题。
 ///
 /// `team` 给了就只在这个团队里找；没给时在所有团队里找（编号前缀在多个团队重复时给出候选）。
+/// 已取消的任务也算候选：否则 Leader 取消后就没法再按编号找到它、也没法改回 todo。
 pub async fn resolve_task(
     client: &ControlClient,
     team: Option<&TeamRef>,
@@ -168,7 +169,19 @@ pub async fn resolve_task(
         {
             Ok(detail) => {
                 if let Some(mut task) = task_of_detail(&detail) {
-                    task.team_name = team_name_of(client, &task.team_id).await;
+                    match team {
+                        // 指名了团队时，这个 id 必须属于该团队：不能悄悄操作别的团队的任务。
+                        Some(team) if task.team_id != team.id => {
+                            let owner = team_name_of(client, &task.team_id).await;
+                            return Err(ToolError::Message(format!(
+                                "任务 {reference} 属于团队「{owner}」，你指定的是「{}」；\
+                                 请改用该任务所属团队，或用任务编号指代。",
+                                team.name
+                            )));
+                        }
+                        Some(team) => task.team_name = team.name.clone(),
+                        None => task.team_name = team_name_of(client, &task.team_id).await,
+                    }
                     return Ok(task);
                 }
             }
@@ -189,8 +202,12 @@ pub async fn resolve_task(
     let mut hits: Vec<TaskRef> = Vec::new();
     let mut candidates: Vec<TaskRef> = Vec::new();
     for team in &teams {
+        // 已取消的任务也要能看到：取消后还得能按编号找到并改回 todo。
         let board = client
-            .call("get_task_board", json!({ "input": { "teamId": team.id } }))
+            .call(
+                "get_task_board",
+                json!({ "input": { "teamId": team.id, "includeCancelled": true } }),
+            )
             .await?;
         let Some(columns) = board.get("columns").and_then(Value::as_array) else {
             continue;
@@ -233,7 +250,11 @@ pub async fn resolve_task(
         if candidates.is_empty() {
             format!("团队「{}」里还没有任务。", teams[0].name)
         } else {
-            format!("现有任务：{}", task_candidates(&candidates))
+            format!(
+                "现有任务：{}。已取消的任务同样能按编号查到；若查不到，多半是它不在这个团队里，\
+                 请用 team 指明它所在的团队。",
+                task_candidates(&candidates)
+            )
         }
     )))
 }
@@ -409,13 +430,22 @@ fn role_candidates(roles: &[RoleRef]) -> String {
         .join("、")
 }
 
-/// 任务的候选写法。
+/// 任务的候选写法：最多列 10 条，并给出候选总数（候选太多时别把上下文塞满）。
 fn task_candidates(tasks: &[TaskRef]) -> String {
-    tasks
+    const MAX: usize = 10;
+    let mut text = tasks
         .iter()
+        .take(MAX)
         .map(|task| format!("{} {}", task.key, task.title))
         .collect::<Vec<_>>()
-        .join("、")
+        .join("、");
+    if tasks.len() > MAX {
+        text.push_str(&format!(
+            "（共 {} 个候选，这里只列前 {MAX} 个）",
+            tasks.len()
+        ));
+    }
+    text
 }
 
 /// 是不是内核生成的 id（UUID v7）。
@@ -454,5 +484,30 @@ mod tests {
         assert_eq!(task_score(&task, "fe-001"), 4);
         assert_eq!(task_score(&task, "登录页"), 2);
         assert_eq!(task_score(&task, "别的"), 0);
+    }
+
+    /// 候选太多时只列 10 条，并给出总数。
+    #[test]
+    fn only_the_first_ten_candidates_are_listed() {
+        let tasks: Vec<TaskRef> = (1..=25)
+            .map(|index| TaskRef {
+                id: format!("id-{index}"),
+                key: format!("FE-{index:03}"),
+                title: format!("任务{index}"),
+                status: "todo".into(),
+                team_id: "team".into(),
+                team_name: "团队".into(),
+            })
+            .collect();
+
+        let text = task_candidates(&tasks);
+        assert!(text.contains("FE-001"), "{text}");
+        assert!(text.contains("FE-010"), "{text}");
+        assert!(!text.contains("FE-011"), "{text}");
+        assert!(text.contains("共 25 个候选"), "{text}");
+
+        // 不超过 10 条时不加总数说明。
+        let few = task_candidates(&tasks[..3]);
+        assert!(!few.contains("共 "), "{few}");
     }
 }

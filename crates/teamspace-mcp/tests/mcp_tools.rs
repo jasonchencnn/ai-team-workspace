@@ -7,7 +7,7 @@
 mod common;
 
 use serde_json::json;
-use teamspace_core::model::RunStatus;
+use teamspace_core::model::{CreateTeamInput, NewRole, RunStatus};
 
 use common::{Client, Env, wait_for_status};
 
@@ -508,4 +508,160 @@ fn shows_the_activity_of_a_task_and_filters_by_role() {
             .all(|event| event["roleId"] == env.role_ids[0].as_str()),
         "{by_role}"
     );
+}
+
+#[test]
+fn a_cancelled_task_is_still_found_and_can_go_back_to_todo() {
+    let env = env();
+    let mut client = Client::start(&env.socket);
+    let created = client.call(
+        "create_task",
+        json!({ "title": "写登录页", "role": "前端开发" }),
+    );
+    assert!(!created.is_error, "{}", created.text);
+    let key = created.json()["task"]["key"].as_str().unwrap().to_owned();
+
+    // 取消任务。
+    let cancelled = client.call(
+        "change_task_status",
+        json!({ "task": key, "to": "cancelled" }),
+    );
+    assert!(!cancelled.is_error, "{}", cancelled.text);
+    assert_eq!(
+        cancelled.json()["task"]["status"],
+        "cancelled",
+        "{}",
+        cancelled.text
+    );
+
+    // 取消后仍能按编号查到。
+    let found = client.call("get_task", json!({ "task": key }));
+    assert!(!found.is_error, "{}", found.text);
+    assert_eq!(found.json()["task"]["key"], key.as_str(), "{}", found.text);
+    assert_eq!(
+        found.json()["task"]["status"],
+        "cancelled",
+        "{}",
+        found.text
+    );
+
+    // 也能按标题查到。
+    let by_title = client.call("get_task", json!({ "task": "写登录页" }));
+    assert!(!by_title.is_error, "{}", by_title.text);
+    assert_eq!(
+        by_title.json()["task"]["key"],
+        key.as_str(),
+        "{}",
+        by_title.text
+    );
+
+    // 改回 todo：取消是撤销，不是终局。
+    let back = client.call("change_task_status", json!({ "task": key, "to": "todo" }));
+    assert!(!back.is_error, "{}", back.text);
+    assert_eq!(back.json()["task"]["status"], "todo", "{}", back.text);
+}
+
+#[test]
+fn a_task_of_another_team_is_never_touched_silently() {
+    let env = env();
+    let mut client = Client::start(&env.socket);
+
+    // 另一个团队与它自己的任务。
+    let other_workspace = env.dir.path().join("ws2");
+    std::fs::create_dir_all(&other_workspace).unwrap();
+    env.ts
+        .create_team(CreateTeamInput {
+            name: "另一个团队".into(),
+            description: "跨团队检查".into(),
+            workspace_path: other_workspace.display().to_string(),
+            roles: vec![NewRole {
+                name: "后端开发".into(),
+                code: None,
+                task_prefix: "BE".into(),
+                description: String::new(),
+                guidelines: String::new(),
+                is_leader: false,
+            }],
+        })
+        .unwrap();
+    let created = client.call(
+        "create_task",
+        json!({ "title": "别的团队的任务", "role": "后端开发", "team": "另一个团队" }),
+    );
+    assert!(!created.is_error, "{}", created.text);
+    let other_id = created.json()["task"]["id"].as_str().unwrap().to_owned();
+
+    // 指名了别的团队时，按 id 指代要被挡住，并说清楚是哪个团队。
+    let call = client.call("get_task", json!({ "task": other_id, "team": "产品团队" }));
+    assert!(call.is_error, "{}", call.text);
+    assert!(call.text.contains("产品团队"), "{}", call.text);
+    assert!(call.text.contains("另一个团队"), "{}", call.text);
+
+    // 编辑同样被挡住：不能悄悄改别的团队的任务。
+    let updated = client.call(
+        "update_task",
+        json!({ "task": other_id, "team": "产品团队", "title": "被偷偷改了" }),
+    );
+    assert!(updated.is_error, "{}", updated.text);
+    assert_eq!(
+        env.ts.get_task(&other_id).unwrap().task.title,
+        "别的团队的任务",
+        "别的团队的任务不该被改"
+    );
+}
+
+#[test]
+fn file_references_keep_their_anchor() {
+    let env = env();
+    let mut client = Client::start(&env.socket);
+    let created = client.call(
+        "create_task",
+        json!({
+            "title": "按验收标准改",
+            "role": "前端开发",
+            "file_refs": ["docs/spec.md#验收标准", "README.md"],
+        }),
+    );
+    assert!(!created.is_error, "{}", created.text);
+    let created = created.json();
+    let id = created["task"]["id"].as_str().unwrap().to_owned();
+    let refs = created["task"]["fileRefs"].as_array().expect("文件引用");
+    assert_eq!(refs.len(), 2, "{created}");
+    assert_eq!(refs[0]["path"], "docs/spec.md", "{created}");
+    assert_eq!(refs[0]["anchor"], "验收标准", "{created}");
+    assert_eq!(refs[1]["path"], "README.md", "{created}");
+    assert!(refs[1]["anchor"].is_null(), "{created}");
+
+    // 编辑时重设引用，锚点不丢。
+    let updated = client.call(
+        "update_task",
+        json!({ "task": id, "file_refs": ["docs/plan.md#里程碑"] }),
+    );
+    assert!(!updated.is_error, "{}", updated.text);
+    let updated = updated.json();
+    let refs = updated["task"]["fileRefs"].as_array().expect("文件引用");
+    assert_eq!(refs[0]["path"], "docs/plan.md", "{updated}");
+    assert_eq!(refs[0]["anchor"], "里程碑", "{updated}");
+}
+
+#[test]
+fn too_many_candidates_are_summarized() {
+    let env = env();
+    let mut client = Client::start(&env.socket);
+    for index in 1..=12 {
+        let created = client.call(
+            "create_task",
+            json!({ "title": format!("任务{index}"), "role": "前端开发" }),
+        );
+        assert!(!created.is_error, "{}", created.text);
+    }
+
+    // 解析不到时，候选最多列 10 条，并给出总数。
+    let call = client.call("get_task", json!({ "task": "不存在的任务" }));
+    assert!(call.is_error, "{}", call.text);
+    assert!(call.text.contains("共 12 个候选"), "{}", call.text);
+    let listed = call.text.matches("FE-").count();
+    assert_eq!(listed, 10, "候选最多列 10 条：{}", call.text);
+    assert!(call.text.contains("FE-012"), "{}", call.text);
+    assert!(!call.text.contains("FE-001"), "{}", call.text);
 }

@@ -8,8 +8,9 @@
 
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
+use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::Arc;
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
@@ -185,11 +186,18 @@ impl ToolCall {
     }
 }
 
+/// 读一行响应的上限：服务不回应时测试要失败，不能挂死。
+pub const READ_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// 一个请求的总上限（等 id 匹配的响应）。
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(120);
+
 /// 最小 MCP 客户端：以 stdio 启动 `teamspace-mcp`，按 JSON-RPC（逐行）说话。
 pub struct Client {
     child: Child,
     stdin: ChildStdin,
-    stdout: BufReader<ChildStdout>,
+    /// 服务端输出由后台线程读进来，这里按行取（每次取都有 deadline）。
+    lines: Receiver<String>,
     next_id: i64,
 }
 
@@ -204,11 +212,13 @@ impl Client {
             .spawn()
             .expect("启动 teamspace-mcp");
         let stdin = child.stdin.take().expect("stdin");
-        let stdout = BufReader::new(child.stdout.take().expect("stdout"));
+        let stdout = child.stdout.take().expect("stdout");
+        let (sender, lines) = mpsc::channel();
+        std::thread::spawn(move || read_lines(stdout, sender));
         let mut client = Client {
             child,
             stdin,
-            stdout,
+            lines,
             next_id: 0,
         };
         let result = client
@@ -235,6 +245,7 @@ impl Client {
         let id = self.next_id;
         let message = json!({ "jsonrpc": "2.0", "id": id, "method": method, "params": params });
         self.send(&message);
+        let deadline = Instant::now() + REQUEST_TIMEOUT;
         loop {
             let line = self.read_line();
             let value: Value = serde_json::from_str(&line).unwrap_or_else(|err| {
@@ -243,7 +254,11 @@ impl Client {
             if value.get("id").and_then(Value::as_i64) == Some(id) {
                 return value;
             }
-            // 服务端通知（没有 id 或 id 不匹配）忽略。
+            // 服务端通知（没有 id 或 id 不匹配）忽略，但不能无限等下去。
+            assert!(
+                Instant::now() < deadline,
+                "等待 {method} 的响应超时（{REQUEST_TIMEOUT:?}）"
+            );
         }
     }
 
@@ -308,12 +323,31 @@ impl Client {
         self.stdin.flush().unwrap();
     }
 
-    /// 读一行 JSON。
+    /// 读一行 JSON（带 deadline：服务不回应时测试失败，而不是挂死）。
     fn read_line(&mut self) -> String {
+        match self.lines.recv_timeout(READ_TIMEOUT) {
+            Ok(line) => line.trim().to_owned(),
+            Err(RecvTimeoutError::Timeout) => {
+                panic!("读响应超时（{READ_TIMEOUT:?}）：服务没有回应")
+            }
+            Err(RecvTimeoutError::Disconnected) => panic!("服务已退出"),
+        }
+    }
+}
+
+/// 后台读服务端的输出，逐行送进通道（服务退出时通道断开）。
+fn read_lines(stdout: std::process::ChildStdout, sender: mpsc::Sender<String>) {
+    let mut reader = BufReader::new(stdout);
+    loop {
         let mut line = String::new();
-        let read = self.stdout.read_line(&mut line).expect("读响应");
-        assert!(read > 0, "服务已退出");
-        line.trim().to_owned()
+        match reader.read_line(&mut line) {
+            Ok(0) | Err(_) => break,
+            Ok(_) => {
+                if sender.send(line).is_err() {
+                    break;
+                }
+            }
+        }
     }
 }
 
@@ -333,6 +367,10 @@ pub fn socket_request(socket: &Path, cmd: &str, args: Value) -> Value {
     use std::os::unix::net::UnixStream;
 
     let mut stream = UnixStream::connect(socket).expect("连接控制 socket");
+    // 读也有上限：服务不回应时测试要失败，而不是挂死。
+    stream
+        .set_read_timeout(Some(READ_TIMEOUT))
+        .expect("设置读超时");
     let line = json!({ "id": 1, "cmd": cmd, "args": args }).to_string();
     stream.write_all(line.as_bytes()).unwrap();
     stream.write_all(b"\n").unwrap();

@@ -293,7 +293,8 @@ impl TeamspaceServer {
     /// 创建任务。
     #[tool(
         name = "create_task",
-        description = "创建任务：标题、说明、负责岗位、依赖与初始状态（todo / ready）。任务出现在看板上。",
+        description = "创建任务：标题、说明、负责岗位、依赖与初始状态（todo / ready）。任务出现在看板上。\
+                       文件引用写成「路径」或「路径#锚点」（如 docs/spec.md#验收标准），锚点会一起存下来。",
         annotations(destructive_hint = false)
     )]
     async fn create_task(&self, Parameters(args): Parameters<CreateTaskArgs>) -> CallToolResult {
@@ -306,7 +307,8 @@ impl TeamspaceServer {
     /// 编辑任务。
     #[tool(
         name = "update_task",
-        description = "编辑任务：改标题、说明、负责岗位、依赖或文件引用；没给的字段保持原样，编号不变。",
+        description = "编辑任务：改标题、说明、负责岗位、依赖或文件引用；没给的字段保持原样，编号不变。\
+                       文件引用写成「路径」或「路径#锚点」（如 docs/spec.md#验收标准），锚点会一起写回。",
         annotations(destructive_hint = false)
     )]
     async fn update_task(&self, Parameters(args): Parameters<UpdateTaskArgs>) -> CallToolResult {
@@ -549,12 +551,7 @@ impl TeamspaceServer {
                 )));
             }
         };
-        let file_refs: Vec<Value> = args
-            .file_refs
-            .iter()
-            .filter(|path| !path.trim().is_empty())
-            .map(|path| json!({ "path": path.trim(), "anchor": null }))
-            .collect();
+        let file_refs: Vec<Value> = file_refs(&args.file_refs);
         let input = json!({
             "teamId": team.id,
             "title": title,
@@ -607,12 +604,7 @@ impl TeamspaceServer {
                 .unwrap_or_else(|| json!([])),
         };
         let file_refs: Value = match &args.file_refs {
-            Some(list) => json!(
-                list.iter()
-                    .filter(|path| !path.trim().is_empty())
-                    .map(|path| json!({ "path": path.trim(), "anchor": null }))
-                    .collect::<Vec<Value>>()
-            ),
+            Some(list) => json!(file_refs(list)),
             None => current
                 .get("fileRefs")
                 .cloned()
@@ -750,7 +742,32 @@ impl TeamspaceServer {
     }
 }
 
-/// 成功结果：把数据渲染成便于 Leader 阅读的 JSON。
+/// 把一组文件引用解析成内核要的形状：`path` 与 `anchor` 分开。
+///
+/// 允许 `path#anchor` 形式（如 `docs/spec.md#验收标准`）：`#` 之后是锚点，
+/// 不含 `#` 时锚点为空。锚点不能再被悄悄丢掉——它常是任务的验收依据。
+fn file_refs(references: &[String]) -> Vec<Value> {
+    references
+        .iter()
+        .filter_map(|raw| {
+            let text = raw.trim();
+            if text.is_empty() {
+                return None;
+            }
+            let (path, anchor) = match text.split_once('#') {
+                Some((path, anchor)) => (path.trim(), Some(anchor.trim())),
+                None => (text, None),
+            };
+            if path.is_empty() {
+                return None;
+            }
+            let anchor = anchor.filter(|anchor| !anchor.is_empty());
+            Some(json!({ "path": path, "anchor": anchor }))
+        })
+        .collect()
+}
+
+/// 成功的工具结果：把数据渲染成便于 Leader 阅读的 JSON。
 fn ok(value: Value) -> CallToolResult {
     let text = serde_json::to_string_pretty(&value).unwrap_or_else(|_| value.to_string());
     CallToolResult::success(vec![ContentBlock::text(text)])
@@ -945,5 +962,25 @@ mod tests {
             "type": "status", "status": "succeeded", "detail": null,
         }));
         assert!(text.contains("succeeded"), "{text}");
+    }
+
+    /// 文件引用：`path#anchor` 要拆成路径与锚点，不能把锚点丢掉。
+    #[test]
+    fn file_references_keep_their_anchor() {
+        let refs = file_refs(&[
+            "docs/spec.md#验收标准".to_owned(),
+            "  docs/plan.md  ".to_owned(),
+            "README.md#".to_owned(),
+            "   ".to_owned(),
+            "#只有锚点".to_owned(),
+        ]);
+        assert_eq!(refs.len(), 3, "{refs:?}");
+        assert_eq!(refs[0]["path"], "docs/spec.md", "{refs:?}");
+        assert_eq!(refs[0]["anchor"], "验收标准", "{refs:?}");
+        assert_eq!(refs[1]["path"], "docs/plan.md", "{refs:?}");
+        assert_eq!(refs[1]["anchor"], Value::Null, "{refs:?}");
+        // 只有锚点没有路径的，丢掉。
+        assert_eq!(refs[2]["path"], "README.md", "{refs:?}");
+        assert_eq!(refs[2]["anchor"], Value::Null, "{refs:?}");
     }
 }

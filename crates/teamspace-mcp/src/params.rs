@@ -104,6 +104,7 @@ pub struct CreateTaskArgs {
     #[serde(default)]
     pub depends_on: Vec<String>,
     /// 引用的工作空间文件（相对工作空间的路径）。
+    /// 可以写 `路径#锚点`（如 `docs/spec.md#验收标准`）：`#` 之后是锚点，会一起存下来。
     #[serde(default)]
     pub file_refs: Vec<String>,
 }
@@ -130,6 +131,7 @@ pub struct UpdateTaskArgs {
     #[serde(default)]
     pub depends_on: Option<Vec<String>>,
     /// 新的文件引用；不给就不改，给空数组表示清空引用。
+    /// 每一项是 `路径` 或 `路径#锚点`（如 `docs/spec.md#验收标准`）：锚点会一起写回。
     #[serde(default)]
     pub file_refs: Option<Vec<String>>,
 }
