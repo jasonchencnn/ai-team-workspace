@@ -345,6 +345,23 @@ fn dispatch(
                 "threadCount": seed.thread_count,
             }))
         }
+        // 测试专用命令：清掉还停在「排队中 / 投递中」的消息。
+        //
+        // 全量 e2e 共用一个库，「Agent 还没给回复」的消息会一直停在投递中
+        // （内核给 10 分钟回复期限），备份恢复的前置条件是「没有正在投递的消息」，
+        // 会被前面用例留下的消息挡住。这里直接改库清掉这些测试遗留，不走业务接口。
+        "__clear_pending_messages" => {
+            let conn = rusqlite::Connection::open(db)
+                .map_err(|err| bad(format!("打开数据库失败：{err}")))?;
+            let cleared = conn
+                .execute(
+                    "UPDATE messages SET status = 'failed', failure_reason = '测试清理：结束投递' \
+                     WHERE status IN ('queued', 'delivering')",
+                    [],
+                )
+                .map_err(|err| bad(format!("清理投递中的消息失败：{err}")))?;
+            Ok(json!({ "cleared": cleared }))
+        }
         other => {
             let ts = current(shared)?;
             teamspace_core::dispatch::dispatch(&ts, Caller::Human, other, args)

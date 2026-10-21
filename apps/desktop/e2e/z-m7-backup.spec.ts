@@ -3,6 +3,8 @@
 // → 看到导出结果与团队/工作空间路径；查看备份摘要 → 恢复走到高风险确认弹窗 → 确认后恢复完成。
 import { type Page, expect, test } from "@playwright/test";
 
+import { invoke } from "./z-qa-r2-helpers.js";
+
 const TIMEOUT = 25_000;
 
 let team = "";
@@ -94,6 +96,13 @@ test("恢复：查看摘要 → 高风险确认 → 恢复完成", async ({ page
   const summary = page.getByTestId("backup-summary");
   await expect(summary).toBeVisible({ timeout: TIMEOUT });
   await expect(summary).toContainText(teamName);
+
+  // 恢复前先清掉前面用例遗留的「正在投递」消息。
+  //
+  // 全量 e2e 共用一个库，「Agent 还没给回复」的消息会一直停在投递中（内核给 10 分钟
+  // 回复期限），而恢复的前提是「没有正在投递的消息」——不清掉就会被挡住。这是测试
+  // 之间的遗留，不是这个用例要验的东西。
+  await invoke("__clear_pending_messages");
 
   // 恢复必须先经过高风险确认弹窗。
   await page.getByRole("button", { name: "恢复这份备份" }).click();
