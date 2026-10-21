@@ -13,6 +13,8 @@ export const queryKeys = {
   tasks: (teamId: string) => ["teams", teamId, "tasks"] as const,
   taskBoard: (teamId: string, query: TaskBoardQuery) =>
     ["teams", teamId, "tasks", "board", query] as const,
+  /** 团队的轻量任务列表（编号与标题）；活动页的任务下拉框用。 */
+  taskOptions: (teamId: string) => ["teams", teamId, "tasks", "options"] as const,
   task: (teamId: string, taskId: string) => ["teams", teamId, "tasks", "detail", taskId] as const,
   /**
    * 任务的全部执行记录。挂在 `task` 之下，执行状态变化时随任务详情一并失效。

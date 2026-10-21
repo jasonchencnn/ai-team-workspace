@@ -11,6 +11,7 @@ mod harnesses;
 mod inbox;
 mod messages;
 mod notifications;
+mod perf;
 #[cfg(unix)]
 mod qa_round2;
 #[cfg(unix)]

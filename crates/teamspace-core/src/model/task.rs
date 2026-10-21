@@ -184,12 +184,19 @@ pub struct TaskSummary {
 pub struct BoardColumn {
     pub status: TaskStatus,
     pub label: String,
-    /// 按更新时间倒序。
+    /// 按更新时间倒序。分页时只有这一页，不是该列的全部任务。
     pub tasks: Vec<TaskSummary>,
+    /// 该列的任务总数（分页后仍然给出，界面据此显示「共 N 条」）。
+    pub total: u32,
+    /// 还有更多任务没取回（可继续「加载更多」）。
+    pub has_more: bool,
+    /// 下一页的游标（没有更多时为 `null`）。界面「加载更多」时原样传给
+    /// [`BoardColumnQuery::cursor`]。
+    pub next_cursor: Option<String>,
 }
 
 /// 看板查询。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export)]
 pub struct TaskBoardQuery {
@@ -197,6 +204,53 @@ pub struct TaskBoardQuery {
     /// 是否包含「已取消」列，默认不包含。
     #[ts(optional = nullable)]
     pub include_cancelled: Option<bool>,
+    /// 每列最多返回多少条任务。缺省为 `None`，表示不限制（返回该列全部任务，与旧行为一致）。
+    #[ts(optional = nullable)]
+    pub limit: Option<u32>,
+}
+
+/// 看板单列的分页查询（界面「加载更多」用）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct BoardColumnQuery {
+    pub team_id: String,
+    /// 要取哪一列。
+    pub status: TaskStatus,
+    /// 每页条数，缺省 200，最大 500。
+    #[ts(optional = nullable)]
+    pub limit: Option<u32>,
+    /// 上一页返回的 `nextCursor`（不透明字符串，原样传回）；缺省从最新开始。
+    #[ts(optional = nullable)]
+    pub cursor: Option<String>,
+}
+
+/// 看板单列的分页结果。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct BoardColumnPage {
+    pub status: TaskStatus,
+    pub label: String,
+    /// 按更新时间倒序。
+    pub tasks: Vec<TaskSummary>,
+    /// 该列的任务总数。
+    pub total: u32,
+    /// 还有更早的任务时为下一页游标，否则为 `null`。
+    pub next_cursor: Option<String>,
+}
+
+/// 任务的轻量信息（编号、标题）。
+///
+/// 给「活动页的任务下拉框」这类只需要编号与标题的地方用：任务上万时不必把每条任务的
+/// 计数、负责人、依赖等一整套摘要都传过去。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct TaskOption {
+    pub id: String,
+    pub key: String,
+    pub title: String,
 }
 
 /// 看板数据：按标准顺序的状态列，始终含 done；cancelled 仅在请求时包含。空列也返回。

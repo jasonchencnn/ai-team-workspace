@@ -218,6 +218,22 @@ pub fn get_task_board(
 }
 
 #[tauri::command(async)]
+pub fn list_board_column(
+    ts: State<'_, Arc<Teamspace>>,
+    input: BoardColumnQuery,
+) -> Result<BoardColumnPage, Error> {
+    ts.list_board_column(input)
+}
+
+#[tauri::command(async)]
+pub fn list_task_options(
+    ts: State<'_, Arc<Teamspace>>,
+    team_id: String,
+) -> Result<Vec<TaskOption>, Error> {
+    ts.list_task_options(&team_id)
+}
+
+#[tauri::command(async)]
 pub fn get_task(ts: State<'_, Arc<Teamspace>>, task_id: &str) -> Result<TaskDetail, Error> {
     ts.get_task(task_id)
 }

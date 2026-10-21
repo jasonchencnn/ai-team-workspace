@@ -12,7 +12,7 @@ use time::OffsetDateTime;
 use crate::error::{Error, Result};
 
 /// 当前 schema 版本。
-pub(crate) const SCHEMA_VERSION: i64 = 16;
+pub(crate) const SCHEMA_VERSION: i64 = 17;
 
 const SCHEMA_V1: &str = r#"
 CREATE TABLE teams (
@@ -451,9 +451,32 @@ ALTER TABLE messages ADD COLUMN queued_at TEXT NOT NULL DEFAULT '';
 UPDATE messages SET queued_at = created_at;
 "#;
 
+/// v17：1 万条任务与事件时的查询索引（M7-03 性能）。
+///
+/// - `tasks_team_status_updated`：看板按状态分页（每列按更新时间倒序取一页）与团队概览的
+///   「进行中的任务」都按 `(团队, 状态, 更新时间, id)` 取，没有它每列都要扫全表再排序。
+/// - `tasks_team_updated`：轻量任务列表（活动页的任务下拉框）按更新时间倒序取，
+///   没有它要先把团队的全部任务排一遍。
+/// - `tasks_owner_updated`：岗位工作台取该岗位最近的任务，同样按更新时间倒序。
+/// - `events_team_kind_seq`：活动按种类筛选（团队 + 种类 + 序号），以及按种类找单条活动
+///   （工作日志、执行摘要、越权记录）。列顺序让「按种类倒序取一页」不用再排序，
+///   也不会为了找一个冷门种类把该团队的活动整张表扫一遍。
+/// - `events_team_task_seq`：活动按任务筛选（团队 + 任务）。
+/// - `message_threads_team` 加上 `id`：线程列表按 `(更新时间, id)` 倒序，取完不用再排序。
+const SCHEMA_V17: &str = r#"
+CREATE INDEX tasks_team_status_updated ON tasks (team_id, status, updated_at DESC, id DESC);
+CREATE INDEX tasks_team_updated ON tasks (team_id, updated_at DESC, id DESC);
+CREATE INDEX tasks_owner_updated ON tasks (owner_role_id, updated_at DESC, id DESC);
+CREATE INDEX events_team_kind_seq ON events (team_id, kind, seq);
+CREATE INDEX events_team_task_seq ON events (team_id, task_id, seq);
+DROP INDEX message_threads_team;
+CREATE INDEX message_threads_team ON message_threads (team_id, updated_at DESC, id DESC);
+"#;
+
 const MIGRATIONS: &[&str] = &[
     SCHEMA_V1, SCHEMA_V2, SCHEMA_V3, SCHEMA_V4, SCHEMA_V5, SCHEMA_V6, SCHEMA_V7, SCHEMA_V8,
     SCHEMA_V9, SCHEMA_V10, SCHEMA_V11, SCHEMA_V12, SCHEMA_V13, SCHEMA_V14, SCHEMA_V15, SCHEMA_V16,
+    SCHEMA_V17,
 ];
 
 /// 打开数据库：WAL 日志、synchronous=NORMAL、开启外键，并迁移到当前版本。

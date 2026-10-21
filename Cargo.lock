@@ -3566,6 +3566,7 @@ dependencies = [
 name = "teamspace-e2e-bridge"
 version = "0.1.0"
 dependencies = [
+ "rusqlite",
  "serde",
  "serde_json",
  "teamspace-core",
