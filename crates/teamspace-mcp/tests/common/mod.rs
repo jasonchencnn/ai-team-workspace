@@ -51,6 +51,49 @@ pub fn git(dir: &Path, args: &[&str]) {
     assert!(ok, "git {args:?}");
 }
 
+/// 临时环境里的数据库路径。
+fn db_path_of(dir: &Path) -> PathBuf {
+    dir.join("data").join("teamspace.db")
+}
+
+/// 绕过内核直接执行 SQL（测试辅助）。
+///
+/// 内核没有对外暴露「把消息置为过期」这类接口，而「过期」是内核自己才会产生的数据，
+/// 测试要覆盖它，只能像内核自己的测试那样直接改库。
+/// 这里借用系统的 sqlite3 命令行；没有它就用 python3 的 sqlite3 模块。
+pub fn raw_sql(db: &Path, sql: &str) {
+    let sqlite = Command::new("sqlite3")
+        .arg("-cmd")
+        .arg(".timeout 5000")
+        .arg(db)
+        .arg(sql)
+        .output();
+    let output = match sqlite {
+        Ok(output) => output,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+            let script = "import sqlite3,sys\n\
+                          conn = sqlite3.connect(sys.argv[1])\n\
+                          conn.execute(sys.argv[2])\n\
+                          conn.commit()\n";
+            Command::new("python3")
+                .arg("-c")
+                .arg(script)
+                .arg(db)
+                .arg(sql)
+                .output()
+                .unwrap_or_else(|err| {
+                    panic!("改数据库失败（sqlite3 与 python3 都用不了）：{err}\n{sql}")
+                })
+        }
+        Err(err) => panic!("改数据库失败：{err}\n{sql}"),
+    };
+    assert!(
+        output.status.success(),
+        "改数据库失败：{sql}\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
 /// 一个团队、若干岗位、一个 Mock Harness，以及控制 socket。
 pub struct Env {
     /// 控制服务：drop 时停止监听并删除 socket 文件。
@@ -98,12 +141,8 @@ impl Env {
             }),
         };
         let ts = Arc::new(
-            Teamspace::open_with(
-                &dir.path().join("data/teamspace.db"),
-                Box::new(LocalProbe::new()),
-                config,
-            )
-            .unwrap(),
+            Teamspace::open_with(&db_path_of(dir.path()), Box::new(LocalProbe::new()), config)
+                .unwrap(),
         );
         // 取消执行时的宽限期缩短，测试不用等十秒。
         ts.set_run_settings(teamspace_core::RunSettings {
@@ -159,6 +198,11 @@ impl Env {
             harness_id: harness.id,
             ws: workspace,
         }
+    }
+
+    /// 数据库路径（测试辅助：造内核才会产生的数据时直接改库）。
+    pub fn db_path(&self) -> PathBuf {
+        db_path_of(self.dir.path())
     }
 }
 

@@ -10,7 +10,7 @@ mod common;
 use serde_json::{Value, json};
 use teamspace_core::model::{CreateTeamInput, NewRole};
 
-use common::{Client, Env};
+use common::{Client, Env, raw_sql};
 
 /// 一个团队、一个岗位、一个 Mock Harness，以及控制 socket。
 fn env() -> Env {
@@ -357,6 +357,86 @@ fn waiting_for_a_reply_does_not_block_other_tools() {
     assert_eq!(waited["status"], "queued", "{waited}");
     assert_eq!(waited["timedOut"], true, "{waited}");
     assert_eq!(waited["messageId"], message_id.as_str(), "{waited}");
+    // 实际生效的等待时长要告诉 Leader。
+    assert_eq!(waited["timeoutSeconds"], 3, "{waited}");
+    // 整个调用不超过生效的超时（解析也算在等待时间里）。
+    let waited_seconds = waited["waitedSeconds"].as_u64().unwrap_or_default();
+    assert!(waited_seconds <= 4, "{waited}");
+}
+
+/// 消息过期（终态）时，wait_reply 直接给「已过期」，并说清过期原因。
+#[test]
+fn an_expired_message_is_reported_as_expired() {
+    let env = env();
+    // 停掉投递线程：这条消息停在「排队」，不会被岗位回复。
+    env.ts.shutdown();
+    let mut client = Client::start(&env.socket);
+
+    let sent = send(&mut client, "前端开发", "很久以前的消息");
+    let message_id = sent["messageId"].as_str().expect("消息 id").to_owned();
+
+    // 「过期」是内核自己才会产生的数据（超过 7 天未回复）：测试直接把它改出来。
+    raw_sql(
+        &env.db_path(),
+        &format!("UPDATE messages SET status = 'expired' WHERE id = '{message_id}'"),
+    );
+
+    let waited = wait_reply(&mut client, &message_id, 30);
+    assert_eq!(waited["status"], "expired", "{waited}");
+    assert_eq!(waited["statusLabel"], "已过期", "{waited}");
+    assert_eq!(waited["messageId"], message_id.as_str(), "{waited}");
+    // 过期是终态：不是等超时。
+    assert_eq!(waited["timedOut"], false, "{waited}");
+    assert_eq!(waited["timeoutSeconds"], 30, "{waited}");
+    let hint = waited["hint"].as_str().unwrap_or_default();
+    assert!(hint.contains("过期"), "{hint}");
+
+    // 线程详情里也是「已过期」。
+    let thread_id = waited["threadId"].as_str().expect("线程 id").to_owned();
+    let thread = client.call("get_thread", json!({ "thread": thread_id }));
+    assert!(!thread.is_error, "{}", thread.text);
+    let thread = thread.json();
+    let messages = thread["messages"].as_array().expect("消息列表");
+    assert_eq!(messages[0]["status"], "expired", "{thread}");
+    assert_eq!(messages[0]["statusLabel"], "已过期", "{thread}");
+}
+
+/// 超过上限的超时被钳制到 600 秒，结果里能看到实际生效的值。
+#[test]
+fn the_effective_timeout_is_reported_back() {
+    let env = env();
+    let mut client = Client::start(&env.socket);
+
+    let sent = send(&mut client, "前端开发", "[mock:reply=收到，我来跟进]");
+    let message_id = sent["messageId"].as_str().expect("消息 id").to_owned();
+
+    // 要 900 秒：内核按 600 秒算，结果里写明实际生效的值。
+    let waited = wait_reply(&mut client, &message_id, 900);
+    assert_eq!(waited["status"], "replied", "{waited}");
+    assert_eq!(waited["timeoutSeconds"], 600, "{waited}");
+    assert_eq!(waited["timedOut"], false, "{waited}");
+}
+
+/// 查线程时给了空 id 或不存在的线程，要给出中文说明。
+#[test]
+fn asking_for_an_empty_or_unknown_thread_says_so_in_chinese() {
+    let env = env();
+    let mut client = Client::start(&env.socket);
+
+    // 空字符串：告诉 Leader 要给线程 id。
+    let empty = client.call("get_thread", json!({ "thread": "  " }));
+    assert!(empty.is_error, "{}", empty.text);
+    assert!(empty.text.contains("线程"), "{}", empty.text);
+    assert!(empty.text.contains("list_threads"), "{}", empty.text);
+
+    // 不存在的线程：内核说线程不存在。
+    let unknown = client.call(
+        "get_thread",
+        json!({ "thread": "0198c0de-1234-7abc-8def-0123456789ab" }),
+    );
+    assert!(unknown.is_error, "{}", unknown.text);
+    assert!(unknown.text.contains("线程"), "{}", unknown.text);
+    assert!(unknown.text.contains("不存在"), "{}", unknown.text);
 }
 
 /// 等回复时找不到消息要说清楚，并给出下一步。

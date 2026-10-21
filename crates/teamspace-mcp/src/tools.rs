@@ -33,8 +33,10 @@ const ALLOWED_STATUS: &[&str] = &["todo", "ready", "doing", "blocked", "review",
 const DEFAULT_WAIT_SECONDS: u64 = 60;
 /// `wait_reply` 最多等多少秒（超过就按这个值算）。
 const MAX_WAIT_SECONDS: u64 = 600;
-/// `wait_reply` 的轮询间隔（不超过 2 秒，够快也不至于压着应用）。
+/// `wait_reply` 的轮询间隔起点（之后每次翻倍，见 [`next_poll_interval`]）。
 const POLL_INTERVAL: Duration = Duration::from_millis(500);
+/// `wait_reply` 的轮询间隔上限：不超过 2 秒（brief 要求，够快也不至于压着应用）。
+const MAX_POLL_INTERVAL: Duration = Duration::from_secs(2);
 
 /// Teamspace 的 MCP 服务：把工具调用转给桌面应用。
 #[derive(Debug, Clone)]
@@ -479,6 +481,7 @@ impl TeamspaceServer {
     #[tool(
         name = "wait_reply",
         description = "等一条消息的回复：轮询到「已回复 / 失败 / 过期」为止，最多等 timeout_seconds 秒（默认 60，最多 600）。\
+                       结果里的 timeoutSeconds 是实际生效的等待时长（超过 600 会按 600 算）。\
                        等待期间不影响其他工具调用。",
         annotations(read_only_hint = true)
     )]
@@ -718,11 +721,12 @@ impl TeamspaceServer {
                 "请指明要等回复的消息 id（send_message 返回的 messageId）。".to_owned(),
             ));
         }
-        let timeout = Duration::from_secs(
-            args.timeout_seconds
-                .unwrap_or(DEFAULT_WAIT_SECONDS)
-                .min(MAX_WAIT_SECONDS),
-        );
+        // 计时从进函数就开始：解析消息所在线程也算在等待时间里。
+        // 解析要逐条线程找消息（应用慢或线程多时很花时间），先把计时起点立住，
+        // 整个调用才不会远远超过 timeout_seconds。
+        let started = Instant::now();
+        let timeout = effective_timeout(args.timeout_seconds);
+        let deadline = started + timeout;
         let team = self.team(args.team.as_deref()).await?;
         let thread_id = match clean(args.thread.as_deref()) {
             Some(thread_id) => thread_id.to_owned(),
@@ -737,9 +741,11 @@ impl TeamspaceServer {
                 }
             },
         };
-        let started = Instant::now();
-        let deadline = started + timeout;
+        // 轮询间隔从 500ms 起每次翻倍，最多 2 秒。
+        let mut interval = POLL_INTERVAL;
         loop {
+            // 先看一次消息状态：解析线程花掉的时间也算在等待里，
+            // 但结果里总要有句话告诉 Leader 现在是什么状态。
             let detail = self
                 .client
                 .call("get_thread", json!({ "threadId": thread_id }))
@@ -754,14 +760,15 @@ impl TeamspaceServer {
                 .and_then(Value::as_str)
                 .unwrap_or_default();
             if is_terminal(status) {
-                return Ok(wait_result(&message, started.elapsed(), false));
+                return Ok(wait_result(&message, started.elapsed(), false, timeout));
             }
             let now = Instant::now();
             if now >= deadline {
-                return Ok(wait_result(&message, started.elapsed(), true));
+                return Ok(wait_result(&message, started.elapsed(), true, timeout));
             }
             // 轮询间隔不超过 2 秒；等待期间不占住运行时，别的工具照样能调。
-            tokio::time::sleep(POLL_INTERVAL.min(deadline - now)).await;
+            tokio::time::sleep(interval.min(deadline - now)).await;
+            interval = next_poll_interval(interval);
         }
     }
 
@@ -1052,6 +1059,22 @@ fn clean(reference: Option<&str>) -> Option<&str> {
     reference.map(str::trim).filter(|value| !value.is_empty())
 }
 
+/// 实际生效的等待时长：没给就按默认 60 秒，给了超过 600 秒就按 600 秒算。
+///
+/// 钳制后的值会带回结果里（`timeoutSeconds`），Leader 才知道自己的值有没有被采纳。
+fn effective_timeout(requested: Option<u64>) -> Duration {
+    Duration::from_secs(
+        requested
+            .unwrap_or(DEFAULT_WAIT_SECONDS)
+            .min(MAX_WAIT_SECONDS),
+    )
+}
+
+/// 下一轮轮询的间隔：从 500ms 起每次翻倍，最多 2 秒。
+fn next_poll_interval(current: Duration) -> Duration {
+    (current * 2).min(MAX_POLL_INTERVAL)
+}
+
 /// 取字符串字段。
 fn string_of(value: &Value, key: &str) -> String {
     value
@@ -1222,7 +1245,9 @@ fn message_in(detail: &Value, message_id: &str) -> Option<Value> {
 }
 
 /// 等回复的结果。
-fn wait_result(message: &Value, waited: Duration, timed_out: bool) -> Value {
+///
+/// `timeout` 是实际生效的等待时长（钳制后的），一并告诉 Leader。
+fn wait_result(message: &Value, waited: Duration, timed_out: bool, timeout: Duration) -> Value {
     let status = message
         .get("status")
         .and_then(Value::as_str)
@@ -1241,6 +1266,7 @@ fn wait_result(message: &Value, waited: Duration, timed_out: bool) -> Value {
         "replyBody": message.get("replyBody"),
         "failureReason": message.get("failureReason"),
         "waitedSeconds": waited.as_secs(),
+        "timeoutSeconds": timeout.as_secs(),
         "timedOut": timed_out,
         "hint": hint,
     })
@@ -1401,5 +1427,30 @@ mod tests {
         // 只有锚点没有路径的，丢掉。
         assert_eq!(refs[2]["path"], "README.md", "{refs:?}");
         assert_eq!(refs[2]["anchor"], Value::Null, "{refs:?}");
+    }
+
+    /// 等待时长：缺省 60 秒，最多 600 秒（超过就按 600 算）。
+    #[test]
+    fn the_wait_timeout_is_clamped_to_the_maximum() {
+        assert_eq!(effective_timeout(None), Duration::from_secs(60));
+        assert_eq!(effective_timeout(Some(0)), Duration::from_secs(0));
+        assert_eq!(effective_timeout(Some(30)), Duration::from_secs(30));
+        assert_eq!(effective_timeout(Some(600)), Duration::from_secs(600));
+        assert_eq!(effective_timeout(Some(900)), Duration::from_secs(600));
+    }
+
+    /// 轮询间隔从 500ms 起每次翻倍，最多 2 秒。
+    #[test]
+    fn the_poll_interval_backs_off_up_to_two_seconds() {
+        let mut interval = POLL_INTERVAL;
+        assert_eq!(interval, Duration::from_millis(500));
+        interval = next_poll_interval(interval);
+        assert_eq!(interval, Duration::from_secs(1));
+        interval = next_poll_interval(interval);
+        assert_eq!(interval, Duration::from_secs(2));
+        // 到上限就不再涨了。
+        interval = next_poll_interval(interval);
+        assert_eq!(interval, Duration::from_secs(2));
+        assert!(interval <= MAX_POLL_INTERVAL, "{interval:?}");
     }
 }
