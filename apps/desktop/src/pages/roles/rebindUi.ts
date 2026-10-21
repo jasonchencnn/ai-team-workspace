@@ -1,11 +1,10 @@
 // 换绑（Harness 重新绑定）的纯逻辑：方式文案、候选实例筛选、待生效摘要与待投递消息判定。
 //
-// 怎么换、何时换由内核决定（crates/teamspace-core/src/service/rebind.rs），
+// 怎么换、何时换、哪些执行算「进行中」都由内核决定（crates/teamspace-core/src/service/），
 // 前端只负责把后端返回的事实翻译成中文文案；所有判定都写成纯函数，单元测试直接锁住。
 import type { HarnessInstance } from "../../bindings/HarnessInstance.js";
 import type { PendingBinding } from "../../bindings/PendingBinding.js";
 import type { RebindMode } from "../../bindings/RebindMode.js";
-import type { RunStatus } from "../../bindings/RunStatus.js";
 
 /** 三种换绑方式，与内核的 RebindMode 一一对应。 */
 export const REBIND_MODES: RebindMode[] = ["after_current", "cancel_and_rerun", "manual_takeover"];
@@ -70,18 +69,6 @@ export function rebindModeOption(mode: RebindMode): RebindModeOption {
 }
 
 /**
- * 仍算「进行中」的执行状态。
- * 与内核的 ACTIVE_SQL（queued / running / waiting_permission）保持一致：
- * 只有这三种执行还在跑，换绑才有「完成后更换」这个选项。
- */
-export const ACTIVE_RUN_STATUSES: RunStatus[] = ["queued", "running", "waiting_permission"];
-
-/** 判断一个执行状态是否仍在进行中。 */
-export function isActiveRunStatus(status: RunStatus): boolean {
-  return ACTIVE_RUN_STATUSES.includes(status);
-}
-
-/**
  * 换绑可选的目标实例：同团队、非归档，且不是当前已绑的实例。
  * 当前实例不列出来，免得用户选了一个等于没换。
  */
@@ -107,15 +94,14 @@ export interface PendingBindingSummary {
 
 /**
  * 待生效绑定摘要。
- * 旧实例名来自岗位的当前绑定（pendingBinding 只记目标实例）；
- * 岗位没绑实例时显示「未绑定」，不编造名字。
+ * 旧实例名来自内核记下的「发起换绑时的当前绑定」（`previousHarnessName`）：
+ * 岗位没有绑定过实例时显示「未绑定」，不编造名字。
  */
 export function pendingBindingSummary(
   pending: PendingBinding,
-  currentHarnessName: string | null,
   requestedAtText: string,
 ): PendingBindingSummary {
-  const oldName = currentHarnessName ?? "未绑定";
+  const oldName = pending.previousHarnessName ?? "未绑定";
   const newName = pending.harnessName;
   const modeLabel = rebindModeLabel(pending.mode);
   return {

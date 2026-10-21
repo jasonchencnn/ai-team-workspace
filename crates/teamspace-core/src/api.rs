@@ -97,6 +97,7 @@ pub const COMMANDS: &[&str] = &[
     "open_run_file",
     "get_run",
     "list_runs",
+    "list_active_runs",
     "list_run_updates",
     "respond_permission",
     "get_review",
@@ -109,6 +110,7 @@ pub const COMMANDS: &[&str] = &[
     "send_message",
     "list_threads",
     "get_thread",
+    "list_role_messages",
     "retry_message",
     "leader_integration",
     "write_workspace_mcp_config",
@@ -1607,6 +1609,16 @@ impl Teamspace {
         run_svc::list_for_task(&self.lock(), task_id)
     }
 
+    /// 岗位进行中的执行：换绑界面要看的「有没有在跑的活」。
+    ///
+    /// 「进行中」由内核判定（queued / running / waiting_permission）；每条带上任务编号与标题、
+    /// 第几次执行、状态与 Harness 实例快照，界面不必自己列状态也不用逐个任务去查执行。
+    pub fn list_active_runs(&self, role_id: &str) -> Result<Vec<ActiveRunSummary>> {
+        let conn = self.lock();
+        role::get_active(&conn, role_id)?;
+        run_svc::active_summaries_for_role(&conn, role_id)
+    }
+
     /// 执行进度增量读取：返回 `cursor` 之后新增或被更新的条目（见 [`RunUpdatePage`]）。
     pub fn list_run_updates(&self, input: RunUpdateQuery) -> Result<RunUpdatePage> {
         self.run_updates(&input)
@@ -1654,6 +1666,16 @@ impl Teamspace {
     /// 取一个线程及其中的消息（时间正序）。
     pub fn get_thread(&self, thread_id: &str) -> Result<ThreadDetail> {
         message::thread(&self.lock(), thread_id)
+    }
+
+    /// 发往某个岗位的消息：换绑界面要看「换绑期间还有哪些消息在排队」。
+    ///
+    /// 默认只看「排队中 + 投递中」（终态消息不用再提示）；每条带上线程主题与入队时的绑定实例名，
+    /// 界面不必再逐个取线程详情。
+    pub fn list_role_messages(&self, input: ListRoleMessagesQuery) -> Result<Vec<RoleMessage>> {
+        let conn = self.lock();
+        role::get_active(&conn, &input.role_id)?;
+        message::for_role(&conn, &input)
     }
 
     /// 重发一条失败或过期的消息：状态回到「排队」，等投递引擎再次接手。

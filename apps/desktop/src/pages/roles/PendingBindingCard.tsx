@@ -30,11 +30,7 @@ export function PendingBindingCard({
     return null;
   }
 
-  const summary = pendingBindingSummary(
-    pending,
-    view.harness?.name ?? null,
-    formatLocalDateTime(pending.requestedAt),
-  );
+  const summary = pendingBindingSummary(pending, formatLocalDateTime(pending.requestedAt));
 
   return (
     <Card title="换绑待生效" tone="warning" className="pending-binding">

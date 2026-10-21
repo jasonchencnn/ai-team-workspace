@@ -265,6 +265,30 @@ pub struct Run {
     pub review: Option<super::RunReview>,
 }
 
+/// 岗位进行中的执行：换绑界面要看的「现在有没有在跑的活」（M6-04）。
+///
+/// 「进行中」由内核判定（queued / running / waiting_permission），界面不再自己列状态。
+/// 只带界面要的字段：执行 id、任务编号与标题、第几次执行、状态与 Harness 实例快照。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct ActiveRunSummary {
+    pub run_id: String,
+    pub task_id: String,
+    /// 任务编号，如 `FE-001`。
+    pub task_key: String,
+    /// 任务标题。
+    pub task_title: String,
+    /// 该任务的第几次执行，从 1 开始。
+    pub attempt: u32,
+    pub status: RunStatus,
+    /// 状态显示名。
+    pub status_label: String,
+    /// 执行开始时的 Harness 实例快照。
+    pub harness: HarnessSnapshot,
+    pub started_at: String,
+}
+
 /// 消息的来源。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "snake_case")]

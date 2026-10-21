@@ -178,8 +178,8 @@ export function TeamHomePage() {
                 {/* 待生效的换绑：当前绑定仍是旧实例，这里只标「待生效」，不写成已经换好。 */}
                 {item.pendingBinding === null ? null : (
                   <p className="th-note th-role__pending">
-                    待生效：{item.harness?.name ?? "未绑定"} → {item.pendingBinding.harnessName}（
-                    {rebindModeLabel(item.pendingBinding.mode)} ·{" "}
+                    待生效：{item.pendingBinding.previousHarnessName ?? "未绑定"} →{" "}
+                    {item.pendingBinding.harnessName}（{rebindModeLabel(item.pendingBinding.mode)} ·{" "}
                     {formatLocalDateTime(item.pendingBinding.requestedAt)}）
                   </p>
                 )}

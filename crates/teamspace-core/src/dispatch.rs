@@ -56,6 +56,7 @@ pub const LEADER_ALLOWED: &[&str] = &[
     "check_task_dependencies",
     "get_run",
     "list_runs",
+    "list_active_runs",
     "list_run_updates",
     "list_events",
     "get_review",
@@ -74,6 +75,7 @@ pub const LEADER_ALLOWED: &[&str] = &[
     "send_message",
     "list_threads",
     "get_thread",
+    "list_role_messages",
     // 待我处理（只读：Leader 可以看，但不能记录决策、也不能改通知订阅）
     "get_inbox",
 ];
@@ -164,6 +166,7 @@ pub fn dispatch(
         )),
         "get_run" => out(ts.get_run(&arg::<String>(args, "runId")?)),
         "list_runs" => out(ts.list_runs(&arg::<String>(args, "taskId")?)),
+        "list_active_runs" => out(ts.list_active_runs(&arg::<String>(args, "roleId")?)),
         "list_run_updates" => out(ts.list_run_updates(arg(args, "input")?)),
         "respond_permission" => out(ts.respond_permission(arg(args, "input")?)),
         "get_review" => {
@@ -187,6 +190,7 @@ pub fn dispatch(
         "send_message" => out(ts.send_message_as(actor, arg(args, "input")?)),
         "list_threads" => out(ts.list_threads(arg(args, "input")?)),
         "get_thread" => out(ts.get_thread(&arg::<String>(args, "threadId")?)),
+        "list_role_messages" => out(ts.list_role_messages(arg(args, "input")?)),
         "retry_message" => out(ts.retry_message(&arg::<String>(args, "messageId")?)),
         "leader_integration" => out(ts.leader_integration(&arg::<String>(args, "teamId")?)),
         "write_workspace_mcp_config" => {

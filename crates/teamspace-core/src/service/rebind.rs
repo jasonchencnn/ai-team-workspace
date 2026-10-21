@@ -42,11 +42,13 @@ fn parse_mode(raw: &str) -> Result<RebindMode> {
 
 /// 岗位的待生效换绑；没有时为 `None`。
 ///
-/// 岗位名与目标 Harness 名一并带出（留痕用）：岗位或 Harness 归档后仍能看清这条换绑是什么。
+/// 岗位名、目标 Harness 名与发起时的旧绑定一并带出（留痕用）：岗位或 Harness 归档后仍能看清
+/// 这条换绑是什么、是从哪个实例换过去的。
 pub(crate) fn pending(conn: &Connection, role_id: &str) -> Result<Option<PendingBinding>> {
     let row = conn
         .query_row(
             "SELECT p.id, p.role_id, p.harness_id, p.mode, p.active_run_id, p.requested_at,
+                    p.previous_harness_id, p.previous_harness_name,
                     r.name, h.name
              FROM role_pending_bindings p
              JOIN roles r ON r.id = p.role_id
@@ -61,14 +63,26 @@ pub(crate) fn pending(conn: &Connection, role_id: &str) -> Result<Option<Pending
                     row.get::<_, String>(3)?,
                     row.get::<_, Option<String>>(4)?,
                     row.get::<_, String>(5)?,
-                    row.get::<_, String>(6)?,
-                    row.get::<_, String>(7)?,
+                    row.get::<_, Option<String>>(6)?,
+                    row.get::<_, Option<String>>(7)?,
+                    row.get::<_, String>(8)?,
+                    row.get::<_, String>(9)?,
                 ))
             },
         )
         .optional()?;
-    let Some((id, role_id, harness_id, mode, active_run_id, requested_at, role_name, harness_name)) =
-        row
+    let Some((
+        id,
+        role_id,
+        harness_id,
+        mode,
+        active_run_id,
+        requested_at,
+        previous_harness_id,
+        previous_harness_name,
+        role_name,
+        harness_name,
+    )) = row
     else {
         return Ok(None);
     };
@@ -78,6 +92,8 @@ pub(crate) fn pending(conn: &Connection, role_id: &str) -> Result<Option<Pending
         role_name,
         harness_id,
         harness_name,
+        previous_harness_id,
+        previous_harness_name,
         mode: parse_mode(&mode)?,
         requested_at,
         active_run_id,
@@ -87,6 +103,8 @@ pub(crate) fn pending(conn: &Connection, role_id: &str) -> Result<Option<Pending
 /// 登记待生效换绑：当前绑定不动，等当前执行结束后再生效。
 ///
 /// 同一岗位已有待生效换绑时以本次为准（旧的直接替换）。
+/// 发起时岗位的当前绑定记进 `previous_harness_*`：待生效期间旧实例名要看得准，
+/// 不能靠岗位现在的绑定反推。
 pub(crate) fn request(
     conn: &Connection,
     role: &Role,
@@ -96,14 +114,20 @@ pub(crate) fn request(
 ) -> Result<PendingBinding> {
     let id = new_id();
     let requested_at = now();
+    let previous_harness_id = role.harness_id.clone();
+    let previous_harness_name = previous_harness_id
+        .as_deref()
+        .and_then(|id| harness::get_any(conn, id).ok().flatten())
+        .map(|instance| instance.name);
     conn.execute(
         "DELETE FROM role_pending_bindings WHERE role_id = ?1",
         params![role.id],
     )?;
     conn.execute(
         "INSERT INTO role_pending_bindings
-            (id, role_id, team_id, harness_id, mode, active_run_id, requested_at, created_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            (id, role_id, team_id, harness_id, mode, active_run_id, requested_at, created_at,
+             previous_harness_id, previous_harness_name)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
         params![
             id,
             role.id,
@@ -113,6 +137,8 @@ pub(crate) fn request(
             active_run_id,
             requested_at,
             requested_at,
+            previous_harness_id,
+            previous_harness_name,
         ],
     )?;
     event::record_as(
@@ -132,6 +158,8 @@ pub(crate) fn request(
                 "harnessId": target.id,
                 "harnessName": target.name,
                 "activeRunId": active_run_id,
+                "previousHarnessId": previous_harness_id,
+                "previousHarnessName": previous_harness_name,
             }),
         },
     )?;
@@ -141,6 +169,8 @@ pub(crate) fn request(
         role_name: role.name.clone(),
         harness_id: target.id.clone(),
         harness_name: target.name.clone(),
+        previous_harness_id,
+        previous_harness_name,
         mode,
         requested_at,
         active_run_id,

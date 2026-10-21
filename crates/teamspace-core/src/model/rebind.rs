@@ -52,6 +52,12 @@ pub struct PendingBinding {
     pub harness_id: String,
     /// 目标 Harness 实例名。
     pub harness_name: String,
+    /// 发起换绑时岗位的当前绑定实例 id；发起时岗位没有绑定过实例为 `null`。
+    ///
+    /// 留痕用：待生效期间当前绑定仍是旧实例，这个字段记下「换绑之前绑的是哪个」。
+    pub previous_harness_id: Option<String>,
+    /// 发起换绑时岗位的当前绑定实例名；发起时岗位没有绑定过实例为 `null`。
+    pub previous_harness_name: Option<String>,
     /// 换绑方式。
     pub mode: RebindMode,
     /// 发起时间（UTC RFC3339）。

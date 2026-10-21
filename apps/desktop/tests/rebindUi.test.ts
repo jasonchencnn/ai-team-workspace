@@ -1,20 +1,18 @@
 // 换绑流程的纯逻辑：方式选项与默认值、待生效文案、候选实例筛选、启动包空态。
 // 这些判定决定界面说什么、什么时候说什么，单元测试把它们锁住。
+// 「哪些执行算进行中」由内核判定，前端不再列状态白名单，所以这里没有对应用例。
 import { describe, expect, it } from "vitest";
 
 import type { HarnessInstance } from "../src/bindings/HarnessInstance.js";
 import type { PendingBinding } from "../src/bindings/PendingBinding.js";
 import type { RebindMode } from "../src/bindings/RebindMode.js";
-import type { RunStatus } from "../src/bindings/RunStatus.js";
 import {
-  ACTIVE_RUN_STATUSES,
   DEFAULT_REBIND_MODE,
   HANDOFF_EMPTY_TEXT,
   HANDOFF_EMPTY_TEXT_UNBOUND,
   REBIND_MODE_OPTIONS,
   REBIND_MODES,
   handoffEmptyText,
-  isActiveRunStatus,
   pendingBindingSummary,
   pendingDeliveryNote,
   rebindCandidates,
@@ -54,6 +52,8 @@ function pending(extra: Partial<PendingBinding> = {}): PendingBinding {
     roleName: "QA",
     harnessId: "harness-new",
     harnessName: "mock-new",
+    previousHarnessId: "harness-old",
+    previousHarnessName: "mock-old",
     mode: "after_current",
     requestedAt: "2026-10-21T02:31:00Z",
     activeRunId: "run-1",
@@ -94,18 +94,6 @@ describe("换绑方式", () => {
   });
 });
 
-describe("进行中的执行", () => {
-  it("只把排队、运行中、等待权限算作进行中", () => {
-    expect(ACTIVE_RUN_STATUSES).toEqual(["queued", "running", "waiting_permission"]);
-    const running: RunStatus = "running";
-    const succeeded: RunStatus = "succeeded";
-    const interrupted: RunStatus = "interrupted";
-    expect(isActiveRunStatus(running)).toBe(true);
-    expect(isActiveRunStatus(succeeded)).toBe(false);
-    expect(isActiveRunStatus(interrupted)).toBe(false);
-  });
-});
-
 describe("候选实例", () => {
   it("排除当前绑定的实例与已归档的实例", () => {
     const list = [harness("h1", "当前"), harness("h2", "另一个"), harness("h3", "归档的", "x")];
@@ -121,7 +109,7 @@ describe("候选实例", () => {
 
 describe("待生效文案", () => {
   it("写明旧实例、新实例、方式与发起时间", () => {
-    const summary = pendingBindingSummary(pending(), "mock-old", "2026/10/21 10:31");
+    const summary = pendingBindingSummary(pending(), "2026/10/21 10:31");
     expect(summary.title).toBe("待生效：mock-old → mock-new");
     expect(summary.detail).toBe("（当前执行完成后更换，2026/10/21 10:31）");
     expect(summary.oldName).toBe("mock-old");
@@ -129,22 +117,20 @@ describe("待生效文案", () => {
     expect(summary.modeLabel).toBe("当前执行完成后更换");
   });
 
-  it("岗位没有当前绑定时写「未绑定」，不编造旧实例名", () => {
-    const summary = pendingBindingSummary(pending(), null, "2026/10/21 10:31");
+  it("岗位发起换绑时没有绑定过实例就写「未绑定」，不编造旧实例名", () => {
+    const summary = pendingBindingSummary(
+      pending({ previousHarnessId: null, previousHarnessName: null }),
+      "2026/10/21 10:31",
+    );
     expect(summary.oldName).toBe("未绑定");
     expect(summary.title).toBe("待生效：未绑定 → mock-new");
   });
 
   it("撤销与重跑的方式在摘要里也分得清", () => {
-    const rerun = pendingBindingSummary(
-      pending({ mode: "cancel_and_rerun" }),
-      "mock-old",
-      "2026/10/21 10:31",
-    );
+    const rerun = pendingBindingSummary(pending({ mode: "cancel_and_rerun" }), "2026/10/21 10:31");
     expect(rerun.detail).toContain("取消并重跑");
     const takeover = pendingBindingSummary(
       pending({ mode: "manual_takeover" }),
-      "mock-old",
       "2026/10/21 10:31",
     );
     expect(takeover.detail).toContain("人工接管");
