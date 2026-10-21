@@ -8,8 +8,6 @@
 - 顺带修：M7-04b 加的「有执行在跑或有消息在投递时拒绝恢复备份」前置条件是 2026-10-21 22:52 之后才有的，之后没跑过全量 e2e —— 全量 e2e 里「Agent 还没给回复」的消息会一直停在投递中，备份恢复用例被挡住、一直红。测试桥接加测试专用命令 `__clear_pending_messages`，恢复用例先清遗留。
 - 顺带修：`apps/desktop/tests/messageBubble.test.ts` 把消息时间写死成 2026-10-21 的 UTC，过了当天零点断言就变成「昨天」而挂掉 —— 改成按本地时区构造时间并固定「现在」。
 
-## 2026-10-22
-
 - M7-02 合入 `6637038`（MiniMax Code：L-12 视觉细节、6 张画板走查、待我处理就地允许 / 拒绝权限、看板分页两缺陷、UI-ROLE-002 确认不可达并删除、清掉最后一个 `test.fixme`；顺带修好写死日期的单测与消息遗留挡住备份恢复的 e2e）。
 - M7-05 最终回归（主线 `6637038`）：`pnpm run check` 通过（Rust 1140 通过 1 忽略、前端 225）；`pnpm run e2e` 335 通过、4 跳过（真实额度开关）；`pnpm run package` 产出 `target/release/bundle/dmg/AI Team Workspace_0.2.0_aarch64.dmg`（6.5 MB，未签名）；MiniMax Code 真实冒烟 RUN-SMK-001/002/M3-001 全部通过。Claude Code 真实冒烟消耗 Claude 额度，未跑。
 - 全程执行者：MiniMax Code 完成全部开发与修复；OpenCode `deepseek-v4.1-flash-free` 交叉审查、`minimax-m3.1-flash-free` 小修复；agy（Gemini）三轮只读回归共报 24 条，核实后修复严重 6、一般 13，其余轻微暂缓。
