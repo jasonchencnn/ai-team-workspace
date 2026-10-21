@@ -74,7 +74,8 @@ export function resolveAutoFillPrefix(
   currentPrefix: string,
   suggested: string,
 ): PrefixFillResult {
-  const userOwned = currentPrefix !== "" && currentPrefix !== state.autoFilled;
+  // `manual` 说明用户接管过这一行；当前值又与上次自动填入的不同，同样是用户自己的值。
+  const userOwned = currentPrefix !== "" && (state.manual || currentPrefix !== state.autoFilled);
   if (userOwned) {
     // 用户手动改过这个前缀（或曾经改过），尊重用户输入，不覆盖。
     return {
@@ -90,19 +91,54 @@ export function resolveAutoFillPrefix(
   };
 }
 
+/** 一条回来的建议对某一行的处理结果。 */
+export type SuggestionOutcome =
+  /** 可以写入这一行（写入前仍由 `resolveAutoFillPrefix` 复核当前值）。 */
+  | "apply"
+  /** 岗位名称已经变了：这次建议是按旧名称算的，丢弃。 */
+  | "stale-name"
+  /** 用户接管过这一行：不再覆盖手填的前缀。 */
+  | "manual";
+
+/**
+ * 判断一条回来的建议能不能写进这一行的前缀。纯函数，无副作用。
+ *
+ * 两道闸门各管一件事：
+ * - 名称版本：建议是按**发出时**的名称算的，回来时岗位名称已经变了就丢弃；
+ * - 用户接管：用户手动编辑过前缀（或正在前缀输入框里输入），迟到的建议不得覆盖。
+ *
+ * 前缀当前为空时视为用户把这一行交回自动填入，可以接受建议。
+ */
+export function checkSuggestion(
+  requestedName: string,
+  currentName: string,
+  state: PrefixFillState,
+  currentPrefix: string,
+): SuggestionOutcome {
+  if (currentName !== requestedName) {
+    return "stale-name";
+  }
+  if (state.manual && currentPrefix !== "") {
+    return "manual";
+  }
+  return "apply";
+}
+
 /**
  * 把一次建议写回某一行的表单状态。
  *
  * `resolve` 由调用方提供，必须包在**函数式 setState** 里：它拿到的是应用这次更新那一刻
- * 的前缀值，而不是失焦那一刻的快照。命令式写值会读到过期快照，正是这个竞态的来源。
+ * 的前缀与岗位名称，而不是失焦那一刻的快照。命令式写值会读到过期快照，正是这个竞态的来源。
  */
-export type ApplySuggestedPrefix = (resolve: (currentPrefix: string) => string) => void;
+export type ApplySuggestedPrefix = (
+  resolve: (currentPrefix: string, currentName: string) => string,
+) => void;
 
 /** 向内核请求一次前缀建议。 */
 export type SuggestPrefixRequest = (name: string) => Promise<string>;
 
 /**
- * 一次前缀建议请求的票据：绑定**发出时**的岗位名称与该行当时的请求序号。
+ * 一次前缀建议请求的票据：绑定**发出时**的岗位名称与该行当时的版本号。
  *
  * 每次调用各自持有一张票据，不再共享任何「在途回调」，因此返回顺序再乱，
  * 也不会出现旧请求借用新请求的判定逻辑。
@@ -110,33 +146,43 @@ export type SuggestPrefixRequest = (name: string) => Promise<string>;
 export interface PrefixSuggestionTicket {
   /** 表单内岗位的唯一键。 */
   key: string;
-  /** 发出时的请求序号；同一行的序号单调递增。 */
-  seq: number;
+  /** 发出时的版本号；同一行的版本号单调递增。 */
+  version: number;
   /** 发出时的岗位名称快照，**不**从提交时的闭包里再读名称。 */
   name: string;
 }
 
 /**
- * 按行记录在途请求序号的闸门，回答「一条返回的建议是不是该行最新一次请求的结果」。
+ * 按行记录版本号的闸门，回答「一条返回的建议是不是该行最新一次请求的结果」。
  * 按 `key` 分行：表单里其它岗位的请求不会互相作废。
+ *
+ * 版本号在两种情况下递增：发起一次新请求，以及用户在前缀输入框里动了手
+ * （`touch`）——后者让这一行在途的建议立刻作废，迟到的建议不得写进用户正在编辑的输入框。
  */
 export interface PrefixSuggestionGate {
   /** 为这一行发起一次新的建议，返回本次请求的票据。 */
   open(key: string, name: string): PrefixSuggestionTicket;
   /** 票据返回时，它是否仍是该行最新一次发起的请求。 */
   isCurrent(ticket: PrefixSuggestionTicket): boolean;
+  /** 用户动过这一行的前缀输入框：该行在途的建议一律作废。 */
+  touch(key: string): void;
 }
 
 export function createPrefixSuggestionGate(): PrefixSuggestionGate {
-  const latestSeq: Record<string, number> = {};
+  const version: Record<string, number> = {};
+  const bump = (key: string): number => {
+    version[key] = (version[key] ?? 0) + 1;
+    return version[key];
+  };
   return {
     open(key, name) {
-      const seq = (latestSeq[key] ?? 0) + 1;
-      latestSeq[key] = seq;
-      return { key, seq, name };
+      return { key, version: bump(key), name };
     },
     isCurrent(ticket) {
-      return latestSeq[ticket.key] === ticket.seq;
+      return version[ticket.key] === ticket.version;
+    },
+    touch(key) {
+      bump(key);
     },
   };
 }
@@ -144,11 +190,13 @@ export function createPrefixSuggestionGate(): PrefixSuggestionGate {
 /**
  * 发起一次建议请求，等它回来后**只有**在该票据仍是该行最新一次请求时才 `commit`。
  *
- * 判定与写入都发生在 `await` 之后，两道闸门各自负责一件事：
- * - 过期：同一行又失焦过（后发的请求序号更大）→ 按旧名称算出的前缀直接丢弃，
+ * 判定与写入都发生在 `await` 之后，三道闸门各自负责一件事：
+ * - 过期：同一行又失焦过（后发的请求版本号更大）→ 按旧名称算出的前缀直接丢弃，
  *   无论它是先回来还是后回来，前缀都停在最新名称的那次结果上；
- * - 手填：`commit` 收到建议后才去读那一行的最新前缀（见 `resolveAutoFillPrefix`），
- *   等待期间用户手填或清空的值不会被迟到的建议冲掉。
+ * - 用户动过前缀输入框：版本号被 `touch` 抬过 → 在途的建议作废，不会写进用户正在输入的框；
+ * - 手填与名称版本：`commit` 收到建议后才去读那一行的最新前缀与名称
+ *   （见 `checkSuggestion` 与 `resolveAutoFillPrefix`），等待期间用户手填或清空的值
+ *   不会被迟到的建议冲掉。
  *
  * 请求失败时静默放弃这一次建议，表单保持用户当前的值。
  */
@@ -157,7 +205,7 @@ export async function runLatestSuggestion(
   key: string,
   name: string,
   request: SuggestPrefixRequest,
-  commit: (suggested: string) => void,
+  commit: (suggested: string, requestedName: string) => void,
 ): Promise<void> {
   const ticket = gate.open(key, name);
   let suggested: string;
@@ -168,10 +216,10 @@ export async function runLatestSuggestion(
     return;
   }
   if (!gate.isCurrent(ticket)) {
-    // 这一行已经按更新的名称重新问过内核，这次返回对应的是旧名称，丢弃。
+    // 这一行已经按更新的名称重新问过内核（或用户动过前缀输入框），这次返回作废。
     return;
   }
-  commit(suggested);
+  commit(suggested, ticket.name);
 }
 
 /**
@@ -194,15 +242,30 @@ export function commitPendingFillStates(
 /**
  * 任务前缀自动建议：岗位名称失焦后向内核要一个建议值。
  *
- * 返回的函数按 `key`（表单内岗位的唯一键）记录该行的自动填入历史与请求序号，
- * 并直接 `await` `suggestTaskPrefix`：每次调用持有自己的序号与**发出时**的名称，
- * 返回时再核对「序号是否仍是这一行最新一次」和「前缀有没有被用户手动改过」，
- * 两项都成立才写入。快速连续改名（Stage One → Stage Two → Final Delivery）
+ * 按 `key`（表单内岗位的唯一键）记录该行的自动填入历史与请求版本号，
+ * 并直接 `await` `suggestTaskPrefix`：每次调用持有自己的版本号与**发出时**的名称，
+ * 返回时再核对「版本号是否仍是这一行最新一次」「岗位名称有没有变」「前缀有没有被用户
+ * 手动改过」，三项都成立才写入。快速连续改名（Stage One → Stage Two → Final Delivery）
  * 只会采用最后一次名称的建议，不会被迟到的旧响应覆盖。
+ *
+ * 用户一旦在前缀输入框里动手（`touchPrefix`），这一行在途的建议立刻作废：迟到的建议
+ * 不得写进用户正在编辑的输入框，也不得覆盖手填值（`setPrefixManual`）。
  *
  * `teamId` 为空表示还在创建团队阶段（团队尚未存在），`taken` 传表单内其他岗位已填的前缀。
  */
-export function useTaskPrefixSuggester(teamId: string | undefined, taken: string[]) {
+export interface TaskPrefixSuggester {
+  /** 岗位名称失焦后向内核请求一次前缀建议。 */
+  suggest(key: string, name: string, apply: ApplySuggestedPrefix): void;
+  /** 用户在前缀输入框里动了手（聚焦或编辑）：这一行在途的建议一律作废。 */
+  touchPrefix(key: string): void;
+  /** 用户编辑了前缀：`manual` 为 true 表示接管这一行；清空（false）表示交回自动填入。 */
+  setPrefixManual(key: string, manual: boolean): void;
+}
+
+export function useTaskPrefixSuggester(
+  teamId: string | undefined,
+  taken: string[],
+): TaskPrefixSuggester {
   const fillState = useRef<Record<string, PrefixFillState>>({});
   const pendingFill = useRef<Record<string, PrefixFillState>>({});
   const gate = useRef(createPrefixSuggestionGate()).current;
@@ -215,7 +278,7 @@ export function useTaskPrefixSuggester(teamId: string | undefined, taken: string
   });
 
   /** `apply` 由调用方提供，用来把判定后的前缀写回对应那一行的表单状态。 */
-  return (key: string, name: string, apply: ApplySuggestedPrefix) => {
+  const suggest = (key: string, name: string, apply: ApplySuggestedPrefix) => {
     if (name.trim() === "") {
       return;
     }
@@ -229,9 +292,14 @@ export function useTaskPrefixSuggester(teamId: string | undefined, taken: string
           name: requestedName,
           taken: taken.filter((prefix) => prefix !== ""),
         }),
-      (suggested) => {
-        apply((currentPrefix) => {
+      (suggested, requestedName) => {
+        apply((currentPrefix, currentName) => {
           const state = fillState.current[key] ?? EMPTY_PREFIX_FILL;
+          const outcome = checkSuggestion(requestedName, currentName, state, currentPrefix);
+          if (outcome !== "apply") {
+            // 名称已经变了（这次建议按旧名称算的），或用户接管了这一行：不写回。
+            return currentPrefix;
+          }
           const resolved = resolveAutoFillPrefix(state, currentPrefix, suggested);
           // 幂等记录：重放 updater 写入的是同一个值。
           pendingFill.current[key] = resolved.state;
@@ -240,4 +308,19 @@ export function useTaskPrefixSuggester(teamId: string | undefined, taken: string
       },
     );
   };
+
+  const touchPrefix = (key: string) => {
+    // 用户动了前缀输入框（聚焦或编辑）：这一行在途的建议作废，迟到的建议不得写进来。
+    gate.touch(key);
+  };
+
+  const setPrefixManual = (key: string, manual: boolean) => {
+    const state = fillState.current[key] ?? EMPTY_PREFIX_FILL;
+    const next = { ...state, manual };
+    fillState.current[key] = next;
+    // 待落盘的记录一起改，否则它会在下一次渲染后把 manual 改回去。
+    pendingFill.current[key] = next;
+  };
+
+  return { suggest, touchPrefix, setPrefixManual };
 }

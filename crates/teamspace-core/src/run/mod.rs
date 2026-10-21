@@ -1764,7 +1764,7 @@ impl Driver {
                     .filter_map(diff_stat)
                     .collect::<Vec<_>>()
             });
-        let edits: Vec<EditPreview> = update
+        let mut edits: Vec<EditPreview> = update
             .get("content")
             .and_then(Value::as_array)
             .into_iter()
@@ -1782,6 +1782,11 @@ impl Driver {
                 })
             })
             .collect();
+        if edits.is_empty() {
+            // 有些 Harness（如 Claude Code 的 Edit / Write 工具）只在 rawInput 里带编辑内容，
+            // 没有 ACP diff 块；拿它当 diff 用，才能判断对工作日志的编辑是不是纯追加。
+            edits = edits_from_raw_input(update.get("rawInput"));
+        }
         if let Some(diffs) = &diffs {
             let list = paths.get_or_insert_with(Vec::new);
             for d in diffs {
@@ -1932,8 +1937,10 @@ impl Driver {
             None => ("工具调用".to_owned(), None, Vec::new(), None, Vec::new()),
         };
         // 读取、搜索请求：rawInput 里的路径（如 Grep 的搜索目录）一并判断，也展示给 Human（D18）。
+        // 编辑请求同样把 rawInput 里的目标路径算进来：有些 Harness 不给 `locations`，
+        // 只有 rawInput 里的 `file_path`，没有它就不知道改的是哪个文件。
         let mut paths = paths;
-        if matches!(kind.as_deref(), Some("read" | "search"))
+        if matches!(kind.as_deref(), Some("read" | "search" | "edit"))
             && let Some(s) = &state
         {
             for raw in &s.raw_paths {
@@ -2868,6 +2875,39 @@ fn raw_input_paths(raw: &Value) -> Vec<String> {
         );
     }
     out
+}
+
+/// rawInput 中的编辑内容：路径取 `file_path` / `path`，旧内容取 `old_string` / `oldString` /
+/// `oldText`，新内容取 `new_string` / `newString` / `newText` / `content`（Write 工具的整份文件）。
+///
+/// 没有路径或没有新内容时返回空列表（判断不了就让权限请求转交 Human）。
+fn edits_from_raw_input(raw: Option<&Value>) -> Vec<EditPreview> {
+    let Some(raw) = raw else {
+        return Vec::new();
+    };
+    let path = ["file_path", "path", "filePath"]
+        .iter()
+        .find_map(|key| raw.get(*key).and_then(Value::as_str))
+        .filter(|p| !p.is_empty());
+    let Some(path) = path else {
+        return Vec::new();
+    };
+    let old = ["old_string", "oldString", "oldText"]
+        .iter()
+        .find_map(|key| raw.get(*key).and_then(Value::as_str))
+        .map(str::to_owned);
+    let new = ["new_string", "newString", "newText", "content"]
+        .iter()
+        .find_map(|key| raw.get(*key).and_then(Value::as_str))
+        .map(str::to_owned);
+    let Some(new_text) = new else {
+        return Vec::new();
+    };
+    vec![EditPreview {
+        path: path.to_owned(),
+        old_text: old,
+        new_text,
+    }]
 }
 
 /// ACP diff 内容的行数统计（按行的多重集合差计算）。

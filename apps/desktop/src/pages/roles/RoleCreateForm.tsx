@@ -61,6 +61,14 @@ export function RoleCreateForm({ teamId, onCancel, onCreated }: RoleCreateFormPr
     setDraft((previous) => ({ ...previous, [key]: value }));
   };
 
+  /** 把建议写回前缀：函数式 setState，拿到的是建议返回那一刻的前缀与名称。 */
+  const applySuggestedPrefix = (resolvePrefix: (prefix: string, name: string) => string) => {
+    setDraft((previous) => ({
+      ...previous,
+      taskPrefix: resolvePrefix(previous.taskPrefix, previous.name),
+    }));
+  };
+
   const submit = () => {
     setSubmitted(true);
     if (draft.name.trim() === "") {
@@ -86,13 +94,7 @@ export function RoleCreateForm({ teamId, onCancel, onCreated }: RoleCreateFormPr
           update("name", event.target.value);
         }}
         onBlur={() => {
-          suggestPrefix("new", draft.name, (resolvePrefix) => {
-            // 函数式 setState：拿到的是建议返回那一刻的前缀，用户在等待期间手填的值不会被冲掉。
-            setDraft((previous) => ({
-              ...previous,
-              taskPrefix: resolvePrefix(previous.taskPrefix),
-            }));
-          });
+          suggestPrefix.suggest("new", draft.name, applySuggestedPrefix);
         }}
       />
       <InputField
@@ -100,8 +102,16 @@ export function RoleCreateForm({ teamId, onCancel, onCreated }: RoleCreateFormPr
         required
         hint={TASK_PREFIX_HINT}
         value={draft.taskPrefix}
+        onFocus={() => {
+          // 用户开始动前缀输入框：这一行在途的建议作废，迟到的建议不能写进这个框。
+          suggestPrefix.touchPrefix("new");
+        }}
         onChange={(event) => {
-          update("taskPrefix", event.target.value);
+          const value = event.target.value;
+          suggestPrefix.touchPrefix("new");
+          // 清空前缀等于把这一行交回自动填入；填了内容就算用户接管。
+          suggestPrefix.setPrefixManual("new", value.trim() !== "");
+          update("taskPrefix", value);
         }}
       />
       <TextareaField

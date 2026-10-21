@@ -472,4 +472,32 @@ fn k_fld_011_progress_stays_in_run_updates_and_agent_can_only_append_to_the_jour
         "{:?}",
         run.changed_files
     );
+
+    // 6) M3-11 自举复现：Claude Code 的编辑工具只带 rawInput（`file_path` + 末尾片段
+    //    `old_string` + `new_string`），没有 ACP diff 块、没有 locations。
+    //    片段替换后整体仍以现有内容开头 → 规则自动允许，Agent 的进展照常追加。
+    let before_fragment = std::fs::read_to_string(&journal_path).unwrap();
+    let fragment = e.task("按片段记进展 [mock:editjournalfragment]");
+    let run = e.wait_end(&e.ts.start_run(&fragment.id).unwrap().id);
+    assert_eq!(run.status, RunStatus::Succeeded, "{run:#?}");
+    let updates = e.updates(&run.id);
+    let decision = updates.iter().find_map(|u| match &u.body {
+        RunUpdateBody::Permission {
+            tool_call_id,
+            decision: Some(d),
+            ..
+        } if tool_call_id == "mock-editjournalfragment" => Some(d.clone()),
+        _ => None,
+    });
+    let decision = decision.unwrap_or_else(|| panic!("{updates:#?}"));
+    assert_eq!(decision.by, "rule", "{decision:?}");
+    assert!(decision.reason.contains("追加"), "{}", decision.reason);
+    let after_fragment = e.wait_journal(&format!("{} · Mock 进展：已写入过程文件", fragment.key));
+    let added = after_fragment
+        .strip_prefix(&before_fragment)
+        .unwrap_or_else(|| panic!("已有内容不应被改动：{after_fragment}"));
+    assert!(
+        added.contains(&format!("{} · Mock 进展：已写入过程文件", fragment.key)),
+        "{added}"
+    );
 }
