@@ -45,9 +45,26 @@
   background: var(--color-canvas);
 }
 
+/* 禁用态不用 opacity 淡化（淡化的文字只剩约 2.16:1，读不清），
+   改用自带 4.5:1 对比度的实色。 */
 .ui-button:disabled {
-  opacity: 0.5;
   cursor: not-allowed;
+}
+
+.ui-button--primary:disabled {
+  background: var(--color-disabled-brand-surface);
+  color: var(--color-disabled-ink);
+}
+
+.ui-button--neutral:disabled {
+  background: var(--color-disabled-surface);
+  border-color: var(--color-line);
+  color: var(--color-disabled-ink);
+}
+
+.ui-button--subtle:disabled {
+  background: transparent;
+  color: var(--color-disabled-ink);
 }
 
 /* Spinner */
@@ -149,6 +166,28 @@
   gap: 8px;
 }
 
+/* 窄屏：页头标题与操作区上下排，操作按钮占满宽度。 */
+@media (max-width: 767px) {
+  .ui-page-header {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 12px;
+  }
+
+  .ui-page-header__title {
+    font-size: var(--font-size-section-title);
+    line-height: var(--line-height-section-title);
+  }
+
+  .ui-page-header__actions {
+    flex-wrap: wrap;
+  }
+
+  .ui-page-header__actions .ui-button {
+    flex: 1 1 140px;
+  }
+}
+
 /* Field */
 .ui-field {
   display: flex;
@@ -175,8 +214,8 @@
 }
 
 .ui-field__control:disabled {
-  background: var(--color-canvas);
-  color: var(--color-muted);
+  background: var(--color-disabled-surface);
+  color: var(--color-disabled-ink);
   cursor: not-allowed;
 }
 
@@ -345,4 +384,29 @@ textarea.ui-field__control {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
+}
+
+/* 窄屏：弹窗占满宽度，避免被挤成窄条。 */
+@media (max-width: 767px) {
+  .ui-modal__overlay {
+    padding: 0;
+    align-items: flex-end;
+  }
+
+  .ui-modal {
+    width: 100%;
+    max-height: 92vh;
+    padding: 20px 16px;
+    border-radius: var(--radius-panel) var(--radius-panel) 0 0;
+    border-bottom: 0;
+  }
+
+  .ui-modal__title {
+    font-size: var(--font-size-section-title);
+    line-height: var(--line-height-section-title);
+  }
+
+  .ui-modal__actions .ui-button {
+    flex: 1 1 140px;
+  }
 }

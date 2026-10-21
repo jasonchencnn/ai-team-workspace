@@ -16,6 +16,7 @@
   align-items: center;
   gap: 8px;
   min-height: 36px;
+  max-width: 100%;
   padding: 0 12px;
   border: 1px solid var(--color-line);
   border-radius: var(--radius-control);
@@ -28,6 +29,7 @@
 }
 
 .tasks-toolbar__select select {
+  min-width: 0;
   border: 0;
   background: transparent;
   color: var(--color-ink);
@@ -49,6 +51,8 @@
 
 .task-board {
   display: grid;
+  /* 列数由 JS 写进 --board-column-count，窄屏的媒体查询才能改列宽方式。 */
+  grid-template-columns: repeat(var(--board-column-count, 1), minmax(220px, 1fr));
   gap: 16px;
   align-items: start;
   min-width: 0;
@@ -61,6 +65,21 @@
   flex-direction: column;
   gap: 16px;
   min-width: 0;
+}
+
+/* 窄屏：看板列改为按列滑动，每列占满可视宽度，标题不会被挤掉。 */
+@media (max-width: 767px) {
+  .task-board {
+    grid-template-columns: none;
+    grid-auto-flow: column;
+    grid-auto-columns: 100%;
+    scroll-snap-type: x mandatory;
+    gap: 12px;
+  }
+
+  .task-board__column {
+    scroll-snap-align: start;
+  }
 }
 
 .task-board__heading {
@@ -190,8 +209,16 @@
 }
 
 .task-table__link:hover,
-.task-table__link:focus-visible {
+.task-table__link:focus-visible,
+.task-table__title-link:hover,
+.task-table__title-link:focus-visible {
   text-decoration: underline;
+}
+
+/* 标题链接：与整行点击同一目标，但键盘与读屏都能直接到达。 */
+.task-table__title-link {
+  color: var(--color-ink);
+  text-decoration: none;
 }
 
 .task-table th {
@@ -204,7 +231,7 @@
 }
 
 .task-table tbody tr:hover,
-.task-table tbody tr:focus-visible {
+.task-table tbody tr:focus-within {
   background: var(--color-canvas);
 }
 
@@ -232,4 +259,25 @@
 .task-card__review:focus-visible {
   outline: 2px solid var(--color-brand);
   outline-offset: 2px;
+}
+
+/* 窄屏：工具栏控件占满宽度，列表视图的标题允许换行。 */
+@media (max-width: 767px) {
+  .tasks-toolbar__select {
+    width: 100%;
+  }
+
+  .tasks-toolbar__select select {
+    flex: 1;
+  }
+
+  .tasks-toolbar__toggle {
+    flex: 1 1 100%;
+  }
+
+  .task-table__title {
+    max-width: none;
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
 }

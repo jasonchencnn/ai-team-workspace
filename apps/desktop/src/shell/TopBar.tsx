@@ -13,7 +13,7 @@ function folderName(path: string): string {
   return segments.at(-1) ?? path;
 }
 
-export function TopBar() {
+export function TopBar({ navOpen, onToggleNav }: { navOpen: boolean; onToggleNav: () => void }) {
   const { teamId, roleId } = useParams();
   const location = useLocation();
   const [search] = useSearchParams();
@@ -49,6 +49,16 @@ export function TopBar() {
 
   return (
     <div className="topbar">
+      <button
+        type="button"
+        className="drawer-toggle"
+        aria-label={navOpen ? "关闭导航菜单" : "打开导航菜单"}
+        aria-expanded={navOpen}
+        aria-controls="app-sidebar"
+        onClick={onToggleNav}
+      >
+        <span aria-hidden="true">☰</span>
+      </button>
       <div className="topbar__crumbs" role="group" aria-label="当前位置">
         <span>工作空间</span>
         {teamName === null ? null : (

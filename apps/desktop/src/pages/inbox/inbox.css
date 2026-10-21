@@ -95,9 +95,27 @@
 }
 
 .inbox__item-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0 6px;
   color: var(--color-muted);
   font-size: var(--font-size-caption);
   line-height: var(--line-height-caption);
+}
+
+/* 编号与类别分成两段，窄屏下可以把顺序调成「编号 · 类别」（对照 Figma 6-405）。 */
+.inbox__item-meta-key {
+  order: 2;
+}
+
+.inbox__item-meta-key::before {
+  content: " · ";
+}
+
+.inbox__item-meta-label {
+  order: 1;
+  min-width: 0;
 }
 
 .inbox__item-impact {
@@ -178,6 +196,63 @@
 
 .inbox__detail-empty {
   color: var(--color-muted);
+}
+
+/* 窄屏版式（对照 Figma 6-405）：单列卡片，编号在前类别在后，操作按钮占满宽度。 */
+@media (max-width: 767px) {
+  .inbox__item {
+    padding: 14px 16px;
+  }
+
+  .inbox__item-title {
+    font-size: 16px;
+    line-height: 24px;
+  }
+
+  /* 窄屏下把编号放到类别前面。 */
+  .inbox__item-meta-key {
+    order: 1;
+  }
+
+  .inbox__item-meta-key::before {
+    content: none;
+  }
+
+  .inbox__item-meta-key::after {
+    content: " ·";
+  }
+
+  .inbox__item-meta-label {
+    order: 2;
+  }
+
+  .inbox__item-actions {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .inbox__item-actions .ui-button {
+    width: 100%;
+  }
+
+  /* 详情面板在窄屏下不再吸顶，跟在列表后面正常排。 */
+  .inbox__detail {
+    position: static;
+  }
+
+  .inbox__detail-title {
+    font-size: var(--font-size-section-title);
+    line-height: var(--line-height-section-title);
+  }
+
+  .inbox__detail-actions {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .inbox__detail-actions .ui-button {
+    width: 100%;
+  }
 }
 
 /* ---------------------------------------------------------------- 记录决策 */

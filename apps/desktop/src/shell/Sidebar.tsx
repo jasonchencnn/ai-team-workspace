@@ -55,14 +55,14 @@ function DisabledItem({ id, label, note }: { id: string; label: string; note: st
   );
 }
 
-export function Sidebar() {
+export function Sidebar({ open, onNavigate }: { open: boolean; onNavigate: () => void }) {
   const { teamId } = useParams();
   const location = useLocation();
   // 待我处理的总数（与待我处理页共用同一份缓存）。
   const inboxCount = useInboxCount(teamId ?? "");
 
   return (
-    <aside className="sidebar">
+    <aside className={open ? "sidebar sidebar--open" : "sidebar"} id="app-sidebar">
       <div className="sidebar__brand">
         <span aria-hidden="true">◈</span>
         <span>Teamspace</span>
@@ -96,6 +96,7 @@ export function Sidebar() {
               key={entry.label}
               to={`/teams/${teamId}${entry.to}`}
               end={entry.end ?? false}
+              onClick={onNavigate}
               className={({ isActive }) =>
                 isActive || (entry.alsoMatch?.(location.pathname) ?? false)
                   ? "nav-item nav-item--active"

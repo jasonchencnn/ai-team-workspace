@@ -184,8 +184,10 @@ function InboxGroupBlock({ group, selectedId, onSelect, onJump, onDecide }: Inbo
             >
               <span className="inbox__item-title">{item.title}</span>
               <span className="inbox__item-meta">
-                {item.categoryLabel}
-                {item.taskKey === null ? "" : ` · ${item.taskKey}`}
+                {item.taskKey === null ? null : (
+                  <span className="inbox__item-meta-key">{item.taskKey}</span>
+                )}
+                <span className="inbox__item-meta-label">{item.categoryLabel}</span>
               </span>
               <span className="inbox__item-impact">{item.impact}</span>
               <time className="inbox__item-time" dateTime={item.occurredAt}>

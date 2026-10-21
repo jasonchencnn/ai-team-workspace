@@ -48,6 +48,11 @@ describe("design token contract", () => {
     expect(cssToken("color-muted")).toBe(color.muted.toLowerCase());
     expect(cssToken("color-line")).toBe(color.line.toLowerCase());
     expect(cssToken("color-brand")).toBe(color.brand.toLowerCase());
+    expect(cssToken("color-disabled-surface")).toBe(color.disabled.surface.toLowerCase());
+    expect(cssToken("color-disabled-ink")).toBe(color.disabled.ink.toLowerCase());
+    expect(cssToken("color-disabled-brand-surface")).toBe(
+      color.disabled.brandSurface.toLowerCase(),
+    );
     expect(cssToken("font-family-sans")).toBe(typography.fontFamily);
     expect(cssToken("radius-control")).toBe(radius.control);
     expect(cssToken("radius-panel")).toBe(radius.panel);
@@ -67,6 +72,14 @@ describe("design token contract", () => {
     expect(contrast(color.status.warning, color.status.warningSurface)).toBeGreaterThanOrEqual(4.5);
     expect(contrast(color.status.success, color.status.successSurface)).toBeGreaterThanOrEqual(4.5);
     expect(contrast(color.status.danger, color.status.dangerSurface)).toBeGreaterThanOrEqual(4.5);
+  });
+
+  it("keeps disabled control text readable instead of fading it out", () => {
+    // 禁用态用实色而不是 opacity：淡化的主按钮只有约 2.16:1，读不清。
+    expect(contrast(color.disabled.ink, color.disabled.surface)).toBeGreaterThanOrEqual(4.5);
+    expect(contrast(color.disabled.ink, color.canvas)).toBeGreaterThanOrEqual(4.5);
+    expect(contrast(color.disabled.ink, color.surface)).toBeGreaterThanOrEqual(4.5);
+    expect(contrast(color.disabled.ink, color.disabled.brandSurface)).toBeGreaterThanOrEqual(4.5);
   });
 
   it("uses the required CJK font fallback chain", () => {

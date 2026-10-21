@@ -4,6 +4,13 @@
   height: 100%;
 }
 
+/* 窄屏：侧边栏收成抽屉，由顶栏的菜单按钮开合。 */
+@media (max-width: 767px) {
+  .shell {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
 /* Sidebar */
 .sidebar {
   display: flex;
@@ -174,6 +181,16 @@
 .topbar__crumbs {
   display: flex;
   gap: 8px;
+  min-width: 0;
+  overflow: hidden;
+}
+
+/* 面包屑每段不换行也不压扁，否则窄屏下会一个字一行。 */
+.topbar__crumbs > span {
+  flex: none;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .topbar__branch {
@@ -181,10 +198,17 @@
   align-items: center;
   gap: 8px;
   max-width: 50%;
+  min-width: 0;
   margin: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.topbar__branch > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .topbar__branch-label {
@@ -214,4 +238,73 @@
   min-width: 0;
   max-width: var(--content-max-width, none);
   padding: 32px var(--space-content);
+}
+
+/* ---------------------------------------------------------------- 窄屏抽屉 */
+
+.drawer-toggle {
+  display: none;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  flex: none;
+  padding: 0;
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius-control);
+  background: var(--color-surface);
+  color: var(--color-ink);
+  cursor: pointer;
+}
+
+.drawer-toggle:focus-visible {
+  outline: 2px solid var(--color-brand);
+  outline-offset: 2px;
+}
+
+.drawer-backdrop {
+  display: none;
+  position: fixed;
+  inset: 0;
+  z-index: 30;
+  background: rgb(32 36 45 / 45%);
+}
+
+@media (max-width: 767px) {
+  .drawer-toggle {
+    display: inline-flex;
+  }
+
+  .sidebar {
+    position: fixed;
+    z-index: 40;
+    top: 0;
+    bottom: 0;
+    left: 0;
+    width: min(280px, 82vw);
+    /* 收起时移出屏幕并隐藏：既不占版面，也不留在 Tab 顺序与读屏树里。 */
+    transform: translateX(-100%);
+    visibility: hidden;
+    transition:
+      transform 0.2s ease,
+      visibility 0s linear 0.2s;
+    box-shadow: 0 0 24px rgb(32 36 45 / 18%);
+  }
+
+  .sidebar--open {
+    transform: translateX(0);
+    visibility: visible;
+    transition:
+      transform 0.2s ease,
+      visibility 0s linear 0s;
+  }
+
+  .drawer-backdrop--open {
+    display: block;
+  }
+
+  /* 抽屉里的导航项点击后关掉抽屉，否则遮罩会挡住内容。 */
+  .sidebar .nav-item {
+    min-height: 44px;
+  }
 }

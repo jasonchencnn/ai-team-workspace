@@ -6,6 +6,16 @@ export const color = {
   muted: "#626978",
   line: "#E1E5EC",
   brand: "#465BD8",
+  /**
+   * 禁用态的底色与文字色。禁用控件仍要能被读清，所以这里不用 opacity 淡化，
+   * 而是给一组自带 4.5:1 对比度的实色（见 tokens.test.ts 的对比度断言）。
+   */
+  disabled: {
+    surface: "#E9ECF1",
+    ink: "#525A6B",
+    /** 禁用态的品牌底色（主按钮禁用时用），同样满足 4.5:1。 */
+    brandSurface: "#DDE2F7",
+  },
   status: {
     info: "#3653C7",
     infoSurface: "#EEF1FF",
