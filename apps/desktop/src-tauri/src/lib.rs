@@ -2,7 +2,10 @@
 
 mod commands;
 
+use std::sync::Arc;
+
 use tauri::{Emitter, Manager};
+use teamspace_core::control::ControlServer;
 use teamspace_core::system_probe::LocalProbe;
 use teamspace_core::{HostConfig, RUN_EVENT, Teamspace};
 
@@ -74,6 +77,9 @@ register_commands!(
     pick_workspace_folder,
 );
 
+/// 本机控制 socket 的文件名（放在应用数据目录里）。
+const CONTROL_SOCKET_NAME: &str = "teamspace-control.sock";
+
 /// Starts the native host.
 pub fn run() -> tauri::Result<()> {
     tauri::Builder::default()
@@ -85,22 +91,31 @@ pub fn run() -> tauri::Result<()> {
             let db_path = dir.join("teamspace.db");
             // 内置 Mock Agent 由本程序以 `--teamspace-mock-agent` 参数启动（见 main.rs）。
             let config = HostConfig::with_current_exe_mock_agent();
-            let teamspace = Teamspace::open_with(&db_path, Box::new(LocalProbe::new()), config)
-                .map_err(|err| format!("无法打开数据库 {}：{err}", db_path.display()))?;
+            let teamspace = Arc::new(
+                Teamspace::open_with(&db_path, Box::new(LocalProbe::new()), config)
+                    .map_err(|err| format!("无法打开数据库 {}：{err}", db_path.display()))?,
+            );
             // 执行事件（状态变化、新进度、权限请求）推送给前端。
             let handle = app.handle().clone();
             teamspace.set_run_listener(move |event| {
                 let _ = handle.emit(RUN_EVENT, event);
             });
-            app.manage(teamspace);
+            // 本机控制 socket：外部会话（Leader）经它操作 Teamspace，权限边界在内核里把守。
+            let socket_path = dir.join(CONTROL_SOCKET_NAME);
+            let control = teamspace_core::control::serve(Arc::clone(&teamspace), &socket_path)
+                .map_err(|err| format!("无法监听控制 socket {}：{err}", socket_path.display()))?;
+            app.manage(Arc::clone(&teamspace));
+            app.manage(control);
             Ok(())
         })
         .invoke_handler(handler())
         .build(tauri::generate_context!())?
         .run(|app, event| {
-            // 退出时终止执行中的 Agent 进程，执行标记为已中断（下次打开可续接或重新执行）。
+            // 退出时终止执行中的 Agent 进程，执行标记为已中断（下次打开可续接或重新执行），
+            // 并停止控制 socket（关闭监听、删除 socket 文件）。
             if let tauri::RunEvent::Exit = event {
-                app.state::<Teamspace>().shutdown();
+                app.state::<Arc<Teamspace>>().shutdown();
+                app.state::<ControlServer>().shutdown();
             }
         });
     Ok(())
