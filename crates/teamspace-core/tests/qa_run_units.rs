@@ -385,8 +385,13 @@ fn run_evt_002_agent_message_chunks_merge_into_one_growing_update() {
     let run = e.wait_end(&run.id);
     assert_eq!(run.status, RunStatus::Succeeded, "{run:#?}");
 
-    // 事件流：同一条进度被反复更新，文字一次比一次长
-    let events = e.events.lock().unwrap().clone();
+    // 事件流：同一条进度被反复更新，文字一次比一次长。
+    // 事件异步推送，等最终的 run_changed 到齐再取快照。
+    let events = e.wait_event("run_changed(succeeded)", |events| {
+        events.iter().any(|ev| {
+            matches!(ev, RunEvent::RunChanged { run: r } if r.id == run.id && r.status == RunStatus::Succeeded)
+        })
+    });
     let updates: Vec<&RunUpdate> = events
         .iter()
         .filter_map(|ev| match ev {

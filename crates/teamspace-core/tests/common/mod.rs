@@ -93,7 +93,11 @@ pub fn env_with(git_repo: bool, probe: Box<dyn SystemProbe>) -> Env {
     ts.bind_role_harness(&role.id, &harness.id).unwrap();
     let events = Arc::new(Mutex::new(Vec::new()));
     let sink = Arc::clone(&events);
-    ts.set_run_listener(move |e| sink.lock().unwrap().push(e.clone()));
+    ts.set_run_listener(move |e| {
+        sink.lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .push(e.clone())
+    });
     Env {
         ws: ws.canonicalize().unwrap(),
         dir,
@@ -102,6 +106,32 @@ pub fn env_with(git_repo: bool, probe: Box<dyn SystemProbe>) -> Env {
         role,
         harness,
         events,
+    }
+}
+
+/// 轮询等待满足条件的事件（事件由执行线程推送，最多等 30 秒），返回命中时的事件列表副本。
+///
+/// 事件是异步推送的：执行状态先写进数据库，岗位文件夹同步和事件推送才陆续发生，断言前必须等。
+/// 返回副本而不是在锁内断言：不在持锁期间 panic，避免毒化互斥锁。
+pub fn wait_event(
+    events: &Arc<Mutex<Vec<RunEvent>>>,
+    what: &str,
+    done: impl Fn(&[RunEvent]) -> bool,
+) -> Vec<RunEvent> {
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        let snapshot = events
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone();
+        if done(&snapshot) {
+            return snapshot;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "timed out waiting for event: {what}"
+        );
+        std::thread::sleep(Duration::from_millis(20));
     }
 }
 
@@ -153,6 +183,13 @@ impl Env {
             );
             std::thread::sleep(Duration::from_millis(30));
         }
+    }
+
+    /// 等到满足条件的事件出现（最多等 30 秒），返回当时的事件列表副本。
+    ///
+    /// 事件是异步推送的：执行结束后最终的 `run_changed` 才到，此前断言事件会偶发失败。
+    pub fn wait_event(&self, what: &str, done: impl Fn(&[RunEvent]) -> bool) -> Vec<RunEvent> {
+        wait_event(&self.events, what, done)
     }
 
     pub fn wait_end(&self, run_id: &str) -> Run {

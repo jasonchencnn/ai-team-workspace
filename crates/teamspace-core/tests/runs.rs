@@ -1,6 +1,8 @@
 //! 执行引擎的端到端测试：真实子进程（cargo 构建的 `teamspace-mock-agent`）、真实 Git、临时目录。
 //! 不调用任何真实 Agent。
 
+mod common;
+
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
@@ -92,7 +94,11 @@ fn env(git_repo: bool) -> Env {
     ts.bind_role_harness(&role.id, &harness.id).unwrap();
     let events = Arc::new(Mutex::new(Vec::new()));
     let sink = Arc::clone(&events);
-    ts.set_run_listener(move |e| sink.lock().unwrap().push(e.clone()));
+    ts.set_run_listener(move |e| {
+        sink.lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .push(e.clone())
+    });
     Env {
         dir,
         ws: ws.canonicalize().unwrap(),
@@ -181,6 +187,13 @@ impl Env {
             );
             std::thread::sleep(Duration::from_millis(30));
         }
+    }
+
+    /// 等到满足条件的事件出现（最多等 30 秒），返回当时的事件列表副本。
+    ///
+    /// 事件是异步推送的：执行结束后最终的 `run_changed` 才到，此前断言事件会偶发失败。
+    fn wait_event(&self, what: &str, done: impl Fn(&[RunEvent]) -> bool) -> Vec<RunEvent> {
+        common::wait_event(&self.events, what, done)
     }
 }
 
@@ -348,11 +361,13 @@ fn plain_folder_run_succeeds_in_place_and_writes_journal() {
     );
     assert!(journal.contains("执行中 → 待验收"), "{journal}");
 
-    // 事件：状态变化、进度、无权限请求。
-    let events = e.events.lock().unwrap();
-    assert!(events.iter().any(
-        |ev| matches!(ev, RunEvent::RunChanged { run: r } if r.status == RunStatus::Succeeded)
-    ));
+    // 事件：状态变化、进度、无权限请求。事件异步推送（最终的 run_changed 在岗位文件夹同步之后
+    // 才到），断言前先等它出现；拿到的是事件列表副本，不在持锁期间断言。
+    let events = e.wait_event("run_changed(succeeded)", |events| {
+        events.iter().any(|ev| {
+            matches!(ev, RunEvent::RunChanged { run: r } if r.id == run.id && r.status == RunStatus::Succeeded)
+        })
+    });
     assert!(
         events
             .iter()
@@ -424,10 +439,14 @@ fn permission_needing_human_waits_and_resumes_on_decision() {
     assert_eq!(prompt.command.as_deref(), Some("echo hello"));
     assert!(prompt.reason.contains("执行命令"), "{}", prompt.reason);
     assert_eq!(prompt.options.len(), 3);
-    assert!(e.events.lock().unwrap().iter().any(|ev| matches!(
-        ev,
-        RunEvent::PermissionRequested { prompt: p, .. } if p.request_id == prompt.request_id
-    )));
+    e.wait_event("permission_requested", |events| {
+        events.iter().any(|ev| {
+            matches!(
+                ev,
+                RunEvent::PermissionRequested { prompt: p, .. } if p.request_id == prompt.request_id
+            )
+        })
+    });
     // 人工流转被拒绝。
     let err =
         e.ts.change_task_status(ChangeTaskStatusInput {

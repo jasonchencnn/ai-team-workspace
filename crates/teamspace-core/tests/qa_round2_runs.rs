@@ -8,6 +8,8 @@
 
 #![cfg(unix)]
 
+mod common;
+
 use std::os::unix::fs::{PermissionsExt, symlink};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -367,7 +369,11 @@ fn env_at(ws_rel: &str, repo_rel: Option<&str>, kind: Kind) -> Env {
     ts.bind_role_harness(&role.id, &mock.id).unwrap();
     let events = Arc::new(Mutex::new(Vec::new()));
     let sink = Arc::clone(&events);
-    ts.set_run_listener(move |e| sink.lock().unwrap().push(e.clone()));
+    ts.set_run_listener(move |e| {
+        sink.lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .push(e.clone())
+    });
     Env {
         ws: ws.canonicalize().unwrap(),
         dir,
@@ -443,6 +449,13 @@ impl Env {
 
     fn wait_end(&self, run_id: &str) -> Run {
         self.wait(run_id, "run end", |r| !r.status.is_active())
+    }
+
+    /// 等到满足条件的事件出现（最多等 30 秒），返回当时的事件列表副本。
+    ///
+    /// 事件是异步推送的：执行结束后最终的 `run_changed` 才到，此前断言事件会偶发失败。
+    fn wait_event(&self, what: &str, done: impl Fn(&[RunEvent]) -> bool) -> Vec<RunEvent> {
+        common::wait_event(&self.events, what, done)
     }
 
     fn task_of(&self, id: &str) -> Task {
@@ -1650,24 +1663,20 @@ fn k_perm_007_multiple_requests_and_invalid_responses() {
     e.wait(&run.id, "waiting_permission", |r| {
         r.status == RunStatus::WaitingPermission
     });
-    let deadline = Instant::now() + Duration::from_secs(20);
-    let prompts = loop {
-        let list: Vec<PermissionPrompt> = e
-            .events
-            .lock()
-            .unwrap()
-            .iter()
-            .filter_map(|ev| match ev {
-                RunEvent::PermissionRequested { prompt, .. } => Some(prompt.clone()),
-                _ => None,
-            })
-            .collect();
-        if list.len() >= 2 {
-            break list;
-        }
-        assert!(Instant::now() < deadline, "应收到两个权限请求事件");
-        std::thread::sleep(Duration::from_millis(30));
-    };
+    let prompts: Vec<PermissionPrompt> = e
+        .wait_event("两个权限请求事件", |events| {
+            events
+                .iter()
+                .filter(|ev| matches!(ev, RunEvent::PermissionRequested { .. }))
+                .count()
+                >= 2
+        })
+        .iter()
+        .filter_map(|ev| match ev {
+            RunEvent::PermissionRequested { prompt, .. } => Some(prompt.clone()),
+            _ => None,
+        })
+        .collect();
     let respond = |request_id: &str, option: &str| {
         e.ts.respond_permission(RespondPermissionInput {
             run_id: run.id.clone(),

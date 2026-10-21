@@ -38,10 +38,15 @@ fn k_perm_002_outside_write_waits_for_human_then_reject_blocks_and_allow_writes(
         "{:?}",
         prompt.paths
     );
-    assert!(e.events.lock().unwrap().iter().any(|ev| matches!(
-        ev,
-        RunEvent::PermissionRequested { prompt: p, .. } if p.request_id == prompt.request_id
-    )));
+    // 权限请求事件是状态写库之后才推的，等它出现再继续。
+    e.wait_event("permission_requested", |events| {
+        events.iter().any(|ev| {
+            matches!(
+                ev,
+                RunEvent::PermissionRequested { prompt: p, .. } if p.request_id == prompt.request_id
+            )
+        })
+    });
     assert!(!out.exists());
     e.respond(&run, &prompt, "reject");
     let run = e.wait_end(&run.id);
