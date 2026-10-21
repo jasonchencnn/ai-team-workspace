@@ -47,6 +47,9 @@ pub const TAURI_ONLY_COMMANDS: &[&str] = &[
     // 打开系统文件夹对话框；用户取消返回 `null`，否则返回所选目录的工作区信息
     // （等同于对所选目录调用 `inspect_workspace`）。返回类型 `WorkspaceInfo | null`。
     "pick_workspace_folder",
+    // 打开系统文件夹对话框选择备份存放目录；用户取消返回 `null`。
+    // 返回类型 `string | null`。
+    "pick_backup_dest_dir",
 ];
 
 /// [`Teamspace`] 对外的全部命令名，顺序同下方方法定义。
@@ -119,6 +122,9 @@ pub const COMMANDS: &[&str] = &[
     "list_decisions",
     "get_notification_settings",
     "update_notification_settings",
+    "export_backup",
+    "inspect_backup",
+    "restore_backup",
 ];
 
 /// 执行事件的 Tauri 事件名，载荷为 [`RunEvent`]（见 [`Teamspace::set_run_listener`]）。
@@ -189,6 +195,8 @@ pub struct Core {
     folder_io: Mutex<()>,
     /// 应用数据目录（数据库所在目录），worktree 建在其下的 `worktrees/`。
     pub(crate) data_dir: PathBuf,
+    /// 数据库文件路径（恢复备份时用它覆盖主库文件）。
+    pub(crate) db_path: PathBuf,
     /// 执行引擎状态。
     pub(crate) runs: crate::run::Runs,
     /// 消息投递引擎状态（M5-01）。
@@ -284,6 +292,7 @@ impl Teamspace {
             config,
             folder_io: Mutex::new(()),
             data_dir,
+            db_path: db_path.to_path_buf(),
             runs: crate::run::Runs::default(),
             deliveries: crate::delivery::Deliveries::default(),
             review_git: RwLock::new(Arc::new(review_seam::RealGit)),

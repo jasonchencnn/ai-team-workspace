@@ -217,6 +217,7 @@ test("FILE-009 侧边栏「共享文件」是可用入口并高亮", async ({ pa
     "活动与审计",
     "岗位通信",
     "待我处理",
+    "设置",
   ]);
   await page.locator(".sidebar__nav a", { hasText: "共享文件" }).click();
   await expect(page.locator(".sidebar__nav .nav-item--active")).toHaveText("共享文件");

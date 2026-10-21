@@ -288,6 +288,11 @@ fn dispatch(
                 Err(_) => Ok(Value::Null),
             }
         }
+        // 模拟用户在系统对话框里选了 E2E_BACKUP_DIR 指定的目录。
+        "pick_backup_dest_dir" => match std::env::var("E2E_BACKUP_DIR") {
+            Ok(path) => Ok(json!(path)),
+            Err(_) => Ok(Value::Null),
+        },
         // 测试专用命令：等同应用退出再启动——先停掉当前实例（终止所有 Agent 进程、
         // 把进行中的执行标记为已中断），再用同一个数据库打开一个新实例。
         // 真实重启会重新启动消息投递线程，桥接要还原这一点：只停不启的话，

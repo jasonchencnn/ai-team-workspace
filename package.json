@@ -16,6 +16,7 @@
     "fmt": "prettier --write package.json eslint.config.mjs .prettierrc.json tsconfig.base.json apps packages --ignore-unknown && cargo fmt --all",
     "fmt:check": "prettier --check package.json eslint.config.mjs .prettierrc.json tsconfig.base.json apps packages --ignore-unknown && cargo fmt --all -- --check",
     "lint": "eslint . && cargo clippy --workspace --all-targets --all-features --locked -- -D warnings",
+    "package": "pnpm --dir apps/desktop exec tauri build",
     "test": "pnpm --recursive --if-present run test && cargo test --workspace --locked",
     "typecheck": "pnpm --recursive --if-present run typecheck"
   },

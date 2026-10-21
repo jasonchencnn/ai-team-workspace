@@ -91,6 +91,10 @@ register_commands!(
     list_decisions,
     get_notification_settings,
     update_notification_settings,
+    export_backup,
+    inspect_backup,
+    restore_backup,
+    pick_backup_dest_dir,
 );
 
 /// 本机控制 socket 的文件名（放在应用数据目录下的 `control/` 子目录里）。

@@ -513,3 +513,51 @@ pub fn update_notification_settings(
 ) -> Result<NotificationSettings, Error> {
     ts.update_notification_settings(input)
 }
+
+// ---------------------------------------------------------------- 数据备份
+
+/// 导出数据备份：数据库一致性快照 + 各团队工作空间的岗位文件夹副本 + 清单。
+///
+/// 备份与恢复都只由 Human 在应用里发起（Leader 经控制 socket 调用会被内核拒绝）。
+#[tauri::command(async)]
+pub fn export_backup(
+    app: AppHandle,
+    ts: State<'_, Arc<Teamspace>>,
+    input: ExportBackupInput,
+) -> Result<BackupExportResult, Error> {
+    let mut input = input;
+    if input.app_version.is_none() {
+        input.app_version = Some(app.package_info().version.to_string());
+    }
+    ts.export_backup(input)
+}
+
+/// 查看备份摘要（恢复前给 Human 看的那一份）。
+#[tauri::command(async)]
+pub fn inspect_backup(
+    ts: State<'_, Arc<Teamspace>>,
+    input: InspectBackupInput,
+) -> Result<BackupSummary, Error> {
+    ts.inspect_backup(input)
+}
+
+/// 从备份恢复：恢复前自动导出一份「恢复前备份」，然后恢复数据库与岗位文件夹。
+#[tauri::command(async)]
+pub fn restore_backup(
+    ts: State<'_, Arc<Teamspace>>,
+    input: RestoreBackupInput,
+) -> Result<BackupRestoreResult, Error> {
+    ts.restore_backup(input)
+}
+
+/// 打开文件夹对话框选择备份存放目录；用户取消时为 null。
+#[tauri::command(async)]
+pub fn pick_backup_dest_dir(app: AppHandle) -> Result<Option<String>, Error> {
+    let Some(picked) = app.dialog().file().blocking_pick_folder() else {
+        return Ok(None);
+    };
+    let path = picked
+        .into_path()
+        .map_err(|err| Error::invalid(format!("无法读取所选目录：{err}")))?;
+    Ok(Some(path.to_string_lossy().into_owned()))
+}

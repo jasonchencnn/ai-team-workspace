@@ -4,6 +4,11 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 
+import type { BackupExportResult } from "../bindings/BackupExportResult.js";
+import type { BackupRestoreResult } from "../bindings/BackupRestoreResult.js";
+import type { BackupSummary } from "../bindings/BackupSummary.js";
+import type { ExportBackupInput } from "../bindings/ExportBackupInput.js";
+import type { InspectBackupInput } from "../bindings/InspectBackupInput.js";
 import type { AcpPresetInfo } from "../bindings/AcpPresetInfo.js";
 import type { ActiveRunSummary } from "../bindings/ActiveRunSummary.js";
 import type { ApproveReviewInput } from "../bindings/ApproveReviewInput.js";
@@ -48,6 +53,7 @@ import type { RespondPermissionInput } from "../bindings/RespondPermissionInput.
 import type { ReviewFilePatch } from "../bindings/ReviewFilePatch.js";
 import type { ReviewView } from "../bindings/ReviewView.js";
 import type { Role } from "../bindings/Role.js";
+import type { RestoreBackupInput } from "../bindings/RestoreBackupInput.js";
 import type { RoleFolder } from "../bindings/RoleFolder.js";
 import type { RoleMessage } from "../bindings/RoleMessage.js";
 import type { RoleTemplate } from "../bindings/RoleTemplate.js";
@@ -381,3 +387,20 @@ export const getNotificationSettings = (input: GetNotificationSettingsInput) =>
 /** 修改通知订阅设置，返回修改后的设置。 */
 export const updateNotificationSettings = (input: UpdateNotificationSettingsInput) =>
   invoke<NotificationSettings>("update_notification_settings", { input });
+
+// ---------------------------------------------------------------- 数据备份
+
+/** 导出数据备份：数据库一致性快照 + 各团队工作空间的岗位文件夹副本 + 清单。 */
+export const exportBackup = (input: ExportBackupInput) =>
+  invoke<BackupExportResult>("export_backup", { input });
+
+/** 查看备份摘要：恢复前给 Human 看的那一份（清单里的版本、团队与文件清单）。 */
+export const inspectBackup = (input: InspectBackupInput) =>
+  invoke<BackupSummary>("inspect_backup", { input });
+
+/** 从备份恢复：恢复前自动导出一份「恢复前备份」，然后恢复数据库与岗位文件夹。 */
+export const restoreBackup = (input: RestoreBackupInput) =>
+  invoke<BackupRestoreResult>("restore_backup", { input });
+
+/** 打开文件夹对话框选择备份存放目录；用户取消时为 null。 */
+export const pickBackupDestDir = () => invoke<string | null>("pick_backup_dest_dir");
