@@ -13,7 +13,7 @@ use serde_json::{Value, json};
 
 use crate::api::{COMMANDS, Teamspace};
 use crate::error::{Error, ErrorPayload};
-use crate::model::{Actor, EventKind};
+use crate::model::{Actor, EventKind, RebindMode};
 use crate::service::event::NewEvent;
 use crate::service::{event, harness, role, run as run_svc, task, team};
 
@@ -115,12 +115,21 @@ pub fn dispatch(
             &arg::<String>(args, "harnessId")?,
         )),
         "unbind_role_harness" => out(ts.unbind_role_harness(&arg::<String>(args, "roleId")?)),
+        "rebind_role" => out(ts.rebind_role(
+            &arg::<String>(args, "roleId")?,
+            &arg::<String>(args, "harnessInstanceId")?,
+            arg::<RebindMode>(args, "mode")?,
+        )),
+        "cancel_pending_rebind" => out(ts.cancel_pending_rebind(&arg::<String>(args, "roleId")?)),
         "get_role_folder" => out(ts.get_role_folder(
             &arg::<String>(args, "roleId")?,
             arg::<Option<u32>>(args, "limit")?,
         )),
         "reveal_role_folder" => out(ts.reveal_role_folder(&arg::<String>(args, "roleId")?)),
         "get_role_workbench" => out(ts.get_role_workbench(&arg::<String>(args, "roleId")?)),
+        "get_role_handoff_preview" => {
+            out(ts.get_role_handoff_preview(&arg::<String>(args, "roleId")?))
+        }
         "open_role_path" => out(ts.open_role_path(
             &arg::<String>(args, "roleId")?,
             arg::<Option<String>>(args, "relativePath")?.as_deref(),
@@ -243,7 +252,10 @@ fn operation_label(cmd: &str) -> String {
         "archive_role" => "归档岗位",
         "bind_role_harness" => "换绑岗位的 Harness",
         "unbind_role_harness" => "解绑岗位的 Harness",
+        "rebind_role" => "更换岗位的 Harness",
+        "cancel_pending_rebind" => "撤销待生效换绑",
         "reveal_role_folder" => "在文件管理器中显示岗位文件夹",
+        "get_role_handoff_preview" => "预览岗位启动包",
         "open_role_path" => "打开岗位文件或目录",
         "list_acp_presets" => "读取 ACP 预设",
         "create_harness" => "注册 Harness",
@@ -406,6 +418,8 @@ mod tests {
             "archive_harness",
             "bind_role_harness",
             "unbind_role_harness",
+            "rebind_role",
+            "cancel_pending_rebind",
             "respond_permission",
             "approve_review",
             "resolve_merge_manually",
@@ -567,6 +581,24 @@ mod tests {
         )
         .unwrap();
         assert_eq!(team["name"], "人类创建");
+    }
+
+    /// 界面与桥接（Human）可以预览岗位启动包。
+    #[test]
+    fn human_can_preview_the_role_handoff() {
+        let f = plain_fixture();
+        let team = f.team("团队");
+        let role = f.role(&team.id, "role_frontend");
+        let harness = f.harness(&team.id, "Mock", crate::model::AcpPreset::Mock);
+        f.ts.bind_role_harness(&role.id, &harness.id).unwrap();
+        let preview = dispatch(
+            &f.ts,
+            Caller::Human,
+            "get_role_handoff_preview",
+            &json!({ "roleId": role.id }),
+        )
+        .unwrap();
+        assert!(preview.as_str().unwrap().contains("岗位交接"), "{preview}");
     }
 
     /// Leader 不能把任务置为已完成：被拒绝并留痕。

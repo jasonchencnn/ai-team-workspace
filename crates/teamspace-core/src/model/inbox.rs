@@ -27,17 +27,20 @@ pub enum NotificationCategory {
     MessageAction,
     /// 权限请求待答复。
     Permission,
+    /// 岗位换绑（待生效、已生效或已撤销）。
+    RoleRebind,
 }
 
 impl NotificationCategory {
     /// 全部类别（顺序同界面分组顺序）。
-    pub const ALL: [NotificationCategory; 6] = [
+    pub const ALL: [NotificationCategory; 7] = [
         Self::TaskReview,
         Self::TaskFailed,
         Self::TaskBlocked,
         Self::MessageReplied,
         Self::MessageAction,
         Self::Permission,
+        Self::RoleRebind,
     ];
 
     /// 界面显示名。
@@ -49,6 +52,7 @@ impl NotificationCategory {
             Self::MessageReplied => "消息已回复",
             Self::MessageAction => "消息需要处理",
             Self::Permission => "权限请求",
+            Self::RoleRebind => "岗位换绑",
         }
     }
 }
@@ -501,5 +505,77 @@ pub(crate) fn message_spec(message: &Message, category: NotificationCategory) ->
         run_id: None,
         role_id: Some(message.to_role_id.clone()),
         occurred_at: Some(message.created_at.clone()),
+    }
+}
+
+/// 换绑待生效的通知素材。
+pub(crate) fn rebind_requested_spec(
+    team_id: &str,
+    role_id: &str,
+    role_name: &str,
+    harness_name: &str,
+    active_run_id: Option<String>,
+) -> NotificationSpec {
+    NotificationSpec {
+        team_id: team_id.to_owned(),
+        category: NotificationCategory::RoleRebind,
+        title: format!("岗位「{role_name}」换绑待生效"),
+        body: format!("当前执行结束后切换到 Harness「{harness_name}」"),
+        task_id: None,
+        task_key: None,
+        message_id: None,
+        thread_id: None,
+        run_id: active_run_id,
+        role_id: Some(role_id.to_owned()),
+        occurred_at: None,
+    }
+}
+
+/// 换绑生效的通知素材。
+pub(crate) fn rebind_applied_spec(
+    team_id: &str,
+    role_id: &str,
+    role_name: &str,
+    previous_harness_name: Option<&str>,
+    harness_name: &str,
+) -> NotificationSpec {
+    let body = match previous_harness_name {
+        Some(previous) => format!("已从 Harness「{previous}」切换到 Harness「{harness_name}」"),
+        None => format!("已绑定 Harness「{harness_name}」"),
+    };
+    NotificationSpec {
+        team_id: team_id.to_owned(),
+        category: NotificationCategory::RoleRebind,
+        title: format!("岗位「{role_name}」已换绑"),
+        body,
+        task_id: None,
+        task_key: None,
+        message_id: None,
+        thread_id: None,
+        run_id: None,
+        role_id: Some(role_id.to_owned()),
+        occurred_at: None,
+    }
+}
+
+/// 换绑已撤销的通知素材。
+pub(crate) fn rebind_cancelled_spec(
+    team_id: &str,
+    role_id: &str,
+    role_name: &str,
+    harness_name: &str,
+) -> NotificationSpec {
+    NotificationSpec {
+        team_id: team_id.to_owned(),
+        category: NotificationCategory::RoleRebind,
+        title: format!("岗位「{role_name}」换绑已撤销"),
+        body: format!("不再切换到 Harness「{harness_name}」，当前绑定保持不变"),
+        task_id: None,
+        task_key: None,
+        message_id: None,
+        thread_id: None,
+        run_id: None,
+        role_id: Some(role_id.to_owned()),
+        occurred_at: None,
     }
 }

@@ -140,6 +140,10 @@ pub struct Message {
     pub delivered_at: Option<String>,
     /// 写回回复的时间。
     pub replied_at: Option<String>,
+    /// 入队时接收岗位绑定的 Harness 实例 id（快照，仅留痕）。
+    ///
+    /// 换绑后仍能看出这条消息是按哪个绑定入队的；实际投递按岗位「当前有效」绑定解析（D33）。
+    pub binding_harness_id: Option<String>,
 }
 
 /// 发送消息的入参。

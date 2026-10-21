@@ -355,6 +355,7 @@ export const NOTIFICATION_CATEGORY_FALLBACK_LABEL: Record<NotificationCategory, 
   message_replied: "消息已回复",
   message_action: "消息需要处理",
   permission: "权限请求",
+  role_rebind: "岗位换绑",
 };
 
 /** 通知类别的严重级别（界面上的颜色依据，与后端投递策略一致）。 */
@@ -368,6 +369,7 @@ export const NOTIFICATION_CATEGORY_SEVERITY: Record<
   message_replied: "normal",
   message_action: "normal",
   permission: "high",
+  role_rebind: "important",
 };
 
 /** 通知类别的默认接收岗位（界面说明用；实际开关由后端设置给出）。 */
@@ -378,6 +380,7 @@ export const NOTIFICATION_CATEGORY_DEFAULT_ROLES: Record<NotificationCategory, s
   message_replied: "发起岗位 · Leader",
   message_action: "发起岗位 · Leader",
   permission: "Human · Leader",
+  role_rebind: "Human · Leader",
 };
 
 /** 按类别取设置的显示名。 */

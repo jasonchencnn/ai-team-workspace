@@ -5,6 +5,7 @@ mod dependencies;
 mod events;
 mod files;
 mod folders;
+mod handoff;
 mod harnesses;
 mod inbox;
 mod messages;
@@ -13,6 +14,7 @@ mod notifications;
 mod qa_round2;
 #[cfg(unix)]
 mod qa_round2_run;
+mod rebinds;
 pub(crate) mod reviews;
 mod roles;
 mod runs;

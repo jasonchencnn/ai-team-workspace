@@ -91,6 +91,26 @@ pub fn unbind_role_harness(
     ts.unbind_role_harness(role_id)
 }
 
+/// 更换岗位的 Harness：三种方式（当前执行结束后更换 / 取消并重新执行 / 人工接管）。
+#[tauri::command(async)]
+pub fn rebind_role(
+    ts: State<'_, Arc<Teamspace>>,
+    role_id: &str,
+    harness_instance_id: &str,
+    mode: RebindMode,
+) -> Result<RoleView, Error> {
+    ts.rebind_role(role_id, harness_instance_id, mode)
+}
+
+/// 撤销待生效的换绑。
+#[tauri::command(async)]
+pub fn cancel_pending_rebind(
+    ts: State<'_, Arc<Teamspace>>,
+    role_id: &str,
+) -> Result<RoleView, Error> {
+    ts.cancel_pending_rebind(role_id)
+}
+
 #[tauri::command(async)]
 pub fn get_role_folder(
     ts: State<'_, Arc<Teamspace>>,
@@ -111,6 +131,15 @@ pub fn get_role_workbench(
     role_id: &str,
 ) -> Result<RoleWorkbench, Error> {
     ts.get_role_workbench(role_id)
+}
+
+/// 岗位启动包预览：该岗位下一次执行会附上的交接内容；不会附加时为空字符串。
+#[tauri::command(async)]
+pub fn get_role_handoff_preview(
+    ts: State<'_, Arc<Teamspace>>,
+    role_id: &str,
+) -> Result<String, Error> {
+    ts.get_role_handoff_preview(role_id)
 }
 
 #[tauri::command(async)]

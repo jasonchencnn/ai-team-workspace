@@ -63,6 +63,9 @@ pub struct BriefInput {
     /// 上一次执行（同一任务的前一次）留下的执行分支：重新执行（新的 worktree）时带上它，
     /// 告诉 Agent 上一次中断的改动还在那个分支上，可以 `git cherry-pick` 取回。
     pub previous_branch: Option<String>,
+    /// 岗位启动包（交接节）：岗位换绑到新的 Harness 后，新环境第一次执行时附上的交接内容；
+    /// 同一个 Harness 再次执行时为 `None`（见 [`crate::run::handoff`]）。
+    pub handoff: Option<String>,
 }
 
 /// 工作日志条目的格式说明（与 [`crate::role_folder::JournalEntry`] 写入的行一致）。
@@ -222,6 +225,11 @@ pub fn render(input: &BriefInput) -> String {
         &mut out,
         "4. 完成后用一段话总结：做了什么、改了哪些文件。这段总结会写入岗位工作日志。",
     );
+    // 岗位启动包：换了执行环境时附上接手前的上下文（同一环境再次执行时不带）。
+    if let Some(handoff) = input.handoff.as_deref() {
+        push(&mut out, "");
+        push(&mut out, handoff.trim_end());
+    }
     out
 }
 
@@ -490,6 +498,7 @@ mod tests {
             role_folder: Some("Teamspace/前端开发".into()),
             journal_path: Some("/ws/Teamspace/前端开发/工作日志.md".into()),
             previous_branch: None,
+            handoff: None,
         }
     }
 
@@ -585,6 +594,21 @@ mod tests {
         assert!(text.contains("`Teamspace/前端开发/过程文件/`"));
         assert!(text.contains("工作日志 `Teamspace/前端开发/工作日志.md` 的末尾追加进展"));
         assert!(!text.contains("不要修改 `Teamspace/前端开发/工作日志.md`"));
+    }
+
+    #[test]
+    fn handoff_section_is_appended_only_when_present() {
+        let plain = render(&input());
+        assert!(!plain.contains("岗位交接"), "{plain}");
+
+        let text = render(&BriefInput {
+            handoff: Some("## 岗位交接\n\n接手前的上下文。".into()),
+            ..input()
+        });
+        assert!(text.contains("## 岗位交接"), "{text}");
+        assert!(text.contains("接手前的上下文。"), "{text}");
+        // 交接内容在说明包的最后。
+        assert!(text.trim_end().ends_with("接手前的上下文。"), "{text}");
     }
 
     #[test]

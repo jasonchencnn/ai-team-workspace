@@ -1453,4 +1453,25 @@ mod tests {
         assert_eq!(interval, Duration::from_secs(2));
         assert!(interval <= MAX_POLL_INTERVAL, "{interval:?}");
     }
+
+    /// 换绑属 Human 的控制权（D8、D32）：MCP 不提供换绑工具，Leader 换不了 Harness。
+    #[test]
+    fn the_tool_list_has_no_rebind_tools() {
+        let names: Vec<String> = TeamspaceServer::tool_router()
+            .list_all()
+            .into_iter()
+            .map(|tool| tool.name.to_string())
+            .collect();
+        for forbidden in [
+            "rebind_role",
+            "cancel_pending_rebind",
+            "bind_role_harness",
+            "unbind_role_harness",
+        ] {
+            assert!(
+                !names.iter().any(|name| name == forbidden),
+                "MCP 不应提供 {forbidden}：{names:?}"
+            );
+        }
+    }
 }
