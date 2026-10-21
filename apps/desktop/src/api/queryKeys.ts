@@ -38,4 +38,11 @@ export const queryKeys = {
   roleTemplates: ["role-templates"] as const,
   acpPresets: ["acp-presets"] as const,
   taskStatuses: ["task-statuses"] as const,
+  /** 待我处理：按类别聚合需要 Human 判断的事项。 */
+  inbox: (teamId: string) => ["teams", teamId, "inbox"] as const,
+  /** 决策列表：按团队与任务（或消息）过滤。 */
+  decisions: (teamId: string, taskId: string) =>
+    ["teams", teamId, "inbox", "decisions", taskId] as const,
+  /** 通知订阅设置。 */
+  notificationSettings: (teamId: string) => ["teams", teamId, "notification-settings"] as const,
 } as const;

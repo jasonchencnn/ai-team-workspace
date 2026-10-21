@@ -4,6 +4,7 @@ import { ActivityPage } from "./pages/activity/ActivityPage.js";
 import { FilesPage } from "./pages/files/FilesPage.js";
 import { HarnessDetailPage } from "./pages/harness-detail/HarnessDetailPage.js";
 import { IndexRedirect } from "./pages/index/IndexRedirect.js";
+import { InboxPage } from "./pages/inbox/InboxPage.js";
 import { ReviewPage } from "./pages/review/ReviewPage.js";
 import { RoleWorkbenchPage } from "./pages/role-workbench/RoleWorkbenchPage.js";
 import { RolesPage } from "./pages/roles/RolesPage.js";
@@ -29,6 +30,8 @@ export function AppRoutes() {
         <Route path="teams/:teamId/roles" element={<RolesPage />} />
         <Route path="teams/:teamId/roles/:roleId/workbench" element={<RoleWorkbenchPage />} />
         <Route path="teams/:teamId/activity" element={<ActivityPage />} />
+        {/* 待我处理（M5-04）：按类别聚合需要 Human 判断的事项。 */}
+        <Route path="teams/:teamId/inbox" element={<InboxPage />} />
         <Route path="teams/:teamId/harnesses/:harnessId" element={<HarnessDetailPage />} />
         <Route path="*" element={<IndexRedirect />} />
       </Route>

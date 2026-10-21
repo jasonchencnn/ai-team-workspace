@@ -1,4 +1,5 @@
 import { NavLink, useLocation, useParams } from "react-router";
+import { useInboxCount } from "../pages/inbox/useInbox.js";
 import { TeamSwitcher } from "./TeamSwitcher.js";
 
 interface NavEntry {
@@ -12,6 +13,8 @@ interface NavEntry {
    * 侧边导航仍应高亮「团队空间」。
    */
   alsoMatch?: (pathname: string) => boolean;
+  /** 角标类型：待我处理显示待处理总数。 */
+  badge?: "inbox";
 }
 
 /** 岗位工作台：/teams/:teamId/roles/:roleId/workbench */
@@ -26,7 +29,8 @@ const NAV_ENTRIES: NavEntry[] = [
   { label: "岗位与绑定", to: "/roles", end: true },
   // 活动与审计按 D22 放在「岗位与绑定」之后、「待我处理」之前。
   { label: "活动与审计", to: "/activity", end: true },
-  { label: "待我处理", note: "M5 提供" },
+  // 待我处理（M5-04）：角标显示待处理总数。
+  { label: "待我处理", to: "/inbox", end: true, badge: "inbox" },
 ];
 
 function DisabledItem({ id, label, note }: { id: string; label: string; note: string }) {
@@ -51,6 +55,8 @@ function DisabledItem({ id, label, note }: { id: string; label: string; note: st
 export function Sidebar() {
   const { teamId } = useParams();
   const location = useLocation();
+  // 待我处理的总数（与待我处理页共用同一份缓存）。
+  const inboxCount = useInboxCount(teamId ?? "");
 
   return (
     <aside className="sidebar">
@@ -93,7 +99,12 @@ export function Sidebar() {
                   : "nav-item"
               }
             >
-              {entry.label}
+              <span className="nav-item__label">{entry.label}</span>
+              {entry.badge === "inbox" && inboxCount > 0 ? (
+                <span className="nav-item__badge" aria-label={`${String(inboxCount)} 项待处理`}>
+                  {inboxCount}
+                </span>
+              ) : null}
             </NavLink>
           );
         })}
