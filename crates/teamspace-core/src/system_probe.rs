@@ -1561,4 +1561,38 @@ echo '{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":1,"agentInfo":{"name":
         process.kill();
         assert_eq!(stderr.trim(), "CLAUDECODE=[] ENTRY=[] KEEP=[explicit]");
     }
+
+    /// 子进程退出但孙进程仍持有 stderr 时，`wait_stderr` 在上限内返回，不会卡死。
+    #[test]
+    fn wait_stderr_returns_when_grandchild_holds_pipe() {
+        let dir = tempfile::tempdir().unwrap();
+        // 子进程（sh）派生一个 sleep 孙进程（继承 stderr），然后自己写一行并退出。
+        // 孙进程 sleep 30 秒，管道不会关闭，读取线程不会退出。
+        let spec = crate::acp::connection::SpawnSpec {
+            program: "/bin/sh".into(),
+            args: vec![
+                "-c".into(),
+                "sleep 30 & echo 'child done' >&2; exit 0".into(),
+            ],
+            cwd: dir.path().into(),
+            env: vec![],
+        };
+        let process = crate::acp::connection::AgentProcess::spawn(&spec, |_| {}).unwrap();
+        // 等子进程退出。
+        let exit = process.exit_status(Duration::from_secs(5));
+        assert!(exit.is_some(), "子进程应在 5 秒内退出");
+        // wait_stderr 应在 STDERR_JOIN_TIMEOUT（2 秒）内返回，即使孙进程仍持有管道。
+        let t0 = Instant::now();
+        process.wait_stderr();
+        let elapsed = t0.elapsed();
+        assert!(
+            elapsed < Duration::from_secs(5),
+            "wait_stderr 用了 {elapsed:?}，应在超时上限内返回"
+        );
+        // stderr 缓冲中应包含子进程写入的内容。
+        let tail = process.stderr_tail();
+        assert_eq!(tail.as_deref(), Some("child done"));
+        // 清理：终止孙进程。
+        process.kill();
+    }
 }
