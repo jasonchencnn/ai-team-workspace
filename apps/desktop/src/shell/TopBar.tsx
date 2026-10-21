@@ -2,6 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 import { useLocation, useParams, useSearchParams } from "react-router";
 import { getTeamOverview, listRoles, listTeams } from "../api/commands.js";
 import { queryKeys } from "../api/queryKeys.js";
+import { NotificationCenter } from "../pages/inbox/NotificationCenter.js";
 
 /** 共享文件页：/teams/:teamId/files，面包屑里多出「共享文件」和当前文件。 */
 const FILES_PATH = /^\/teams\/[^/]+\/files\/?$/;
@@ -75,25 +76,28 @@ export function TopBar() {
           </>
         )}
       </div>
-      {teamId === undefined || overview.data === undefined ? null : workspace !== null ? (
-        <p className="topbar__branch" title={workspace.path}>
-          <span className="topbar__branch-label">工作区</span>
-          {workspace.git === null ? (
-            <span className="topbar__folder">{folderName(workspace.path)}</span>
-          ) : (
-            <>
-              <span>{workspace.git.branch ?? "（游离 HEAD）"}</span>
-              {workspace.git.commit == null ? null : (
-                <span className="topbar__commit">{workspace.git.commit}</span>
-              )}
-            </>
-          )}
-        </p>
-      ) : problem !== null ? (
-        <p className="topbar__branch topbar__branch--warn" role="status" title={problem}>
-          工作区异常：{problem}
-        </p>
-      ) : null}
+      <div className="topbar__right">
+        {teamId === undefined || overview.data === undefined ? null : workspace !== null ? (
+          <p className="topbar__branch" title={workspace.path}>
+            <span className="topbar__branch-label">工作区</span>
+            {workspace.git === null ? (
+              <span className="topbar__folder">{folderName(workspace.path)}</span>
+            ) : (
+              <>
+                <span>{workspace.git.branch ?? "（游离 HEAD）"}</span>
+                {workspace.git.commit == null ? null : (
+                  <span className="topbar__commit">{workspace.git.commit}</span>
+                )}
+              </>
+            )}
+          </p>
+        ) : problem !== null ? (
+          <p className="topbar__branch topbar__branch--warn" role="status" title={problem}>
+            工作区异常：{problem}
+          </p>
+        ) : null}
+        <NotificationCenter />
+      </div>
     </div>
   );
 }
