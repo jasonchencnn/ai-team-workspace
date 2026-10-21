@@ -103,11 +103,13 @@ pub(crate) fn send(conn: &Connection, actor: Actor, input: &SendMessageInput) ->
 
     let id = new_id();
     let created_at = now();
+    // 入队时间：过期判定用它，不动 `created_at`（那是原始发送时间）。
+    let queued_at = created_at.clone();
     conn.execute(
         "INSERT INTO messages (id, thread_id, team_id, task_id, sender_kind, sender_role_id,
                                to_role_id, body, status, failure_reason, reply_body,
-                               created_at, delivered_at, replied_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 'queued', NULL, NULL, ?9, NULL, NULL)",
+                               created_at, queued_at, delivered_at, replied_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 'queued', NULL, NULL, ?9, ?10, NULL, NULL)",
         params![
             id,
             thread.id,
@@ -118,6 +120,7 @@ pub(crate) fn send(conn: &Connection, actor: Actor, input: &SendMessageInput) ->
             target.id,
             body,
             created_at,
+            queued_at,
         ],
     )?;
     touch_thread(conn, &thread.id)?;
@@ -187,9 +190,9 @@ pub(crate) fn retry(conn: &Connection, message_id: &str) -> Result<Message> {
     }
     conn.execute(
         "UPDATE messages SET status = 'queued', failure_reason = NULL, delivered_at = NULL,
-                             replied_at = NULL, reply_body = NULL
+                             replied_at = NULL, reply_body = NULL, queued_at = ?2
          WHERE id = ?1",
-        params![message.id],
+        params![message.id, now()],
     )?;
     touch_thread(conn, &message.thread_id)?;
     let target = role::get_active(conn, &message.to_role_id)?;
@@ -373,14 +376,16 @@ pub(crate) fn mark_expired(conn: &Connection, message_id: &str) -> Result<Messag
 }
 
 /// 把超过期限仍未回复的消息转「过期」，返回被置为过期的消息与它原来的状态。
+///
+/// 过期看的是「最近一次入队时间」`queued_at`：重发过的消息按重发时间算，给了完整回复窗口。
 pub(crate) fn expire_stale(
     conn: &Connection,
     cutoff: &str,
 ) -> Result<Vec<(Message, MessageStatus)>> {
     let mut stmt = conn.prepare(&format!(
         "SELECT {MESSAGE_COLS} FROM messages
-         WHERE status IN ('queued', 'delivering') AND created_at < ?1
-         ORDER BY created_at"
+         WHERE status IN ('queued', 'delivering') AND queued_at < ?1
+         ORDER BY queued_at"
     ))?;
     let stale: Vec<Message> = stmt
         .query_map(params![cutoff], from_row)?

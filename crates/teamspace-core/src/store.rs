@@ -12,7 +12,7 @@ use time::OffsetDateTime;
 use crate::error::{Error, Result};
 
 /// 当前 schema 版本。
-pub(crate) const SCHEMA_VERSION: i64 = 14;
+pub(crate) const SCHEMA_VERSION: i64 = 15;
 
 const SCHEMA_V1: &str = r#"
 CREATE TABLE teams (
@@ -418,9 +418,19 @@ CREATE TABLE notification_settings (
 );
 "#;
 
+/// v15：消息的入队时间（M5-06 回归修复）。
+///
+/// 过期判定改用「最近一次入队时间」：重发一条已经过期的消息时，`created_at` 仍是很久以前，
+/// 按它判过期会让重发的消息立刻再次过期。新增 `queued_at` 列，入队与重发时写当前时间；
+/// 迁移时用 `created_at` 回填（旧数据没有「入队」概念，按创建时间算）。
+const SCHEMA_V15: &str = r#"
+ALTER TABLE messages ADD COLUMN queued_at TEXT NOT NULL DEFAULT '';
+UPDATE messages SET queued_at = created_at;
+"#;
+
 const MIGRATIONS: &[&str] = &[
     SCHEMA_V1, SCHEMA_V2, SCHEMA_V3, SCHEMA_V4, SCHEMA_V5, SCHEMA_V6, SCHEMA_V7, SCHEMA_V8,
-    SCHEMA_V9, SCHEMA_V10, SCHEMA_V11, SCHEMA_V12, SCHEMA_V13, SCHEMA_V14,
+    SCHEMA_V9, SCHEMA_V10, SCHEMA_V11, SCHEMA_V12, SCHEMA_V13, SCHEMA_V14, SCHEMA_V15,
 ];
 
 /// 打开数据库：WAL 日志、synchronous=NORMAL、开启外键，并迁移到当前版本。
