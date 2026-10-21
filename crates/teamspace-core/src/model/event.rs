@@ -13,6 +13,13 @@ pub enum EventKind {
     /// 岗位绑定或更换 Harness。
     RoleHarnessBound,
     RoleHarnessUnbound,
+    /// 换绑已登记，等当前执行结束后生效（`data.mode` 为换绑方式、`data.harnessId` 为目标实例、
+    /// `data.activeRunId` 为发起时进行中的执行）。
+    RoleRebindRequested,
+    /// 换绑已生效（`data.mode`、`data.harnessId` 为换过去的实例、`data.previousHarnessId` 为换之前的实例）。
+    RoleRebindApplied,
+    /// 待生效的换绑已撤销（`data.mode`、`data.harnessId` 为被撤销的目标实例）。
+    RoleRebindCancelled,
     HarnessCreated,
     HarnessUpdated,
     HarnessArchived,

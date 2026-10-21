@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
 use super::HarnessInstance;
+use super::PendingBinding;
 
 /// 岗位，属于一个团队。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -43,6 +44,8 @@ pub struct RoleView {
     pub folder: Option<String>,
     /// 岗位文件夹最近一次同步失败的中文说明（如工作空间不存在或不可写）；正常时为 `null`。
     pub folder_problem: Option<String>,
+    /// 待生效的换绑：已登记但还没换过去的 Harness；没有时为 `null`。
+    pub pending_binding: Option<PendingBinding>,
 }
 
 /// 岗位文件夹（`get_role_folder` 的结果）。

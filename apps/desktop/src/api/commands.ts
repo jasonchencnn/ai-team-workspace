@@ -38,6 +38,7 @@ import type { McpConfigWrite } from "../bindings/McpConfigWrite.js";
 import type { NotificationSettings } from "../bindings/NotificationSettings.js";
 import type { NotifyEvent } from "../bindings/NotifyEvent.js";
 import type { RecordDecisionInput } from "../bindings/RecordDecisionInput.js";
+import type { RebindMode } from "../bindings/RebindMode.js";
 import type { RejectReviewInput } from "../bindings/RejectReviewInput.js";
 import type { RerunAfterConflictInput } from "../bindings/RerunAfterConflictInput.js";
 import type { ResolveMergeManuallyInput } from "../bindings/ResolveMergeManuallyInput.js";
@@ -128,6 +129,19 @@ export const bindRoleHarness = (roleId: string, harnessId: string) =>
 /** 解除岗位的 Harness 绑定。 */
 export const unbindRoleHarness = (roleId: string) =>
   invoke<RoleView>("unbind_role_harness", { roleId });
+
+/**
+ * 更换岗位的 Harness：三种方式。
+ * - `after_current`：当前执行结束后再生效（默认）。
+ * - `cancel_and_rerun`：取消当前执行，立即换绑并在新 Harness 上重新执行该任务。
+ * - `manual_takeover`：取消当前执行，任务转为受阻（人工接管），立即换绑。
+ */
+export const rebindRole = (roleId: string, harnessInstanceId: string, mode: RebindMode) =>
+  invoke<RoleView>("rebind_role", { roleId, harnessInstanceId, mode });
+
+/** 撤销待生效的换绑：当前绑定不变。 */
+export const cancelPendingRebind = (roleId: string) =>
+  invoke<RoleView>("cancel_pending_rebind", { roleId });
 
 /** 岗位文件夹：绝对路径、是否存在、最近的工作日志（默认 20 条，最新在前）。 */
 export const getRoleFolder = (roleId: string, limit?: number) =>

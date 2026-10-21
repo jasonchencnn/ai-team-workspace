@@ -12,7 +12,7 @@ use time::OffsetDateTime;
 use crate::error::{Error, Result};
 
 /// 当前 schema 版本。
-pub(crate) const SCHEMA_VERSION: i64 = 14;
+pub(crate) const SCHEMA_VERSION: i64 = 15;
 
 const SCHEMA_V1: &str = r#"
 CREATE TABLE teams (
@@ -418,9 +418,32 @@ CREATE TABLE notification_settings (
 );
 "#;
 
+/// v15：岗位换绑与消息绑定快照（M6-01）。
+///
+/// - `role_pending_bindings`：待生效的换绑。一个岗位最多一条（唯一索引），换绑生效或撤销后删除；
+///   换绑生效后岗位的当前绑定（`roles.harness_id`）指向目标实例。
+/// - `messages.binding_harness_id`：消息入队时接收岗位绑定的 Harness 实例 id（快照，仅留痕）。
+///   实际投递按岗位「当前有效」绑定解析，快照只用于事后追溯。
+const SCHEMA_V15: &str = r#"
+CREATE TABLE role_pending_bindings (
+    id            TEXT PRIMARY KEY,
+    role_id       TEXT NOT NULL REFERENCES roles (id),
+    team_id       TEXT NOT NULL REFERENCES teams (id),
+    harness_id    TEXT NOT NULL REFERENCES harnesses (id),
+    mode          TEXT NOT NULL
+                  CHECK (mode IN ('after_current', 'cancel_and_rerun', 'manual_takeover')),
+    active_run_id TEXT,
+    requested_at  TEXT NOT NULL,
+    created_at    TEXT NOT NULL
+);
+CREATE UNIQUE INDEX role_pending_bindings_role ON role_pending_bindings (role_id);
+
+ALTER TABLE messages ADD COLUMN binding_harness_id TEXT;
+"#;
+
 const MIGRATIONS: &[&str] = &[
     SCHEMA_V1, SCHEMA_V2, SCHEMA_V3, SCHEMA_V4, SCHEMA_V5, SCHEMA_V6, SCHEMA_V7, SCHEMA_V8,
-    SCHEMA_V9, SCHEMA_V10, SCHEMA_V11, SCHEMA_V12, SCHEMA_V13, SCHEMA_V14,
+    SCHEMA_V9, SCHEMA_V10, SCHEMA_V11, SCHEMA_V12, SCHEMA_V13, SCHEMA_V14, SCHEMA_V15,
 ];
 
 /// 打开数据库：WAL 日志、synchronous=NORMAL、开启外键，并迁移到当前版本。
@@ -1046,6 +1069,76 @@ mod tests {
         let t = now();
         assert_eq!(t.len(), "2026-10-12T06:06:01.262Z".len());
         assert!(t.ends_with('Z'));
+    }
+
+    /// v15：待生效换绑表与消息绑定快照列。
+    #[test]
+    fn v14_migrates_to_v15_with_pending_bindings_and_message_snapshot() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("t.db");
+        {
+            let conn = Connection::open(&path).unwrap();
+            for sql in &MIGRATIONS[..14] {
+                conn.execute_batch(sql).unwrap();
+            }
+            conn.execute_batch("PRAGMA user_version = 14;").unwrap();
+        }
+        let conn = open(&path).unwrap();
+        let v: i64 = conn
+            .pragma_query_value(None, "user_version", |r| r.get(0))
+            .unwrap();
+        assert_eq!(v, SCHEMA_VERSION);
+        for (table, columns) in [
+            (
+                "role_pending_bindings",
+                [
+                    "id",
+                    "role_id",
+                    "team_id",
+                    "harness_id",
+                    "mode",
+                    "active_run_id",
+                    "requested_at",
+                    "created_at",
+                ]
+                .as_slice(),
+            ),
+            ("messages", ["binding_harness_id"].as_slice()),
+        ] {
+            for column in columns {
+                let n: i64 = conn
+                    .query_row(
+                        &format!(
+                            "SELECT COUNT(*) FROM pragma_table_info('{table}') WHERE name = ?1"
+                        ),
+                        [column],
+                        |r| r.get(0),
+                    )
+                    .unwrap();
+                assert_eq!(n, 1, "{table}.{column}");
+            }
+        }
+        // 一个岗位最多一条待生效换绑。
+        conn.execute_batch(
+            "INSERT INTO teams (id, name, workspace_path, created_at, updated_at)
+             VALUES ('t1', '团队', '/tmp', '2026-10-12T00:00:00.000Z', '2026-10-12T00:00:00.000Z');
+             INSERT INTO roles (id, team_id, name, code, task_prefix, description, guidelines,
+                                is_leader, harness_id, created_at, updated_at)
+             VALUES ('r1', 't1', '前端', 'role_fe', 'FE', '', '', 0, NULL,
+                     '2026-10-12T00:00:00.000Z', '2026-10-12T00:00:00.000Z');
+             INSERT INTO harnesses (id, team_id, name, preset, command, args, env_profile,
+                                    handshake_status, created_at, updated_at)
+             VALUES ('h1', 't1', 'Mock', 'mock', 'x', '[]', NULL, 'unknown',
+                     '2026-10-12T00:00:00.000Z', '2026-10-12T00:00:00.000Z');",
+        )
+        .unwrap();
+        let insert = "INSERT INTO role_pending_bindings
+            (id, role_id, team_id, harness_id, mode, active_run_id, requested_at, created_at)
+            VALUES (?1, 'r1', 't1', 'h1', 'after_current', NULL,
+                    '2026-10-12T00:00:00.000Z', '2026-10-12T00:00:00.000Z')";
+        conn.execute(insert, ["p1"]).unwrap();
+        let err = conn.execute(insert, ["p2"]).unwrap_err();
+        assert!(err.to_string().contains("UNIQUE"), "{err}");
     }
 
     /// v13 的库升到 v14：决策表与通知订阅表建好，老数据不受影响。

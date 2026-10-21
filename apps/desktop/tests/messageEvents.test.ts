@@ -24,6 +24,7 @@ function messageWith(teamId: string, threadId: string): Message {
     createdAt: "2026-10-21T02:31:00Z",
     deliveredAt: null,
     repliedAt: "2026-10-21T03:02:00Z",
+    bindingHarnessId: null,
   };
 }
 

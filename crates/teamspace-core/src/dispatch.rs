@@ -13,7 +13,7 @@ use serde_json::{Value, json};
 
 use crate::api::{COMMANDS, Teamspace};
 use crate::error::{Error, ErrorPayload};
-use crate::model::{Actor, EventKind};
+use crate::model::{Actor, EventKind, RebindMode};
 use crate::service::event::NewEvent;
 use crate::service::{event, harness, role, run as run_svc, task, team};
 
@@ -115,6 +115,12 @@ pub fn dispatch(
             &arg::<String>(args, "harnessId")?,
         )),
         "unbind_role_harness" => out(ts.unbind_role_harness(&arg::<String>(args, "roleId")?)),
+        "rebind_role" => out(ts.rebind_role(
+            &arg::<String>(args, "roleId")?,
+            &arg::<String>(args, "harnessInstanceId")?,
+            arg::<RebindMode>(args, "mode")?,
+        )),
+        "cancel_pending_rebind" => out(ts.cancel_pending_rebind(&arg::<String>(args, "roleId")?)),
         "get_role_folder" => out(ts.get_role_folder(
             &arg::<String>(args, "roleId")?,
             arg::<Option<u32>>(args, "limit")?,
@@ -243,6 +249,8 @@ fn operation_label(cmd: &str) -> String {
         "archive_role" => "归档岗位",
         "bind_role_harness" => "换绑岗位的 Harness",
         "unbind_role_harness" => "解绑岗位的 Harness",
+        "rebind_role" => "更换岗位的 Harness",
+        "cancel_pending_rebind" => "撤销待生效换绑",
         "reveal_role_folder" => "在文件管理器中显示岗位文件夹",
         "open_role_path" => "打开岗位文件或目录",
         "list_acp_presets" => "读取 ACP 预设",
@@ -406,6 +414,8 @@ mod tests {
             "archive_harness",
             "bind_role_harness",
             "unbind_role_harness",
+            "rebind_role",
+            "cancel_pending_rebind",
             "respond_permission",
             "approve_review",
             "resolve_merge_manually",

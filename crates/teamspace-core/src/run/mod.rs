@@ -404,6 +404,10 @@ impl Core {
         let _ = self.write(|tx| {
             interrupt_with_changes(tx, run_id, reason, changes.as_ref(), preserved.as_ref())
         });
+        // 执行中断了（也是结束）：该岗位的待生效换绑（如果有）在此刻生效（M6-01）。
+        if let Some(run) = &run {
+            self.apply_pending_rebind(&run.role_id);
+        }
     }
 
     /// 中断时把执行目录里未提交的改动提交到执行分支（使用记录 1）。
@@ -2675,6 +2679,10 @@ impl Driver {
         // 通知：任务进入待验收、执行失败或受阻（事务提交后再推，不持锁）。
         if matches!(saved, Some(Some(_))) {
             self.notify_task_state(task_to, reason.as_deref(), status);
+        }
+        // 当前执行结束了：该岗位的待生效换绑（如果有）在此刻生效（M6-01）。
+        if matches!(saved, Some(Some(_))) {
+            self.core.apply_pending_rebind(&self.run.role_id);
         }
     }
 

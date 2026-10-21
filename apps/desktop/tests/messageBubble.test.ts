@@ -30,6 +30,7 @@ function messageWith(status: MessageStatus, extra: Partial<Message> = {}): Messa
     createdAt: "2026-10-21T02:31:00Z",
     deliveredAt: null,
     repliedAt: null,
+    bindingHarnessId: null,
     ...extra,
   };
 }

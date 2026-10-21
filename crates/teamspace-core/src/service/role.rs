@@ -4,7 +4,7 @@ use rusqlite::{Connection, OptionalExtension, params};
 use serde_json::json;
 
 use super::event::{self, NewEvent};
-use super::{MAX_LONG_TEXT, MAX_NAME, harness, name_line, team, text};
+use super::{MAX_LONG_TEXT, MAX_NAME, harness, name_line, rebind, team, text};
 use crate::error::{Error, Result};
 use crate::model::{CreateRoleInput, EventKind, NewRole, Role, RoleRef, RoleView, UpdateRoleInput};
 use crate::store::{new_id, now};
@@ -79,6 +79,7 @@ pub(crate) fn view(conn: &Connection, role: Role) -> Result<RoleView> {
         params![role.id],
         |row| Ok((row.get(0)?, row.get(1)?)),
     )?;
+    let pending_binding = rebind::pending(conn, &role.id)?;
     Ok(RoleView {
         role,
         harness,
@@ -86,6 +87,7 @@ pub(crate) fn view(conn: &Connection, role: Role) -> Result<RoleView> {
         doing_task_count: doing,
         folder,
         folder_problem,
+        pending_binding,
     })
 }
 

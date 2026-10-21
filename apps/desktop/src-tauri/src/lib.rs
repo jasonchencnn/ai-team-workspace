@@ -34,6 +34,8 @@ register_commands!(
     archive_role,
     bind_role_harness,
     unbind_role_harness,
+    rebind_role,
+    cancel_pending_rebind,
     get_role_folder,
     reveal_role_folder,
     get_role_workbench,

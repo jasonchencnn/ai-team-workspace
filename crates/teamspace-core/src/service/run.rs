@@ -177,6 +177,17 @@ pub(crate) fn active_for_task(conn: &Connection, task_id: &str) -> Result<Option
     Ok(query(conn, &format!("r.task_id = ?1 AND {ACTIVE_SQL}"), &task_id)?.pop())
 }
 
+/// 岗位进行中的执行（按开始时间倒序）。
+///
+/// 换绑用：待生效换绑要等这个列表空下来才生效（M6-01）。
+pub(crate) fn active_runs_for_role(conn: &Connection, role_id: &str) -> Result<Vec<Run>> {
+    query(
+        conn,
+        &format!("r.role_id = ?1 AND {ACTIVE_SQL} ORDER BY r.started_at DESC, r.id DESC"),
+        &role_id,
+    )
+}
+
 /// 活动执行所在的工作空间路径（原地执行），与执行记录一起读出。
 fn active_in_place_workspaces(conn: &Connection) -> Result<Vec<(String, Run)>> {
     let mut stmt = conn.prepare(&format!(

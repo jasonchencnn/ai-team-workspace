@@ -3,4 +3,4 @@
 /**
  * 通知类别（应用内通知按它订阅）。
  */
-export type NotificationCategory = "task_review" | "task_failed" | "task_blocked" | "message_replied" | "message_action" | "permission";
+export type NotificationCategory = "task_review" | "task_failed" | "task_blocked" | "message_replied" | "message_action" | "permission" | "role_rebind";
