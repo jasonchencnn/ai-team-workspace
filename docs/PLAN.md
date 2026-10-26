@@ -9,9 +9,9 @@
 | 项 | 内容 |
 |---|---|
 | 阶段 | **M1～M7 开发完成，待 Human 最终产品校验**（2026-10-22） |
-| 已完成 | M1～M3 已签收；M4～M7 全部合入 `claude/mvp-reset`（未推送）。最终回归：`pnpm run check`（Rust 1140 通过 1 忽略、前端 225）、`pnpm run e2e`（335 通过、4 跳过）、MiniMax Code 真实冒烟 3/3 通过；未签名 `.dmg` 已产出 |
+| 已完成 | M1～M3 已签收；M4～M7 全部合入 `claude/mvp-reset`（2026-10-26 已推送）。最终回归：`pnpm run check`（Rust 1140 通过 1 忽略、前端 225）、`pnpm run e2e`（335 通过、4 跳过）、MiniMax Code 真实冒烟 3/3 通过；未签名 `.dmg` 已作为预发布 [v0.2.0](https://github.com/jasonchencnn/ai-team-workspace/releases/tag/v0.2.0) 上传 GitHub Release |
 | 进行中 | 无 |
-| 待你确认 | 最终产品校验（清单见 `docs/DEVLOG.md` 2026-10-22）；是否推送 `claude/mvp-reset`；Claude Code 当 Leader 的真实冒烟（`TEAMSPACE_REAL_SMOKE_CLAUDE=1`，消耗 Claude 额度，未跑） |
+| 待你确认 | 最终产品校验（清单见 `docs/DEVLOG.md` 2026-10-22）；Claude Code 当 Leader 的真实冒烟（`TEAMSPACE_REAL_SMOKE_CLAUDE=1`，消耗 Claude 额度，未跑） |
 | 遗留 | 轻微缺陷与暂缓项见 `docs/DEVLOG.md`（按 D19 进入使用中迭代）；未做真实读屏器实测 |
 | 下一步 | Human 最终产品校验 → 按反馈修复 |
 
