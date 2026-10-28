@@ -25,6 +25,13 @@ pub struct RoleRef {
     pub task_prefix: String,
 }
 
+/// Harness 实例。
+#[derive(Debug, Clone)]
+pub struct HarnessRef {
+    pub id: String,
+    pub name: String,
+}
+
 /// 任务。
 #[derive(Debug, Clone)]
 pub struct TaskRef {
@@ -145,6 +152,53 @@ pub async fn resolve_role(
             "团队「{}」里找不到岗位「{reference}」。现有岗位：{}",
             team.name,
             role_candidates(&roles)
+        ))),
+    }
+}
+
+/// 解析 Harness：按 id 或名称（名称大小写不敏感时次之）。
+pub async fn resolve_harness(
+    client: &ControlClient,
+    team: &TeamRef,
+    reference: &str,
+) -> Result<HarnessRef, ToolError> {
+    let value = client
+        .call("list_harnesses", json!({ "teamId": team.id }))
+        .await?;
+    let harnesses: Vec<HarnessRef> = value
+        .as_array()
+        .map(|list| list.iter().filter_map(harness_of).collect())
+        .unwrap_or_default();
+    if harnesses.is_empty() {
+        return Err(ToolError::Message(format!(
+            "团队「{}」还没有注册 Harness；可以用 new_harness 顺带注册一个。",
+            team.name
+        )));
+    }
+    let Some(reference) = clean(Some(reference)) else {
+        return Err(ToolError::Message("请指明 Harness。".to_owned()));
+    };
+    match best_match(harnesses.iter(), |harness| {
+        if harness.id == reference {
+            3
+        } else if harness.name == reference {
+            2
+        } else if harness.name.eq_ignore_ascii_case(reference) {
+            1
+        } else {
+            0
+        }
+    }) {
+        Match::One(harness) => Ok(harness),
+        Match::Ambiguous(hits) => Err(ToolError::Message(format!(
+            "团队「{}」里有多个 Harness 与「{reference}」匹配，请用 id 指明：{}",
+            team.name,
+            harness_candidates(&hits)
+        ))),
+        Match::None => Err(ToolError::Message(format!(
+            "团队「{}」里找不到 Harness「{reference}」。现有 Harness：{}",
+            team.name,
+            harness_candidates(&harnesses)
         ))),
     }
 }
@@ -369,6 +423,14 @@ fn role_of(value: &Value) -> Option<RoleRef> {
     })
 }
 
+/// `list_harnesses` 的一项。
+fn harness_of(value: &Value) -> Option<HarnessRef> {
+    Some(HarnessRef {
+        id: value.get("id")?.as_str()?.to_owned(),
+        name: value.get("name")?.as_str()?.to_owned(),
+    })
+}
+
 /// 看板里的一项任务。
 fn task_of_summary(value: &Value, team: &TeamRef) -> Option<TaskRef> {
     Some(TaskRef {
@@ -426,6 +488,15 @@ fn role_candidates(roles: &[RoleRef]) -> String {
                 format!("{}（{}）", role.name, role.code)
             }
         })
+        .collect::<Vec<_>>()
+        .join("、")
+}
+
+/// Harness 的候选写法。
+fn harness_candidates(harnesses: &[HarnessRef]) -> String {
+    harnesses
+        .iter()
+        .map(|harness| format!("{}（{}）", harness.name, harness.id))
         .collect::<Vec<_>>()
         .join("、")
 }

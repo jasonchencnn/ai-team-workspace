@@ -10,7 +10,7 @@ use super::{MAX_NAME, team, text};
 use crate::error::{Error, Result};
 use crate::mock_agent;
 use crate::model::{
-    AcpPreset, AgentInfo, CreateHarnessInput, EventKind, Handshake, HandshakeStatus,
+    AcpPreset, Actor, AgentInfo, CreateHarnessInput, EventKind, Handshake, HandshakeStatus,
     HarnessInstance, UpdateHarnessInput,
 };
 use crate::store::{enum_col, enum_str, new_id, non_blank, now};
@@ -335,7 +335,11 @@ fn args_json(args: &[String]) -> String {
     serde_json::to_string(args).unwrap_or_else(|_| "[]".to_owned())
 }
 
-pub(crate) fn create(conn: &Connection, input: CreateHarnessInput) -> Result<HarnessInstance> {
+pub(crate) fn create(
+    conn: &Connection,
+    input: CreateHarnessInput,
+    actor: Actor,
+) -> Result<HarnessInstance> {
     team::get_active(conn, &input.team_id)?;
     let f = validate(
         conn,
@@ -364,8 +368,9 @@ pub(crate) fn create(conn: &Connection, input: CreateHarnessInput) -> Result<Har
         ],
     )?;
     let harness = get_active(conn, &id)?;
-    event::record(
+    event::record_as(
         conn,
+        actor,
         NewEvent {
             team_id: &harness.team_id,
             task_id: None,

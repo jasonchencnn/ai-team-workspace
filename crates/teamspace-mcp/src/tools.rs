@@ -1,8 +1,8 @@
 //! MCP 工具：Leader 通过它们操作 Teamspace。
 //!
 //! 每个工具只做两件事：把 Leader 说的名字/编号解析成 id，再把请求转给桌面应用的本机控制
-//! socket。权限边界在桌面应用的内核里把守（D7、D8、D26）：这里不提供合并、换绑、权限答复
-//! 等越权操作；后端拒绝时把中文原因原样带回。
+//! socket。权限边界在桌面应用的内核里把守（D7、D8、D26、D41）：这里不提供合并、权限答复
+//! 等越权操作，Leader 岗位本身的创建与绑定也留给 Human；后端拒绝时把中文原因原样带回。
 //!
 //! 工具失败（应用没运行、名字解析不到、后端拒绝）都作为「工具级错误」返回，
 //! Leader 能直接看到中文说明，不会看到协议错误。
@@ -17,11 +17,12 @@ use serde_json::{Value, json};
 use crate::client::{ControlClient, ControlError};
 use crate::error::ToolError;
 use crate::params::{
-    ActivityArgs, BoardArgs, CancelRunArgs, ChangeStatusArgs, CreateTaskArgs, ListThreadsArgs,
-    RejectReviewArgs, RunProgressArgs, RunStatusArgs, SendMessageArgs, SetDependenciesArgs,
-    TaskArgs, TeamArgs, ThreadArgs, UpdateTaskArgs, WaitReplyArgs,
+    ActivityArgs, BindHarnessArgs, BoardArgs, CancelRunArgs, ChangeStatusArgs, CreateRoleArgs,
+    CreateTaskArgs, ListThreadsArgs, NewHarnessArgs, RejectReviewArgs, RunProgressArgs,
+    RunStatusArgs, SendMessageArgs, SetDependenciesArgs, TaskArgs, TeamArgs, ThreadArgs,
+    UpdateTaskArgs, WaitReplyArgs,
 };
-use crate::resolve::{self, RoleRef, TaskRef, TeamRef};
+use crate::resolve::{self, HarnessRef, RoleRef, TaskRef, TeamRef};
 
 /// 任务状态里 Leader 不能设置的：置为已完成要走验收（合并），只能由你在应用里点（D7、D8）。
 const DONE_STATUS: &str = "done";
@@ -37,6 +38,12 @@ const MAX_WAIT_SECONDS: u64 = 600;
 const POLL_INTERVAL: Duration = Duration::from_millis(500);
 /// `wait_reply` 的轮询间隔上限：不超过 2 秒（brief 要求，够快也不至于压着应用）。
 const MAX_POLL_INTERVAL: Duration = Duration::from_secs(2);
+
+/// 岗位要绑定的 Harness：已注册的，或待注册的新实例。
+enum HarnessChoice {
+    Existing(HarnessRef),
+    New(NewHarnessArgs),
+}
 
 /// Teamspace 的 MCP 服务：把工具调用转给桌面应用。
 #[derive(Debug, Clone)]
@@ -462,6 +469,38 @@ impl TeamspaceServer {
         }
     }
 
+    /// 新建岗位并绑定 Harness。
+    #[tool(
+        name = "create_role",
+        description = "新建岗位并绑定 Harness：名称、任务编号前缀（可省略，自动建议）、职责与工作约定；\
+                       harness 填已注册的 Harness 名称或 id，或用 new_harness 顺带注册一个新的（预设、命令、参数）。\
+                       两者都省略时岗位暂不派工。Leader 岗位只能由你在 Teamspace 应用中创建和绑定。",
+        annotations(destructive_hint = false)
+    )]
+    async fn create_role(&self, Parameters(args): Parameters<CreateRoleArgs>) -> CallToolResult {
+        match self.new_role(args).await {
+            Ok(value) => ok(value),
+            Err(err) => fail(err.message()),
+        }
+    }
+
+    /// 给岗位绑定 Harness。
+    #[tool(
+        name = "bind_role_harness",
+        description = "给岗位绑定或更换 Harness：harness 填已注册的 Harness 名称或 id，或用 new_harness 顺带注册一个新的。\
+                       立即生效，之后的派工走新 Harness；进行中的执行不受影响。Leader 岗位的绑定只能由你在应用里改。",
+        annotations(destructive_hint = false)
+    )]
+    async fn bind_role_harness(
+        &self,
+        Parameters(args): Parameters<BindHarnessArgs>,
+    ) -> CallToolResult {
+        match self.bind(args).await {
+            Ok(value) => ok(value),
+            Err(err) => fail(err.message()),
+        }
+    }
+
     /// 发消息给岗位。
     #[tool(
         name = "send_message",
@@ -500,9 +539,10 @@ impl ServerHandler for TeamspaceServer {
             .with_server_info(Implementation::new("teamspace", env!("CARGO_PKG_VERSION")))
             .with_instructions(
                 "Teamspace 的 Leader 工具箱：查看团队、岗位、Harness、看板、任务、执行进度与结果、\
-                 活动与验收；创建与编辑任务、设置依赖、开始与取消执行、退回验收；\
+                 活动与验收；新建岗位并绑定 Harness（可顺带注册新的 Harness）；\
+                 创建与编辑任务、设置依赖、开始与取消执行、退回验收；\
                  给岗位发消息、查消息线程、等岗位回复、看待我处理。\
-                 所有操作都转给正在运行的 Teamspace 桌面应用，合并到主分支、换绑 Harness、\
+                 所有操作都转给正在运行的 Teamspace 桌面应用，合并到主分支、Leader 岗位的创建与绑定、\
                  答复权限请求、记录决策只能由你在 Teamspace 应用中操作。"
                     .to_owned(),
             )
@@ -679,6 +719,159 @@ impl TeamspaceServer {
             "generatedAt": inbox.get("generatedAt"),
             "hint": "验收、权限答复、决策需要你在 Teamspace 应用中处理；这里只做查询与提醒。",
         }))
+    }
+
+    /// 新建岗位，再按需注册并绑定 Harness。
+    ///
+    /// 先建岗位：前缀冲突这类最常见的问题在这一步就报出来，不会留下一个没人用的 Harness。
+    /// 岗位建好后注册或绑定失败时，岗位保留，提示用 bind_role_harness 补绑。
+    async fn new_role(&self, args: CreateRoleArgs) -> Result<Value, ToolError> {
+        let name = args.name.trim().to_owned();
+        if name.is_empty() {
+            return Err(ToolError::Message("请给岗位起个名称。".to_owned()));
+        }
+        let team = self.team(args.team.as_deref()).await?;
+        let choice = self
+            .harness_choice(&team, args.harness.as_deref(), args.new_harness)
+            .await?;
+        let task_prefix = match clean(args.task_prefix.as_deref()) {
+            Some(prefix) => prefix.to_ascii_uppercase(),
+            None => {
+                let suggested = self
+                    .client
+                    .call(
+                        "suggest_task_prefix",
+                        json!({ "input": { "teamId": team.id, "name": name } }),
+                    )
+                    .await?;
+                suggested.as_str().unwrap_or_default().to_owned()
+            }
+        };
+        let view = self
+            .client
+            .call(
+                "create_role",
+                json!({ "input": {
+                    "teamId": team.id,
+                    "role": {
+                        "name": name,
+                        "code": clean(args.code.as_deref()),
+                        "taskPrefix": task_prefix,
+                        "description": args.description.unwrap_or_default(),
+                        "guidelines": args.guidelines.unwrap_or_default(),
+                        "isLeader": false,
+                    },
+                }}),
+            )
+            .await?;
+        let Some(choice) = choice else {
+            return Ok(role_summary(&view, false));
+        };
+        let role_id = view["role"]["id"].as_str().unwrap_or_default().to_owned();
+        let registers = matches!(choice, HarnessChoice::New(_));
+        match self.attach(&team, &role_id, choice).await {
+            Ok(view) => Ok(role_summary(&view, registers)),
+            Err(err) => Err(ToolError::Message(format!(
+                "岗位「{name}」（{}）已建好，但绑定 Harness 没成功：{}\
+                 改好后用 bind_role_harness 给它补绑。",
+                string_of(&view["role"], "taskPrefix"),
+                err.message()
+            ))),
+        }
+    }
+
+    /// 给已有岗位绑定 Harness（可顺带注册新的）。
+    async fn bind(&self, args: BindHarnessArgs) -> Result<Value, ToolError> {
+        let team = self.team(args.team.as_deref()).await?;
+        let role = resolve::resolve_role(&self.client, &team, &args.role).await?;
+        let Some(choice) = self
+            .harness_choice(&team, args.harness.as_deref(), args.new_harness)
+            .await?
+        else {
+            return Err(ToolError::Message(
+                "请指明要绑定的 Harness（harness），或用 new_harness 注册一个新的。".to_owned(),
+            ));
+        };
+        let registers = matches!(choice, HarnessChoice::New(_));
+        let view = self.attach(&team, &role.id, choice).await?;
+        Ok(role_summary(&view, registers))
+    }
+
+    /// 看 Leader 要绑哪个 Harness：两个都没给返回 `None`；新 Harness 先在这里校验预设，
+    /// 免得岗位建好了才发现预设写错。
+    async fn harness_choice(
+        &self,
+        team: &TeamRef,
+        harness: Option<&str>,
+        new_harness: Option<NewHarnessArgs>,
+    ) -> Result<Option<HarnessChoice>, ToolError> {
+        match (clean(harness), new_harness) {
+            (Some(_), Some(_)) => Err(ToolError::Message(
+                "harness 与 new_harness 只能给一个：绑定已注册的，或注册一个新的。".to_owned(),
+            )),
+            (Some(reference), None) => Ok(Some(HarnessChoice::Existing(
+                resolve::resolve_harness(&self.client, team, reference).await?,
+            ))),
+            (None, Some(new)) => {
+                if new.name.trim().is_empty() {
+                    return Err(ToolError::Message("请给新 Harness 起个名称。".to_owned()));
+                }
+                let presets = self.client.call("list_acp_presets", json!({})).await?;
+                let known: Vec<&str> = presets
+                    .as_array()
+                    .map(|list| {
+                        list.iter()
+                            .filter_map(|preset| preset.get("preset").and_then(Value::as_str))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                if !known.contains(&new.preset.trim()) {
+                    return Err(ToolError::Message(format!(
+                        "没有预设「{}」。可选：{}",
+                        new.preset.trim(),
+                        known.join("、")
+                    )));
+                }
+                Ok(Some(HarnessChoice::New(new)))
+            }
+            (None, None) => Ok(None),
+        }
+    }
+
+    /// 注册（如需要）并绑定 Harness，返回绑定后的岗位卡片。
+    async fn attach(
+        &self,
+        team: &TeamRef,
+        role_id: &str,
+        choice: HarnessChoice,
+    ) -> Result<Value, ToolError> {
+        let harness_id = match choice {
+            HarnessChoice::Existing(harness) => harness.id,
+            HarnessChoice::New(new) => {
+                let created = self
+                    .client
+                    .call(
+                        "create_harness",
+                        json!({ "input": {
+                            "teamId": team.id,
+                            "name": new.name.trim(),
+                            "preset": new.preset.trim(),
+                            "command": clean(new.command.as_deref()),
+                            "args": new.args,
+                            "envProfile": clean(new.env_profile.as_deref()),
+                        }}),
+                    )
+                    .await?;
+                string_of(&created, "id")
+            }
+        };
+        Ok(self
+            .client
+            .call(
+                "bind_role_harness",
+                json!({ "roleId": role_id, "harnessId": harness_id }),
+            )
+            .await?)
     }
 
     /// 发消息给岗位。
@@ -1033,6 +1226,35 @@ fn file_refs(references: &[String]) -> Vec<Value> {
             Some(json!({ "path": path, "anchor": anchor }))
         })
         .collect()
+}
+
+/// 岗位卡片的摘要：岗位、绑定的 Harness，以及这次是否顺带注册了新的 Harness。
+fn role_summary(view: &Value, registered_harness: bool) -> Value {
+    let role = &view["role"];
+    let harness = match view.get("harness").filter(|harness| !harness.is_null()) {
+        Some(harness) => json!({
+            "id": harness.get("id"),
+            "name": harness.get("name"),
+            "preset": harness.get("preset"),
+            "command": harness.get("command"),
+            "args": harness.get("args"),
+            "registered": registered_harness,
+        }),
+        None => Value::Null,
+    };
+    let mut summary = json!({
+        "roleId": role.get("id"),
+        "name": role.get("name"),
+        "code": role.get("code"),
+        "taskPrefix": role.get("taskPrefix"),
+        "description": role.get("description"),
+        "folder": view.get("folder"),
+        "harness": harness,
+    });
+    if summary["harness"].is_null() {
+        summary["hint"] = json!("岗位暂未绑定 Harness，暂不派工；用 bind_role_harness 绑定。");
+    }
+    summary
 }
 
 /// 成功的工具结果：把数据渲染成便于 Leader 阅读的 JSON。
@@ -1454,7 +1676,8 @@ mod tests {
         assert!(interval <= MAX_POLL_INTERVAL, "{interval:?}");
     }
 
-    /// 换绑属 Human 的控制权（D8、D32）：MCP 不提供换绑工具，Leader 换不了 Harness。
+    /// 带执行处置的换绑（等当前执行结束、取消重跑、人工接管）与解绑仍属 Human（D8、D32）；
+    /// 直接绑定由 `bind_role_harness` 提供（D41）。
     #[test]
     fn the_tool_list_has_no_rebind_tools() {
         let names: Vec<String> = TeamspaceServer::tool_router()
@@ -1465,7 +1688,6 @@ mod tests {
         for forbidden in [
             "rebind_role",
             "cancel_pending_rebind",
-            "bind_role_harness",
             "unbind_role_harness",
         ] {
             assert!(

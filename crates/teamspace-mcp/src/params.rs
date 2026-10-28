@@ -267,3 +267,69 @@ pub struct WaitReplyArgs {
     #[serde(default)]
     pub team: Option<String>,
 }
+
+/// 顺带注册一个新的 Harness（Agent 接入）。
+#[derive(Debug, Clone, Default, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+pub struct NewHarnessArgs {
+    /// Harness 名称，在团队未归档的 Harness 里唯一（如「Claude Code（前端）」）。
+    pub name: String,
+    /// 预设：claude_code、codex、minimax_code、gemini_cli、codebuddy、qoder_cli、grok_build、
+    /// qwen_code、kimi_cli、opencode、custom（自定义命令）或 mock（内置测试 Agent，不消耗额度）。
+    pub preset: String,
+    /// 启动命令（命令名或绝对路径）；省略时用预设的默认命令，custom 预设必填。
+    #[serde(default)]
+    pub command: Option<String>,
+    /// 启动参数；省略时用预设的默认参数，给空数组表示不带参数。
+    #[serde(default)]
+    pub args: Option<Vec<String>>,
+    /// 环境配置档案文件的绝对路径（可选，平台只记路径）。
+    #[serde(default)]
+    pub env_profile: Option<String>,
+}
+
+/// 新建岗位的参数。
+#[derive(Debug, Clone, Default, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+pub struct CreateRoleArgs {
+    /// 岗位名称（如「前端开发」）。
+    pub name: String,
+    /// 任务编号前缀：2–4 位大写字母或数字、以字母开头，团队内唯一；省略时自动建议一个。
+    #[serde(default)]
+    pub task_prefix: Option<String>,
+    /// 岗位标识：小写字母开头，只含小写字母、数字和下划线；省略时自动生成，创建后不可改。
+    #[serde(default)]
+    pub code: Option<String>,
+    /// 职责：这个岗位负责什么。
+    #[serde(default)]
+    pub description: Option<String>,
+    /// 工作约定：这个岗位干活要守的规矩。
+    #[serde(default)]
+    pub guidelines: Option<String>,
+    /// 绑定已注册的 Harness：Harness 名称或 id（见 list_harnesses）。与 new_harness 二选一。
+    #[serde(default)]
+    pub harness: Option<String>,
+    /// 顺带注册一个新的 Harness 并绑定。与 harness 二选一；两者都省略时岗位暂不派工。
+    #[serde(default)]
+    pub new_harness: Option<NewHarnessArgs>,
+    /// 团队名称或 id；只有一个团队时可省略。
+    #[serde(default)]
+    pub team: Option<String>,
+}
+
+/// 给岗位绑定 Harness 的参数。
+#[derive(Debug, Clone, Default, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+pub struct BindHarnessArgs {
+    /// 岗位：岗位名称、岗位标识（如 role_frontend）、前缀（如 FE）或岗位 id。
+    pub role: String,
+    /// 已注册的 Harness：名称或 id。与 new_harness 二选一。
+    #[serde(default)]
+    pub harness: Option<String>,
+    /// 顺带注册一个新的 Harness 并绑定。与 harness 二选一。
+    #[serde(default)]
+    pub new_harness: Option<NewHarnessArgs>,
+    /// 团队名称或 id；只有一个团队时可省略。
+    #[serde(default)]
+    pub team: Option<String>,
+}

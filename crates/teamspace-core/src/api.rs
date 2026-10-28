@@ -641,7 +641,12 @@ impl Teamspace {
     /// 前缀必填，2–4 位大写字母或数字、以字母开头，在未归档岗位中唯一；至多一个 Leader。
     /// 同时在工作空间建立岗位文件夹 `Teamspace/<岗位名>/`（重名时加「（岗位标识）」）。
     pub fn create_role(&self, input: CreateRoleInput) -> Result<RoleView> {
-        let view = self.write(|tx| role::create(tx, input))?;
+        self.create_role_as(Actor::Human, input)
+    }
+
+    /// 以指定操作者新增岗位（活动记录的操作者为 `actor`）。
+    pub fn create_role_as(&self, actor: Actor, input: CreateRoleInput) -> Result<RoleView> {
+        let view = self.write(|tx| role::create(tx, input, actor))?;
         self.sync_role_folders(&view.role.team_id);
         self.role_view(&view.role.id)
     }
@@ -675,7 +680,17 @@ impl Teamspace {
 
     /// 绑定或更换岗位的 Harness；Harness 须为同团队未归档实例。记录活动。
     pub fn bind_role_harness(&self, role_id: &str, harness_id: &str) -> Result<RoleView> {
-        let view = self.write(|tx| role::bind(tx, role_id, harness_id))?;
+        self.bind_role_harness_as(Actor::Human, role_id, harness_id)
+    }
+
+    /// 以指定操作者绑定或更换岗位的 Harness（活动记录的操作者为 `actor`）。
+    pub fn bind_role_harness_as(
+        &self,
+        actor: Actor,
+        role_id: &str,
+        harness_id: &str,
+    ) -> Result<RoleView> {
+        let view = self.write(|tx| role::bind(tx, role_id, harness_id, actor))?;
         self.sync_role_folders(&view.role.team_id);
         self.role_view(role_id)
     }
@@ -1160,7 +1175,16 @@ impl Teamspace {
     /// （`custom` 必填，`mock` 固定），须为不含空格的命令名或绝对路径；参数缺省时用预设默认参数；
     /// 环境配置档案若填写须为绝对路径（只记路径）。空白字符串视为未填写。握手状态初始为 unknown。
     pub fn create_harness(&self, input: CreateHarnessInput) -> Result<HarnessInstance> {
-        self.write(|tx| harness::create(tx, input))
+        self.create_harness_as(Actor::Human, input)
+    }
+
+    /// 以指定操作者注册 Harness 实例（活动记录的操作者为 `actor`）。
+    pub fn create_harness_as(
+        &self,
+        actor: Actor,
+        input: CreateHarnessInput,
+    ) -> Result<HarnessInstance> {
+        self.write(|tx| harness::create(tx, input, actor))
     }
 
     /// 编辑 Harness 实例（预设不可改，字段规则同创建）；握手状态重置为 unknown。

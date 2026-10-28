@@ -41,17 +41,17 @@ const EXPECTED_TOOLS: &[&str] = &[
     "reject_review",
     "send_message",
     "wait_reply",
+    "create_role",
+    "bind_role_harness",
 ];
 
-/// 不该由 Leader 触发的操作（D7、D8、D26、D32）。
+/// 不该由 Leader 触发的操作（D7、D8、D26、D32、D41）。
 const FORBIDDEN_TOOLS: &[&str] = &[
     "approve_review",
     "respond_permission",
-    "bind_role_harness",
     "unbind_role_harness",
     "create_harness",
     "create_team",
-    "create_role",
     "resolve_merge_manually",
     "takeover_run",
     // 重发消息、记录决策、通知订阅：都不在 Leader 白名单里（D32）。

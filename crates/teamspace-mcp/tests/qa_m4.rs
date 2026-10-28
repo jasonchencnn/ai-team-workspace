@@ -238,14 +238,13 @@ fn qa_leader_spoofed_extra_arguments_cannot_bypass_privileges() {
             "答复权限请求",
         ),
         (
-            "bind_role_harness",
+            "unbind_role_harness",
             json!({
                 "roleId": env.role_ids[0],
-                "harnessId": env.harness_id,
                 "actor": "human",
                 "override": true,
             }),
-            "换绑岗位的 Harness",
+            "解绑岗位的 Harness",
         ),
     ];
 

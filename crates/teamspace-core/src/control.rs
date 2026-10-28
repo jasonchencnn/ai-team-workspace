@@ -795,9 +795,9 @@ mod tests {
         assert_eq!(created.actor, Actor::Leader);
     }
 
-    /// Leader 经 socket 换绑 Harness 被拒，并留下操作者为 Leader 的越权活动。
+    /// Leader 经 socket 解绑 Harness 被拒，并留下操作者为 Leader 的越权活动。
     #[test]
-    fn leader_binding_harness_is_rejected_over_the_socket() {
+    fn leader_unbinding_harness_is_rejected_over_the_socket() {
         let dir = tempfile::tempdir().unwrap();
         let (ts, path, _server) = serve_in(dir.path());
         let team = ts
@@ -825,12 +825,9 @@ mod tests {
                 env_profile: None,
             })
             .unwrap();
+        ts.bind_role_harness(&role.id, &harness.id).unwrap();
 
-        let reply = request(
-            &path,
-            "bind_role_harness",
-            json!({ "roleId": role.id, "harnessId": harness.id }),
-        );
+        let reply = request(&path, "unbind_role_harness", json!({ "roleId": role.id }));
         assert!(reply.get("ok").is_none(), "{reply}");
         let message = reply["err"]["message"].as_str().unwrap();
         assert!(message.starts_with("Leader 无权执行此操作："), "{message}");
@@ -847,7 +844,7 @@ mod tests {
             .find(|event| event.kind == EventKind::LeaderDenied)
             .expect("越权操作应留下活动");
         assert_eq!(denied.actor, Actor::Leader);
-        assert_eq!(denied.data["command"], "bind_role_harness");
+        assert_eq!(denied.data["command"], "unbind_role_harness");
     }
 
     /// Leader 不能把任务置为已完成。

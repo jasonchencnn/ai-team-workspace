@@ -41,7 +41,8 @@ impl Caller {
 ///
 /// 白名单只在这里定义一次；[`COMMANDS`] 里不在此列表的命令全部拒绝。范围见 D7、D8、D26：
 /// - 查看类：团队、岗位、Harness、看板、任务详情、执行与进度、活动、验收视图、待答复权限；
-/// - 写操作：创建与编辑任务、任务状态变更（不含置为已完成）、开始与取消执行、退回验收。
+/// - 写操作：创建与编辑任务、任务状态变更（不含置为已完成）、开始与取消执行、退回验收；
+///   新增岗位、注册 Harness、给岗位绑定 Harness（D41：Leader 岗位本身除外）。
 pub const LEADER_ALLOWED: &[&str] = &[
     // 查看类
     "list_teams",
@@ -81,6 +82,13 @@ pub const LEADER_ALLOWED: &[&str] = &[
     "list_role_messages",
     // 待我处理（只读：Leader 可以看，但不能记录决策、也不能改通知订阅）
     "get_inbox",
+    // 组建团队（D41）：新增岗位、注册 Harness、给岗位绑定 Harness。
+    // Leader 岗位本身由 Human 在应用里创建和绑定，见 [`leader_allowed`] 与 [`binds_leader_role`]。
+    "suggest_task_prefix",
+    "list_acp_presets",
+    "create_role",
+    "create_harness",
+    "bind_role_harness",
 ];
 
 /// Leader 明确无权执行的操作：即便将来有人误把它加进白名单，这里也会挡住。
@@ -106,7 +114,8 @@ pub fn dispatch(
     if ts.exiting() {
         return Err(bad("应用正在退出，请稍后再试".to_owned()));
     }
-    if caller == Caller::Leader && !leader_allowed(cmd, args) {
+    if caller == Caller::Leader && (!leader_allowed(cmd, args) || binds_leader_role(ts, cmd, args))
+    {
         return Err(deny(ts, cmd, args));
     }
     let actor = caller.actor();
@@ -118,10 +127,11 @@ pub fn dispatch(
         "list_role_templates" => out(Ok(ts.list_role_templates())),
         "suggest_task_prefix" => out(ts.suggest_task_prefix(arg(args, "input")?)),
         "list_roles" => out(ts.list_roles(&arg::<String>(args, "teamId")?)),
-        "create_role" => out(ts.create_role(arg(args, "input")?)),
+        "create_role" => out(ts.create_role_as(actor, arg(args, "input")?)),
         "update_role" => out(ts.update_role(arg(args, "input")?)),
         "archive_role" => out(ts.archive_role(&arg::<String>(args, "roleId")?)),
-        "bind_role_harness" => out(ts.bind_role_harness(
+        "bind_role_harness" => out(ts.bind_role_harness_as(
+            actor,
             &arg::<String>(args, "roleId")?,
             &arg::<String>(args, "harnessId")?,
         )),
@@ -148,7 +158,7 @@ pub fn dispatch(
         "list_acp_presets" => out(Ok(ts.list_acp_presets())),
         "list_harnesses" => out(ts.list_harnesses(&arg::<String>(args, "teamId")?)),
         "get_harness" => out(ts.get_harness(&arg::<String>(args, "harnessId")?)),
-        "create_harness" => out(ts.create_harness(arg(args, "input")?)),
+        "create_harness" => out(ts.create_harness_as(actor, arg(args, "input")?)),
         "update_harness" => out(ts.update_harness(arg(args, "input")?)),
         "archive_harness" => out(ts.archive_harness(&arg::<String>(args, "harnessId")?)),
         "check_harness" => out(ts.check_harness(&arg::<String>(args, "harnessId")?)),
@@ -231,7 +241,33 @@ fn leader_allowed(cmd: &str, args: &Value) -> bool {
     if cmd == "change_task_status" {
         return !changes_to_done(args);
     }
+    if cmd == "create_role" {
+        return !creates_leader_role(args);
+    }
     true
+}
+
+/// 新增岗位的请求是否要建 Leader 岗位（Leader 不允许，D41）。
+fn creates_leader_role(args: &Value) -> bool {
+    args.get("input")
+        .and_then(|input| input.get("role"))
+        .and_then(|role| role.get("isLeader"))
+        .and_then(Value::as_bool)
+        == Some(true)
+}
+
+/// 绑定 Harness 的请求是否落在 Leader 岗位上（Leader 不允许，D41）。
+///
+/// 要查库才知道目标岗位是不是 Leader，所以不放在纯判定的 [`leader_allowed`] 里。
+/// 岗位不存在时放行，由内核报「找不到岗位」。
+fn binds_leader_role(ts: &Teamspace, cmd: &str, args: &Value) -> bool {
+    if cmd != "bind_role_harness" {
+        return false;
+    }
+    let Some(role_id) = args.get("roleId").and_then(Value::as_str) else {
+        return false;
+    };
+    crate::service::role::get_active(&ts.lock(), role_id).is_ok_and(|role| role.is_leader)
 }
 
 /// 变更任务状态的请求是否要把任务置为已完成（Leader 不允许）。
@@ -269,10 +305,10 @@ fn operation_label(cmd: &str) -> String {
         "inspect_workspace" => "探测工作空间目录",
         "list_role_templates" => "读取岗位示例模板",
         "suggest_task_prefix" => "建议任务前缀",
-        "create_role" => "新增岗位",
+        "create_role" => "新增 Leader 岗位",
         "update_role" => "编辑岗位",
         "archive_role" => "归档岗位",
-        "bind_role_harness" => "换绑岗位的 Harness",
+        "bind_role_harness" => "绑定 Leader 岗位的 Harness",
         "unbind_role_harness" => "解绑岗位的 Harness",
         "rebind_role" => "更换岗位的 Harness",
         "cancel_pending_rebind" => "撤销待生效换绑",
@@ -447,13 +483,10 @@ mod tests {
     fn explicitly_denied_commands_are_rejected() {
         let denied = [
             "create_team",
-            "create_role",
             "update_role",
             "archive_role",
-            "create_harness",
             "update_harness",
             "archive_harness",
-            "bind_role_harness",
             "unbind_role_harness",
             "rebind_role",
             "cancel_pending_rebind",
@@ -493,6 +526,106 @@ mod tests {
         }
     }
 
+    /// Leader 可以新增普通岗位，但不能建 Leader 岗位（D41）。
+    #[test]
+    fn creating_a_leader_role_is_not_allowed() {
+        let plain = json!({ "input": { "teamId": "t", "role": { "isLeader": false } } });
+        assert!(leader_allowed("create_role", &plain));
+        let leader = json!({ "input": { "teamId": "t", "role": { "isLeader": true } } });
+        assert!(!leader_allowed("create_role", &leader));
+    }
+
+    /// Leader 组建团队：注册 Harness、新增岗位、绑定，活动的操作者都是 Leader（D41）。
+    #[test]
+    fn leader_staffs_a_role_and_is_recorded_as_leader() {
+        let f = plain_fixture();
+        let team = f.team("团队");
+
+        let harness = dispatch(
+            &f.ts,
+            Caller::Leader,
+            "create_harness",
+            &json!({ "input": { "teamId": team.id, "name": "Mock 甲", "preset": "mock" } }),
+        )
+        .unwrap();
+        let role = dispatch(
+            &f.ts,
+            Caller::Leader,
+            "create_role",
+            &json!({ "input": { "teamId": team.id, "role": {
+                "name": "数据分析", "taskPrefix": "DA", "description": "", "guidelines": "",
+                "isLeader": false,
+            }}}),
+        )
+        .unwrap();
+        let bound = dispatch(
+            &f.ts,
+            Caller::Leader,
+            "bind_role_harness",
+            &json!({ "roleId": role["role"]["id"], "harnessId": harness["id"] }),
+        )
+        .unwrap();
+        assert_eq!(bound["role"]["harnessId"], harness["id"]);
+
+        let events =
+            f.ts.list_events(crate::model::EventQuery {
+                team_id: team.id.clone(),
+                ..Default::default()
+            })
+            .unwrap()
+            .events;
+        for kind in [
+            crate::model::EventKind::HarnessCreated,
+            crate::model::EventKind::RoleCreated,
+            crate::model::EventKind::RoleHarnessBound,
+        ] {
+            let event = events
+                .iter()
+                .find(|event| event.kind == kind)
+                .unwrap_or_else(|| panic!("缺少 {kind:?} 活动"));
+            assert_eq!(event.actor, Actor::Leader, "{kind:?} 的操作者");
+        }
+    }
+
+    /// Leader 岗位的 Harness 只能由 Human 绑定：Leader 请求被拒并留痕（D41）。
+    #[test]
+    fn binding_the_leader_role_is_not_allowed() {
+        let f = plain_fixture();
+        let team = f.team("团队");
+        let leader = match f
+            .ts
+            .list_roles(&team.id)
+            .unwrap()
+            .into_iter()
+            .map(|view| view.role)
+            .find(|role| role.is_leader)
+        {
+            Some(role) => role,
+            None => {
+                f.ts.create_role(crate::model::CreateRoleInput {
+                    team_id: team.id.clone(),
+                    role: crate::tests::new_role("Leader", "role_lead", "LD", true),
+                })
+                .unwrap()
+                .role
+            }
+        };
+        let harness = f.harness(&team.id, "Mock", crate::model::AcpPreset::Mock);
+
+        let err = dispatch(
+            &f.ts,
+            Caller::Leader,
+            "bind_role_harness",
+            &json!({ "roleId": leader.id, "harnessId": harness.id }),
+        )
+        .unwrap_err();
+        assert_eq!(err.kind, crate::error::ErrorKind::Conflict);
+        assert!(err.message.contains("Leader 岗位"), "{}", err.message);
+        let after = f.ts.list_roles(&team.id).unwrap();
+        let after = after.iter().find(|view| view.role.id == leader.id).unwrap();
+        assert_ne!(after.role.harness_id.as_deref(), Some(harness.id.as_str()));
+    }
+
     /// 任务状态可以变更，但置为已完成不允许。
     #[test]
     fn changing_status_to_done_is_not_allowed() {
@@ -519,11 +652,13 @@ mod tests {
         let role = f.role(&team.id, "role_frontend");
         let harness = f.harness(&team.id, "Mock", crate::model::AcpPreset::Mock);
 
+        f.ts.bind_role_harness(&role.id, &harness.id).unwrap();
+
         let err = dispatch(
             &f.ts,
             Caller::Leader,
-            "bind_role_harness",
-            &json!({ "roleId": role.id, "harnessId": harness.id }),
+            "unbind_role_harness",
+            &json!({ "roleId": role.id }),
         )
         .unwrap_err();
         assert_eq!(err.kind, crate::error::ErrorKind::Conflict);
@@ -549,7 +684,7 @@ mod tests {
             .find(|event| event.kind == crate::model::EventKind::LeaderDenied)
             .expect("越权操作应留下活动");
         assert_eq!(denied.actor, Actor::Leader);
-        assert_eq!(denied.data["command"], "bind_role_harness");
+        assert_eq!(denied.data["command"], "unbind_role_harness");
     }
 
     /// 定位不到团队时无处留痕：拒绝仍然生效，但错误里说明「留痕失败」。
@@ -557,7 +692,7 @@ mod tests {
     fn a_denial_that_cannot_be_recorded_says_so() {
         let f = plain_fixture();
         // 一个团队都没有：越权记录无处可挂。
-        let err = dispatch(&f.ts, Caller::Leader, "bind_role_harness", &json!({})).unwrap_err();
+        let err = dispatch(&f.ts, Caller::Leader, "unbind_role_harness", &json!({})).unwrap_err();
         assert_eq!(err.kind, crate::error::ErrorKind::Conflict);
         assert!(
             err.message.starts_with("Leader 无权执行此操作："),

@@ -6,7 +6,9 @@ use serde_json::json;
 use super::event::{self, NewEvent};
 use super::{MAX_LONG_TEXT, MAX_NAME, harness, name_line, rebind, team, text};
 use crate::error::{Error, Result};
-use crate::model::{CreateRoleInput, EventKind, NewRole, Role, RoleRef, RoleView, UpdateRoleInput};
+use crate::model::{
+    Actor, CreateRoleInput, EventKind, NewRole, Role, RoleRef, RoleView, UpdateRoleInput,
+};
 use crate::store::{new_id, now};
 
 const COLS: &str = "id, team_id, name, code, task_prefix, description, guidelines, is_leader, \
@@ -314,11 +316,12 @@ pub(crate) fn suggest_prefix(name: &str, taken: &[String]) -> String {
         .expect("unbounded range always yields a free prefix")
 }
 
-pub(crate) fn create(conn: &Connection, input: CreateRoleInput) -> Result<RoleView> {
+pub(crate) fn create(conn: &Connection, input: CreateRoleInput, actor: Actor) -> Result<RoleView> {
     team::get_active(conn, &input.team_id)?;
     let role = insert(conn, &input.team_id, input.role)?;
-    event::record(
+    event::record_as(
         conn,
+        actor,
         NewEvent {
             team_id: &role.team_id,
             task_id: None,
@@ -419,7 +422,12 @@ pub(crate) fn archive(conn: &Connection, id: &str) -> Result<Role> {
     })
 }
 
-pub(crate) fn bind(conn: &Connection, role_id: &str, harness_id: &str) -> Result<RoleView> {
+pub(crate) fn bind(
+    conn: &Connection,
+    role_id: &str,
+    harness_id: &str,
+    actor: Actor,
+) -> Result<RoleView> {
     let role = get_active(conn, role_id)?;
     let harness = harness::get_active(conn, harness_id)?;
     if harness.team_id != role.team_id {
@@ -437,9 +445,10 @@ pub(crate) fn bind(conn: &Connection, role_id: &str, harness_id: &str) -> Result
         params![role_id, harness_id, now()],
     )?;
     // 手动绑定清掉待生效换绑：手动操作是更近的意图（D35④）。
-    clear_pending_rebind(conn, &role)?;
-    event::record(
+    clear_pending_rebind(conn, &role, actor)?;
+    event::record_as(
         conn,
+        actor,
         NewEvent {
             team_id: &role.team_id,
             task_id: None,
@@ -470,7 +479,7 @@ pub(crate) fn unbind(conn: &Connection, role_id: &str) -> Result<RoleView> {
         params![role_id, now()],
     )?;
     // 手动解绑同样清掉待生效换绑（D35④）。
-    clear_pending_rebind(conn, &role)?;
+    clear_pending_rebind(conn, &role, Actor::Human)?;
     event::record(
         conn,
         NewEvent {
@@ -488,7 +497,7 @@ pub(crate) fn unbind(conn: &Connection, role_id: &str) -> Result<RoleView> {
 /// 清掉该岗位的待生效换绑并记一条「已撤销」活动。
 ///
 /// 手动绑定 / 解绑是更近的意图，待生效的换绑不再等它（D35④）。
-fn clear_pending_rebind(conn: &Connection, role: &Role) -> Result<()> {
+fn clear_pending_rebind(conn: &Connection, role: &Role, actor: Actor) -> Result<()> {
     let Some(pending) = rebind::pending(conn, &role.id)? else {
         return Ok(());
     };
@@ -496,8 +505,9 @@ fn clear_pending_rebind(conn: &Connection, role: &Role) -> Result<()> {
         "DELETE FROM role_pending_bindings WHERE id = ?1",
         params![pending.id],
     )?;
-    event::record(
+    event::record_as(
         conn,
+        actor,
         NewEvent {
             team_id: &role.team_id,
             task_id: None,

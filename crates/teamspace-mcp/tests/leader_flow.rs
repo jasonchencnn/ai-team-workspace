@@ -227,7 +227,11 @@ fn a_leader_orchestrates_the_team_through_mcp() {
 
     // ---- 6. 越权：绕过 MCP 直接问内核，全被拒 -------------------------------
     // MCP 侧根本没有这些工具。
-    for tool in ["approve_review", "respond_permission", "bind_role_harness"] {
+    for tool in [
+        "approve_review",
+        "respond_permission",
+        "unbind_role_harness",
+    ] {
         let call = client.call(tool, json!({}));
         assert!(
             call.protocol_error.is_some(),
@@ -257,9 +261,9 @@ fn a_leader_orchestrates_the_team_through_mcp() {
             "答复权限请求",
         ),
         (
-            "bind_role_harness",
-            json!({ "roleId": env.role_ids[0], "harnessId": env.harness_id }),
-            "换绑岗位的 Harness",
+            "unbind_role_harness",
+            json!({ "roleId": env.role_ids[0] }),
+            "解绑岗位的 Harness",
         ),
     ];
     for (cmd, args, label) in attempts {
@@ -293,7 +297,11 @@ fn a_leader_orchestrates_the_team_through_mcp() {
                 .to_owned()
         })
         .collect();
-    for cmd in ["approve_review", "respond_permission", "bind_role_harness"] {
+    for cmd in [
+        "approve_review",
+        "respond_permission",
+        "unbind_role_harness",
+    ] {
         assert!(
             denied_commands.iter().any(|c| c == cmd),
             "越权记录里应有 {cmd}：{denied_commands:?}"
