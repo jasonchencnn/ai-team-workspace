@@ -5,18 +5,19 @@ import type { LeaderIntegration } from "../../bindings/LeaderIntegration.js";
 /** Leader 通过 teamspace-mcp 能做的事（D26 的白名单范围）。 */
 export const LEADER_CAN_DO: readonly string[] = [
   "查看团队、岗位、Harness、看板与任务详情",
+  "新建岗位并绑定或注册 Harness（Leader 岗位除外）",
   "创建与编辑任务、设置依赖、指定负责岗位",
-  "开始与取消执行，查看执行进度与结果",
-  "查看验收、退回并写意见",
-  "查询等待答复的权限请求",
+  "开始与取消执行（含受阻任务重跑），等任务动态",
+  "评审与退回验收；按自治级别和合并闸门通过验收",
+  "答复规则拿不准的权限请求（必须写理由），或升级给你",
 ];
 
 /** 只能由你在应用里做的事（Leader 无权执行）。 */
 export const LEADER_CANNOT_DO: readonly string[] = [
-  "通过验收并合并到主分支",
-  "答复 Agent 的权限请求",
-  "换绑或新建 Harness、岗位与团队",
-  "修改权限与岗位配置",
+  "放行重度危险的权限请求（推送、提权、凭据、改写 Git 历史）",
+  "超出自治级别或没过闸门的合并",
+  "创建与绑定 Leader 岗位的 Harness，换绑、解绑与归档",
+  "修改团队自动化设置（自治级别）与备份恢复",
 ];
 
 /** 一段可复制的配置。 */

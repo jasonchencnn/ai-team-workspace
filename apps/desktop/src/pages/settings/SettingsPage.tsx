@@ -1,7 +1,8 @@
-// 设置页：数据备份（M7-04）。
+// 设置页：团队自动化（D43）与数据备份（M7-04）。
 // 导出与恢复都只能由 Human 在应用里发起：Leader 经控制 socket 调用会被内核拒绝并留痕。
 import { useMutation } from "@tanstack/react-query";
 import { useState } from "react";
+import { useParams } from "react-router";
 
 import {
   exportBackup,
@@ -14,6 +15,7 @@ import type { BackupExportResult } from "../../bindings/BackupExportResult.js";
 import type { BackupRestoreResult } from "../../bindings/BackupRestoreResult.js";
 import type { BackupSummary } from "../../bindings/BackupSummary.js";
 import { HighRiskConfirm } from "../inbox/HighRiskConfirm.js";
+import { AutomationPanel } from "./AutomationPanel.js";
 import {
   checkBackupDir,
   checkDestDir,
@@ -29,6 +31,7 @@ import "./settings.css";
 
 /** 数据备份设置区。 */
 export function SettingsPage() {
+  const { teamId = "" } = useParams();
   const [destDir, setDestDir] = useState("");
   const [destProblem, setDestProblem] = useState<string | undefined>(undefined);
   const [exported, setExported] = useState<BackupExportResult | null>(null);
@@ -119,8 +122,10 @@ export function SettingsPage() {
     <>
       <PageHeader
         title="设置"
-        description="应用级设置：数据备份与导出。备份与恢复只有你能做，Leader 无权操作。"
+        description="团队自动化与数据备份。这些设置只有你能改，Leader 无权操作。"
       />
+
+      {teamId === "" ? null : <AutomationPanel teamId={teamId} />}
 
       <Panel className="settings__panel">
         <h2 className="settings__panel-title">数据备份</h2>

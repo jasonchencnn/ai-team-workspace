@@ -155,3 +155,16 @@
     width: 100%;
   }
 }
+
+/* 团队自动化：开关一行，文字可换行。 */
+.settings__switch {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  line-height: 1.5;
+}
+
+.settings__switch input {
+  margin-top: 4px;
+  flex: none;
+}
