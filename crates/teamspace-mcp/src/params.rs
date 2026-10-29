@@ -373,3 +373,21 @@ pub struct EscalatePermissionArgs {
     #[serde(default)]
     pub team: Option<String>,
 }
+
+/// 等任务动态的参数。
+#[derive(Debug, Clone, Default, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+pub struct WaitEventsArgs {
+    /// 只等某个任务：任务编号或标题；省略时等团队里任意任务。
+    #[serde(default)]
+    pub task: Option<String>,
+    /// 最多等多少秒（默认 300，最多 600）。
+    #[serde(default)]
+    pub timeout_seconds: Option<u64>,
+    /// 为 true 时只等调用之后新出现的事项；默认 false：已有待处理事项时立刻返回。
+    #[serde(default)]
+    pub only_new: Option<bool>,
+    /// 团队名称或 id；只有一个团队时可省略。
+    #[serde(default)]
+    pub team: Option<String>,
+}

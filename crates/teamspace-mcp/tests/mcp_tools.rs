@@ -46,6 +46,7 @@ const EXPECTED_TOOLS: &[&str] = &[
     "approve_review",
     "answer_permission",
     "escalate_permission",
+    "wait_events",
 ];
 
 /// 不该由 Leader 触发的操作（D7、D8、D26、D32、D41、D42）。

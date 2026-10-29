@@ -185,3 +185,31 @@ fn a_blocked_task_can_be_started_again() {
     let again = again.ok_json();
     assert_eq!(again["attempt"], 2, "{again}");
 }
+
+/// wait_events：派了任务就等，执行完进入待验收时返回这件事（不用轮询看板）。
+#[test]
+fn wait_events_returns_when_a_task_needs_the_leader() {
+    let env = Env::new(false, &[("前端开发", "FE")]);
+    let mut client = Client::start(&env.socket);
+    let quiet = client
+        .call("wait_events", json!({ "timeout_seconds": 1 }))
+        .ok_json();
+    assert_eq!(quiet["timedOut"], true, "{quiet}");
+
+    let (key, _) = start(&mut client, "实现登录页", "");
+    let woke = client
+        .call("wait_events", json!({ "task": key, "timeout_seconds": 60 }))
+        .ok_json();
+    assert_eq!(woke["timedOut"], false, "{woke}");
+    assert_eq!(woke["items"][0]["category"], "review", "{woke}");
+    assert_eq!(woke["items"][0]["taskKey"], key.as_str(), "{woke}");
+
+    // only_new：已有的这条不算，等不到新的就超时。
+    let none = client
+        .call(
+            "wait_events",
+            json!({ "only_new": true, "timeout_seconds": 1 }),
+        )
+        .ok_json();
+    assert_eq!(none["timedOut"], true, "{none}");
+}

@@ -21,7 +21,8 @@ use crate::params::{
     ActivityArgs, AnswerPermissionArgs, BindHarnessArgs, BoardArgs, CancelRunArgs,
     ChangeStatusArgs, CreateRoleArgs, CreateTaskArgs, EscalatePermissionArgs, ListThreadsArgs,
     NewHarnessArgs, RejectReviewArgs, RunProgressArgs, RunStatusArgs, SendMessageArgs,
-    SetDependenciesArgs, TaskArgs, TeamArgs, ThreadArgs, UpdateTaskArgs, WaitReplyArgs,
+    SetDependenciesArgs, TaskArgs, TeamArgs, ThreadArgs, UpdateTaskArgs, WaitEventsArgs,
+    WaitReplyArgs,
 };
 use crate::resolve::{self, HarnessRef, RoleRef, TaskRef, TeamRef};
 
@@ -35,6 +36,10 @@ const ALLOWED_STATUS: &[&str] = &["todo", "ready", "doing", "blocked", "review",
 const DEFAULT_WAIT_SECONDS: u64 = 60;
 /// `wait_reply` 最多等多少秒（超过就按这个值算）。
 const MAX_WAIT_SECONDS: u64 = 600;
+/// `wait_events` 默认等多少秒。
+const DEFAULT_EVENT_WAIT_SECONDS: u64 = 300;
+/// `wait_events` 等的事项类别：待验收、执行失败或受阻、待答复权限（都是 Leader 能处理的）。
+const LEADER_CATEGORIES: &[&str] = &["review", "blocked", "permission"];
 /// `wait_reply` 的轮询间隔起点（之后每次翻倍，见 [`next_poll_interval`]）。
 const POLL_INTERVAL: Duration = Duration::from_millis(500);
 /// `wait_reply` 的轮询间隔上限：不超过 2 秒（brief 要求，够快也不至于压着应用）。
@@ -498,6 +503,21 @@ impl TeamspaceServer {
         Parameters(args): Parameters<BindHarnessArgs>,
     ) -> CallToolResult {
         match self.bind(args).await {
+            Ok(value) => ok(value),
+            Err(err) => fail(err.message()),
+        }
+    }
+
+    /// 等任务动态。
+    #[tool(
+        name = "wait_events",
+        description = "等任务动态：阻塞到有任务进入待验收、执行失败或受阻，或有权限请求等你答复为止，\
+                       最多 timeout_seconds 秒（默认 300，最多 600）。默认已有待处理事项时立刻返回；\
+                       only_new 为 true 时只等新出现的。用它串起「派任务 → 等结果 → 评审 → 合并或退回 → 派下一个」。",
+        annotations(read_only_hint = true)
+    )]
+    async fn wait_events(&self, Parameters(args): Parameters<WaitEventsArgs>) -> CallToolResult {
+        match self.await_events(args).await {
             Ok(value) => ok(value),
             Err(err) => fail(err.message()),
         }
@@ -1237,6 +1257,68 @@ impl TeamspaceServer {
             .client
             .call("reject_review", json!({ "input": input }))
             .await?)
+    }
+
+    /// 等任务动态：轮询「待我处理」里 Leader 能处理的事项，出现（新的）就返回。
+    async fn await_events(&self, args: WaitEventsArgs) -> Result<Value, ToolError> {
+        let started = Instant::now();
+        let timeout = Duration::from_secs(
+            args.timeout_seconds
+                .unwrap_or(DEFAULT_EVENT_WAIT_SECONDS)
+                .clamp(1, MAX_WAIT_SECONDS),
+        );
+        let deadline = started + timeout;
+        let team = self.team(args.team.as_deref()).await?;
+        let task_id = match clean(args.task.as_deref()) {
+            Some(reference) => Some(self.task(Some(&team), reference).await?.id),
+            None => None,
+        };
+        let pending = |inbox: &Value| -> Vec<Value> {
+            inbox
+                .get("items")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter(|item| {
+                    LEADER_CATEGORIES.contains(&string_of(item, "category").as_str())
+                        && task_id
+                            .as_deref()
+                            .is_none_or(|id| string_of(item, "taskId") == id)
+                })
+                .cloned()
+                .collect()
+        };
+        let input = json!({ "input": { "teamId": team.id } });
+        let mut seen: Vec<String> = Vec::new();
+        if args.only_new.unwrap_or(false) {
+            let inbox = self.client.call("get_inbox", input.clone()).await?;
+            seen = pending(&inbox)
+                .iter()
+                .map(|item| string_of(item, "id"))
+                .collect();
+        }
+        let mut interval = POLL_INTERVAL;
+        loop {
+            let inbox = self.client.call("get_inbox", input.clone()).await?;
+            let fresh: Vec<Value> = pending(&inbox)
+                .into_iter()
+                .filter(|item| !seen.contains(&string_of(item, "id")))
+                .collect();
+            let now = Instant::now();
+            if !fresh.is_empty() || now >= deadline {
+                return Ok(json!({
+                    "team": team.name,
+                    "timedOut": fresh.is_empty(),
+                    "waitedSeconds": started.elapsed().as_secs(),
+                    "count": fresh.len(),
+                    "items": fresh,
+                    "hint": "待验收：get_review 后 approve_review 或 reject_review；受阻：run_status 看原因，\
+                             再 start_run 或改任务；权限：answer_permission。",
+                }));
+            }
+            tokio::time::sleep(interval.min(deadline - now)).await;
+            interval = next_poll_interval(interval);
+        }
     }
 
     /// 通过验收：取验收视图里的待验收执行与 head，确认可以通过后再合并（保证合并的就是看过的内容）。
