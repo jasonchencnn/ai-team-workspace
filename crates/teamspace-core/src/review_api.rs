@@ -68,6 +68,13 @@ impl Drop for ReviewGuard<'_> {
     }
 }
 
+/// 合并是怎么落库的：验收当场合并（记操作者），还是按 Git 事实补记上次没落库的合并。
+#[derive(Clone, Copy)]
+enum Settle {
+    Approved(Actor),
+    Reconciled,
+}
+
 /// 合并结果落库后的附加信息。
 struct Settled {
     advanced: Vec<String>,
@@ -270,7 +277,14 @@ impl Core {
         let commit = git
             .branch_head(Path::new(&workspace), &base_branch, Some(&path_env))
             .unwrap_or_default();
-        self.settle_merged(&run, &workspace, &branch, &base_branch, &commit, true)?;
+        self.settle_merged(
+            &run,
+            &workspace,
+            &branch,
+            &base_branch,
+            &commit,
+            Settle::Reconciled,
+        )?;
         Ok(true)
     }
 
@@ -283,8 +297,12 @@ impl Core {
         branch: &str,
         base: &str,
         commit: &str,
-        reconciled: bool,
+        how: Settle,
     ) -> Result<Settled> {
+        let (reconciled, actor) = match how {
+            Settle::Approved(actor) => (false, actor),
+            Settle::Reconciled => (true, Actor::Human),
+        };
         let files = self.dependent_file_checks(&run.task_id)?;
         let advanced = self.write(|tx| {
             review::clear_merging(tx, &run.id)?;
@@ -305,7 +323,7 @@ impl Core {
             run_svc::record_event(
                 tx,
                 run,
-                Actor::Human,
+                actor,
                 EventKind::ReviewApproved,
                 format!(
                     "{} 第 {} 次执行验收通过，已把 {branch} 合并进 {base}（{short}）{how}{tail}",
@@ -324,7 +342,7 @@ impl Core {
                 &run.task_id,
                 TaskStatus::Done,
                 None,
-                Actor::Human,
+                actor,
                 "验收通过并合并",
             )?;
             task::on_task_done(tx, &run.task_id, &files)
@@ -640,6 +658,15 @@ impl Teamspace {
     ///   （冲突文件记在执行上），分支与 worktree 保留；不能合并 → 任务保持待验收，结果给出原因。合并期间任务
     ///   被别处改动时只记 Git 事实与活动，不改任务状态。
     pub fn approve_review(&self, input: ApproveReviewInput) -> Result<ApproveReviewResult> {
+        self.approve_review_as(Actor::Human, input)
+    }
+
+    /// 以指定操作者通过验收（活动记录的操作者为 `actor`；Leader 通过验收见 D42）。
+    pub fn approve_review_as(
+        &self,
+        actor: Actor,
+        input: ApproveReviewInput,
+    ) -> Result<ApproveReviewResult> {
         let (first, first_run) = review::check_pending(&self.lock(), &input.run_id)?;
         let workspace = run_svc::workspace_of(&self.lock(), &first_run.id)?;
         let _guard = self.begin_review(&first.id, &workspace)?;
@@ -662,18 +689,11 @@ impl Teamspace {
                 let advanced = self.write(|tx| {
                     let (task, run) = review::check_pending(tx, &run.id)?;
                     review::set_outcome(tx, &run.id, ReviewOutcome::Approved, None, None)?;
-                    run_svc::move_task(
-                        tx,
-                        &task.id,
-                        TaskStatus::Done,
-                        None,
-                        Actor::Human,
-                        "验收通过",
-                    )?;
+                    run_svc::move_task(tx, &task.id, TaskStatus::Done, None, actor, "验收通过")?;
                     run_svc::record_event(
                         tx,
                         &run,
-                        Actor::Human,
+                        actor,
                         EventKind::ReviewApproved,
                         format!(
                             "{} 第 {} 次执行验收通过（普通文件夹，改动已在原地）",
@@ -687,9 +707,14 @@ impl Teamspace {
                 self.sync_role_folders(&run.team_id);
                 self.emit_run(&run.id);
             }
-            RunIsolation::Worktree => {
-                self.approve_merge(&task, &run, &workspace, input.expected_head, &mut result)?
-            }
+            RunIsolation::Worktree => self.approve_merge(
+                actor,
+                &task,
+                &run,
+                &workspace,
+                input.expected_head,
+                &mut result,
+            )?,
         }
         let conn = self.lock();
         result.task = task::get(&conn, &task.id)?;
@@ -700,6 +725,7 @@ impl Teamspace {
     /// Git 工作空间的「通过」（见 [`Teamspace::approve_review`]）。调用方持有验收标记与仓库锁。
     fn approve_merge(
         &self,
+        actor: Actor,
         task: &Task,
         run: &Run,
         workspace: &str,
@@ -723,7 +749,7 @@ impl Teamspace {
                 run_svc::record_event(
                     tx,
                     run,
-                    Actor::Human,
+                    actor,
                     EventKind::ReviewMergeBlocked,
                     format!(
                         "{} 第 {} 次执行验收通过但现在不能合并：{reason}",
@@ -778,7 +804,14 @@ impl Teamspace {
             review_seam::Merge::Merged { commit } => {
                 result.outcome = ApproveOutcome::Merged;
                 result.merged_commit = Some(commit.clone());
-                let settled = self.settle_merged(run, workspace, &branch, &base, &commit, false)?;
+                let settled = self.settle_merged(
+                    run,
+                    workspace,
+                    &branch,
+                    &base,
+                    &commit,
+                    Settle::Approved(actor),
+                )?;
                 result.advanced_tasks = self.advanced_tasks(&settled.advanced);
                 result.cleanup_problem = settled.cleanup_problem;
             }
@@ -809,7 +842,7 @@ impl Teamspace {
                             &task.id,
                             TaskStatus::Blocked,
                             Some(reason.clone()),
-                            Actor::Human,
+                            actor,
                             "验收合并冲突",
                         )?;
                     }
@@ -821,7 +854,7 @@ impl Teamspace {
                     run_svc::record_event(
                         tx,
                         run,
-                        Actor::Human,
+                        actor,
                         EventKind::ReviewConflict,
                         format!(
                             "{} 第 {} 次执行验收通过但合并冲突：{list}{tail}",

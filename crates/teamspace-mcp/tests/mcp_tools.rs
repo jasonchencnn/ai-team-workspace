@@ -43,12 +43,12 @@ const EXPECTED_TOOLS: &[&str] = &[
     "wait_reply",
     "create_role",
     "bind_role_harness",
-];
-
-/// 不该由 Leader 触发的操作（D7、D8、D26、D32、D41）。
-const FORBIDDEN_TOOLS: &[&str] = &[
     "approve_review",
     "respond_permission",
+];
+
+/// 不该由 Leader 触发的操作（D7、D8、D26、D32、D41、D42）。
+const FORBIDDEN_TOOLS: &[&str] = &[
     "unbind_role_harness",
     "create_harness",
     "create_team",
@@ -319,7 +319,7 @@ fn rejects_a_review_with_a_comment() {
 }
 
 #[test]
-fn lists_pending_permissions_without_answering_them() {
+fn lists_pending_permissions_and_answers_them() {
     let env = env();
     let mut client = Client::start(&env.socket);
     let created = client.call(
@@ -348,14 +348,15 @@ fn lists_pending_permissions_without_answering_them() {
     assert!(prompt["reason"].as_str().is_some(), "{pending}");
     assert!(prompt["options"].is_array(), "{pending}");
 
-    // 答复权限不在这套工具里（只能由人在应用里点）。
-    let denied = client.call("respond_permission", json!({}));
-    assert!(denied.protocol_error.is_some(), "{}", denied.text);
-    assert!(
-        denied.protocol_error.unwrap().contains("tool not found"),
-        "{}",
-        denied.text
+    // Leader 答复（普通命令可以放行，D42）。
+    let answered = client.call(
+        "respond_permission",
+        json!({ "task": key, "option": "allow" }),
     );
+    let answered = answered.ok_json();
+    assert_eq!(answered["kind"], "allow_once", "{answered}");
+    let done = wait_for_status(&mut client, &run_id, RunStatus::Succeeded);
+    assert_eq!(done["status"], "succeeded", "{done}");
 }
 
 #[test]
@@ -369,10 +370,10 @@ fn refuses_operations_the_leader_may_not_do() {
     assert!(!created.is_error, "{}", created.text);
     let key = created.json()["task"]["key"].as_str().unwrap().to_owned();
 
-    // 置为已完成只能由人在应用里点。
+    // 不能直接置为已完成：要走验收。
     let done = client.call("change_task_status", json!({ "task": key, "to": "done" }));
     assert!(done.is_error, "{}", done.text);
-    assert!(done.text.contains("应用"), "{}", done.text);
+    assert!(done.text.contains("approve_review"), "{}", done.text);
 
     // 状态取值不合法。
     let bad = client.call(
@@ -382,14 +383,10 @@ fn refuses_operations_the_leader_may_not_do() {
     assert!(bad.is_error, "{}", bad.text);
     assert!(bad.text.contains("todo"), "{}", bad.text);
 
-    // 合并（通过验收）不提供。
-    let approve = client.call("approve_review", json!({ "run": "x" }));
-    assert!(approve.protocol_error.is_some(), "{}", approve.text);
-    assert!(
-        approve.protocol_error.unwrap().contains("tool not found"),
-        "{}",
-        approve.text
-    );
+    // 还没执行的任务不能通过验收。
+    let approve = client.call("approve_review", json!({ "task": key }));
+    assert!(approve.is_error, "{}", approve.text);
+    assert!(approve.text.contains("不能通过验收"), "{}", approve.text);
 }
 
 #[test]

@@ -7,7 +7,7 @@
 //! 3. 派工执行：`start_run` 后轮询 `run_status` 直到待验收，`run_progress` 能读到进度；
 //! 4. 验收与退回：`get_review` 看到改动，`reject_review` 带意见退回，续接后再次待验收；
 //! 5. 你在应用里点「通过」：测试代码以 Human 身份直接调内核通过验收，下游任务自动就绪；
-//! 6. 越权：绕过 MCP 直接经控制 socket 发「通过验收 / 答复权限 / 换绑 Harness」，全被拒，
+//! 6. 越权：绕过 MCP 直接经控制 socket 发「人工接管 / 换绑 Harness / 解绑 Harness」，全被拒，
 //!    并在活动里留下操作者为 Leader 的越权记录；
 //! 7. 留痕：Leader 的操作在活动里都标为 Leader，你在应用里的操作标为 Human。
 //!
@@ -227,11 +227,7 @@ fn a_leader_orchestrates_the_team_through_mcp() {
 
     // ---- 6. 越权：绕过 MCP 直接问内核，全被拒 -------------------------------
     // MCP 侧根本没有这些工具。
-    for tool in [
-        "approve_review",
-        "respond_permission",
-        "unbind_role_harness",
-    ] {
+    for tool in ["takeover_run", "rebind_role", "unbind_role_harness"] {
         let call = client.call(tool, json!({}));
         assert!(
             call.protocol_error.is_some(),
@@ -239,26 +235,25 @@ fn a_leader_orchestrates_the_team_through_mcp() {
             call.text
         );
     }
-    // 也不能把任务直接置为已完成（完成只能走验收，由你在应用里点）。
+    // 也不能把任务直接置为已完成（完成只能走验收：approve_review）。
     let done = client.call(
         "change_task_status",
         json!({ "task": frontend_key, "to": "done" }),
     );
     assert!(done.is_error, "{}", done.text);
-    assert!(done.text.contains("应用"), "{}", done.text);
-    assert_chinese(&done.text);
+    assert!(done.text.contains("approve_review"), "{}", done.text);
 
     // 直接经控制 socket 发同样的命令：内核按 Leader 身份拒绝。
     let attempts = [
         (
-            "approve_review",
-            json!({ "input": { "runId": revision_id } }),
-            "通过验收（合并）",
+            "takeover_run",
+            json!({ "runId": revision_id }),
+            "人工接管执行",
         ),
         (
-            "respond_permission",
-            json!({ "input": { "runId": revision_id, "requestId": "r1", "optionId": "allow" } }),
-            "答复权限请求",
+            "rebind_role",
+            json!({ "roleId": env.role_ids[0], "harnessInstanceId": env.harness_id, "mode": "after_current" }),
+            "更换岗位的 Harness",
         ),
         (
             "unbind_role_harness",
@@ -297,11 +292,7 @@ fn a_leader_orchestrates_the_team_through_mcp() {
                 .to_owned()
         })
         .collect();
-    for cmd in [
-        "approve_review",
-        "respond_permission",
-        "unbind_role_harness",
-    ] {
+    for cmd in ["takeover_run", "rebind_role", "unbind_role_harness"] {
         assert!(
             denied_commands.iter().any(|c| c == cmd),
             "越权记录里应有 {cmd}：{denied_commands:?}"

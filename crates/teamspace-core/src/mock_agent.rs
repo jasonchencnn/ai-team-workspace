@@ -28,6 +28,7 @@
 //!   `fs/write_text_file` 在岗位过程文件夹写 `mock-<会话>.md` → 总结 → `end_turn`；
 //! - `[mock:perm]`：在默认流程中再申请一次「执行命令」权限（需要 Human 确认），允许则成功执行，
 //!   拒绝则该工具调用失败，之后照常结束；
+//! - `[mock:permcmd=<命令>]`：同 `[mock:perm]`，但申请执行的是给定的命令（如 `git push`）；
 //! - `[mock:outside]`：默认流程之后，申请编辑工作目录根的 `out.md`（岗位文件夹与任务引用文件之外）的权限，
 //!   不论 Human 允许与否都随后通过 `fs/write_text_file` 写入（拒绝时由 Client 拦下）；
 //! - `[mock:readgrant=<kind>|<路径>]`：申请一次 `read` 或 `search`（`kind`）类权限，`locations` 为该路径
@@ -995,12 +996,13 @@ impl Mock<'_> {
             return self.finish(id, "cancelled");
         }
 
-        // 3. [mock:perm]：执行命令需要 Human 确认
+        // 3. [mock:perm] / [mock:permcmd=…]：执行命令需要 Human 确认
         let mut ran = None;
-        if has("perm") {
+        let perm_command = marker_arg(scope, "permcmd").or(has("perm").then_some("echo hello"));
+        if let Some(command) = perm_command {
             self.update(&session, json!({
-                "sessionUpdate": "tool_call", "toolCallId": "mock-exec", "title": "运行 echo hello",
-                "kind": "execute", "status": "pending", "rawInput": { "command": "echo hello" }
+                "sessionUpdate": "tool_call", "toolCallId": "mock-exec", "title": format!("运行 {command}"),
+                "kind": "execute", "status": "pending", "rawInput": { "command": command }
             }))?;
             let reply = self.request(
                 "session/request_permission",

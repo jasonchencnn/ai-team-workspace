@@ -1,8 +1,9 @@
 //! MCP 工具：Leader 通过它们操作 Teamspace。
 //!
 //! 每个工具只做两件事：把 Leader 说的名字/编号解析成 id，再把请求转给桌面应用的本机控制
-//! socket。权限边界在桌面应用的内核里把守（D7、D8、D26、D41）：这里不提供合并、权限答复
-//! 等越权操作，Leader 岗位本身的创建与绑定也留给 Human；后端拒绝时把中文原因原样带回。
+//! socket。权限边界在桌面应用的内核里把守（D7、D8、D26、D41、D42）：Leader 可以答复权限请求、
+//! 通过验收，但重度危险的权限请求只能拒绝；Leader 岗位本身的创建与绑定留给 Human；
+//! 后端拒绝时把中文原因原样带回。
 //!
 //! 工具失败（应用没运行、名字解析不到、后端拒绝）都作为「工具级错误」返回，
 //! Leader 能直接看到中文说明，不会看到协议错误。
@@ -18,13 +19,13 @@ use crate::client::{ControlClient, ControlError};
 use crate::error::ToolError;
 use crate::params::{
     ActivityArgs, BindHarnessArgs, BoardArgs, CancelRunArgs, ChangeStatusArgs, CreateRoleArgs,
-    CreateTaskArgs, ListThreadsArgs, NewHarnessArgs, RejectReviewArgs, RunProgressArgs,
-    RunStatusArgs, SendMessageArgs, SetDependenciesArgs, TaskArgs, TeamArgs, ThreadArgs,
-    UpdateTaskArgs, WaitReplyArgs,
+    CreateTaskArgs, ListThreadsArgs, NewHarnessArgs, RejectReviewArgs, RespondPermissionArgs,
+    RunProgressArgs, RunStatusArgs, SendMessageArgs, SetDependenciesArgs, TaskArgs, TeamArgs,
+    ThreadArgs, UpdateTaskArgs, WaitReplyArgs,
 };
 use crate::resolve::{self, HarnessRef, RoleRef, TaskRef, TeamRef};
 
-/// 任务状态里 Leader 不能设置的：置为已完成要走验收（合并），只能由你在应用里点（D7、D8）。
+/// 任务状态里不能直接设置的：置为已完成要走验收（合并），用 approve_review（D7、D42）。
 const DONE_STATUS: &str = "done";
 
 /// Leader 可以设置的任务状态。
@@ -299,7 +300,7 @@ impl TeamspaceServer {
     /// 待答复的权限请求。
     #[tool(
         name = "pending_permissions",
-        description = "查询正在执行、等待你答复的权限请求（只读）。答复只能由你在 Teamspace 应用里点。",
+        description = "查询正在执行、等待答复的权限请求：命令、涉及路径、原因与可选项。用 respond_permission 答复。",
         annotations(read_only_hint = true)
     )]
     async fn pending_permissions(&self, Parameters(args): Parameters<TeamArgs>) -> CallToolResult {
@@ -339,7 +340,7 @@ impl TeamspaceServer {
     #[tool(
         name = "inbox",
         description = "查看待我处理（只读）：待验收、执行失败或受阻、待答复的权限请求、需要拍板的消息与 Leader 越权记录。\
-                       验收、权限答复、决策需要你在 Teamspace 应用中处理，这里只做查询与提醒。",
+                       验收用 approve_review / reject_review，权限用 respond_permission；记录决策需要你在 Teamspace 应用中处理。",
         annotations(read_only_hint = true)
     )]
     async fn inbox(&self, Parameters(args): Parameters<TeamArgs>) -> CallToolResult {
@@ -501,6 +502,37 @@ impl TeamspaceServer {
         }
     }
 
+    /// 通过验收。
+    #[tool(
+        name = "approve_review",
+        description = "通过验收：普通文件夹任务直接完成；Git 任务把执行分支合并进基线分支（--no-ff，不推送），\
+                       之后任务完成、下游任务自动推进。合并冲突时任务转为受阻并列出冲突文件。先用 get_review 看改动。",
+        annotations(destructive_hint = false)
+    )]
+    async fn approve_review(&self, Parameters(args): Parameters<TaskArgs>) -> CallToolResult {
+        match self.approve(args).await {
+            Ok(value) => ok(value),
+            Err(err) => fail(err.message()),
+        }
+    }
+
+    /// 答复权限请求。
+    #[tool(
+        name = "respond_permission",
+        description = "答复执行中等待确认的权限请求：allow（允许一次）、always（本次执行内总是允许）或 reject（拒绝）。\
+                       重度危险的请求（对外发布与推送、提权与系统级改动、凭据与改写 Git 历史）只能拒绝，放行要由你在应用里点。",
+        annotations(destructive_hint = false)
+    )]
+    async fn respond_permission(
+        &self,
+        Parameters(args): Parameters<RespondPermissionArgs>,
+    ) -> CallToolResult {
+        match self.answer(args).await {
+            Ok(value) => ok(value),
+            Err(err) => fail(err.message()),
+        }
+    }
+
     /// 发消息给岗位。
     #[tool(
         name = "send_message",
@@ -540,10 +572,11 @@ impl ServerHandler for TeamspaceServer {
             .with_instructions(
                 "Teamspace 的 Leader 工具箱：查看团队、岗位、Harness、看板、任务、执行进度与结果、\
                  活动与验收；新建岗位并绑定 Harness（可顺带注册新的 Harness）；\
-                 创建与编辑任务、设置依赖、开始与取消执行、退回验收；\
+                 创建与编辑任务、设置依赖、开始与取消执行、通过或退回验收、答复权限请求；\
                  给岗位发消息、查消息线程、等岗位回复、看待我处理。\
-                 所有操作都转给正在运行的 Teamspace 桌面应用，合并到主分支、Leader 岗位的创建与绑定、\
-                 答复权限请求、记录决策只能由你在 Teamspace 应用中操作。"
+                 所有操作都转给正在运行的 Teamspace 桌面应用。重度危险的权限请求（对外发布与推送、\
+                 提权与系统级改动、凭据与改写 Git 历史）、Leader 岗位的创建与绑定、记录决策只能由你在 \
+                 Teamspace 应用中操作。"
                     .to_owned(),
             )
     }
@@ -648,7 +681,7 @@ impl TeamspaceServer {
         Ok(json!({
             "count": items.len(),
             "permissions": items,
-            "hint": "权限请求只能由你在 Teamspace 应用中答复；这里只做查询与提醒。",
+            "hint": "用 respond_permission 答复；重度危险的请求只能拒绝，放行要由你在 Teamspace 应用中点。",
         }))
     }
 
@@ -717,7 +750,7 @@ impl TeamspaceServer {
             "counts": inbox.get("counts").cloned().unwrap_or(Value::Null),
             "items": items,
             "generatedAt": inbox.get("generatedAt"),
-            "hint": "验收、权限答复、决策需要你在 Teamspace 应用中处理；这里只做查询与提醒。",
+            "hint": "验收用 approve_review / reject_review，权限用 respond_permission；记录决策需要你在 Teamspace 应用中处理。",
         }))
     }
 
@@ -1144,7 +1177,7 @@ impl TeamspaceServer {
         let to = args.to.trim().to_ascii_lowercase();
         if to == DONE_STATUS {
             return Err(ToolError::Message(
-                "不能把任务置为已完成：通过验收（合并）只能由你在 Teamspace 应用中执行。"
+                "不能直接把任务置为已完成：待验收的任务用 approve_review 通过（会合并改动）。"
                     .to_owned(),
             ));
         }
@@ -1186,6 +1219,123 @@ impl TeamspaceServer {
             .client
             .call("reject_review", json!({ "input": input }))
             .await?)
+    }
+
+    /// 通过验收：取验收视图里的待验收执行与 head，确认可以通过后再合并（保证合并的就是看过的内容）。
+    async fn approve(&self, args: TaskArgs) -> Result<Value, ToolError> {
+        let task = self.task_of(args.team.as_deref(), &args.task).await?;
+        let review = self
+            .client
+            .call("get_review", json!({ "taskId": task.id }))
+            .await?;
+        if review.get("canApprove").and_then(Value::as_bool) != Some(true) {
+            let problems: Vec<&str> = review
+                .get("problems")
+                .and_then(Value::as_array)
+                .map(|list| list.iter().filter_map(Value::as_str).collect())
+                .unwrap_or_default();
+            let why = if problems.is_empty() {
+                format!("任务当前状态是「{}」，没有待验收的执行", task.status)
+            } else {
+                problems.join("；")
+            };
+            return Err(ToolError::Message(format!(
+                "{} 现在不能通过验收：{why}。",
+                task.key
+            )));
+        }
+        let run_id = review
+            .pointer("/run/id")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let input = json!({ "runId": run_id, "expectedHead": review.get("headCommit") });
+        let result = self
+            .client
+            .call("approve_review", json!({ "input": input }))
+            .await?;
+        Ok(json!({
+            "task": task.key,
+            "outcome": result.get("outcome"),
+            "taskStatus": result.pointer("/task/status"),
+            "mergedCommit": result.get("mergedCommit"),
+            "conflictFiles": result.get("conflictFiles"),
+            "reason": result.get("reason"),
+            "cleanupProblem": result.get("cleanupProblem"),
+            "advancedTasks": result.get("advancedTasks"),
+        }))
+    }
+
+    /// 答复权限请求：按 allow / always / reject、选项 id 或名称挑出选项。
+    async fn answer(&self, args: RespondPermissionArgs) -> Result<Value, ToolError> {
+        let run = self
+            .pick_run(
+                args.run.as_deref(),
+                args.task.as_deref(),
+                args.team.as_deref(),
+            )
+            .await?;
+        let run_id = string_of(&run, "id");
+        let Some(prompt) = run.get("pendingPermission").filter(|p| !p.is_null()) else {
+            return Err(ToolError::Message(format!(
+                "执行「{run_id}」现在没有等待答复的权限请求（状态：{}）。",
+                string_of(&run, "status")
+            )));
+        };
+        let request_id = match clean(args.request.as_deref()) {
+            Some(request_id) => request_id.to_owned(),
+            None => string_of(prompt, "requestId"),
+        };
+        let options = prompt
+            .get("options")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        let wanted = args.option.trim();
+        let kind = match wanted.to_ascii_lowercase().as_str() {
+            "allow" | "allow_once" | "允许" | "允许一次" => Some("allow_once"),
+            "always" | "allow_always" | "总是允许" => Some("allow_always"),
+            "reject" | "reject_once" | "deny" | "拒绝" => Some("reject_once"),
+            _ => None,
+        };
+        let option = options.iter().find(|option| {
+            string_of(option, "optionId") == wanted
+                || string_of(option, "name") == wanted
+                || kind.is_some_and(|kind| string_of(option, "kind") == kind)
+        });
+        let Some(option) = option else {
+            let names: Vec<String> = options
+                .iter()
+                .map(|option| {
+                    format!(
+                        "{}（{}）",
+                        string_of(option, "name"),
+                        string_of(option, "kind")
+                    )
+                })
+                .collect();
+            return Err(ToolError::Message(format!(
+                "这个权限请求没有「{wanted}」这一项。可选：{}",
+                names.join("、")
+            )));
+        };
+        let input = json!({
+            "runId": run_id,
+            "requestId": request_id,
+            "optionId": option.get("optionId"),
+        });
+        let after = self
+            .client
+            .call("respond_permission", json!({ "input": input }))
+            .await?;
+        Ok(json!({
+            "runId": run_id,
+            "requestId": request_id,
+            "title": prompt.get("title"),
+            "chosen": option.get("name"),
+            "kind": option.get("kind"),
+            "status": after.get("status"),
+            "nextPermission": after.get("pendingPermission"),
+        }))
     }
 
     /// 把一组任务引用解析成 id 列表。
@@ -1563,7 +1713,7 @@ fn update_summary(body: &Value) -> (String, String) {
             if body.get("decision").is_some_and(|d| !d.is_null()) {
                 format!("权限请求：{title}（已答复）")
             } else {
-                format!("权限请求：{title}（等你或用户在 Teamspace 应用里答复）")
+                format!("权限请求：{title}（待答复，可用 respond_permission）")
             }
         }
         "file_write" => {

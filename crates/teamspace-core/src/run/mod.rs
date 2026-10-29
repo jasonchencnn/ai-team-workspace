@@ -29,6 +29,7 @@
 mod fencing_tests;
 
 pub mod brief;
+pub mod danger;
 pub mod env_profile;
 pub mod git_review;
 mod grants;
@@ -160,6 +161,7 @@ enum Msg {
     Permission {
         request_id: String,
         option_id: String,
+        actor: Actor,
         reply: Sender<Result<()>>,
     },
     Stop,
@@ -326,6 +328,7 @@ impl Core {
         run_id: &str,
         request_id: &str,
         option_id: &str,
+        actor: Actor,
     ) -> Result<()> {
         let Some(active) = self.runs.get(run_id) else {
             let run = store_run::get(&self.lock(), run_id)?;
@@ -338,6 +341,7 @@ impl Core {
         if !active.send(Msg::Permission {
             request_id: request_id.to_owned(),
             option_id: option_id.to_owned(),
+            actor,
             reply,
         }) {
             return Err(Error::conflict("执行已结束，权限请求已失效"));
@@ -1630,9 +1634,10 @@ impl Driver {
                 Ok(Msg::Permission {
                     request_id,
                     option_id,
+                    actor,
                     reply,
                 }) => {
-                    let result = self.on_human_decision(&request_id, &option_id);
+                    let result = self.on_human_decision(&request_id, &option_id, actor);
                     let _ = reply.send(result);
                 }
                 Ok(Msg::Stop) => {
@@ -2105,7 +2110,7 @@ impl Driver {
         self.granted.add(&prompt.tool_call_id, real, always);
     }
 
-    fn on_human_decision(&mut self, request_id: &str, option_id: &str) -> Result<()> {
+    fn on_human_decision(&mut self, request_id: &str, option_id: &str, actor: Actor) -> Result<()> {
         let index = self
             .pending
             .iter()
@@ -2168,8 +2173,8 @@ impl Driver {
         let decision = PermissionDecision {
             option_id: Some(option.option_id.clone()),
             kind: option.kind.clone(),
-            by: "human".to_owned(),
-            reason: format!("Human 选择「{}」", option.name),
+            by: crate::store::enum_str(actor),
+            reason: format!("{} 选择「{}」", actor_label(actor), option.name),
             decided_at: now(),
         };
         self.replace(&p.update_id, &permission_body(&p.prompt, Some(decision)));
@@ -3037,6 +3042,14 @@ fn diff_stat(content: &Value) -> Option<DiffStat> {
         added,
         removed,
     })
+}
+
+/// 权限答复里的操作者称呼。
+fn actor_label(actor: Actor) -> &'static str {
+    match actor {
+        Actor::Leader => "Leader",
+        _ => "Human",
+    }
 }
 
 #[cfg(test)]

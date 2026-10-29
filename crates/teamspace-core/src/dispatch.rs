@@ -42,7 +42,8 @@ impl Caller {
 /// 白名单只在这里定义一次；[`COMMANDS`] 里不在此列表的命令全部拒绝。范围见 D7、D8、D26：
 /// - 查看类：团队、岗位、Harness、看板、任务详情、执行与进度、活动、验收视图、待答复权限；
 /// - 写操作：创建与编辑任务、任务状态变更（不含置为已完成）、开始与取消执行、退回验收；
-///   新增岗位、注册 Harness、给岗位绑定 Harness（D41：Leader 岗位本身除外）。
+///   新增岗位、注册 Harness、给岗位绑定 Harness（D41：Leader 岗位本身除外）；
+///   答复权限请求（D42：重度危险的请求只能拒绝）、通过验收并合并（D42）。
 pub const LEADER_ALLOWED: &[&str] = &[
     // 查看类
     "list_teams",
@@ -73,8 +74,11 @@ pub const LEADER_ALLOWED: &[&str] = &[
     // 开始与取消执行
     "start_run",
     "cancel_run",
-    // 退回验收
+    // 退回验收与通过验收（D42：合并到基线分支，不推送）
     "reject_review",
+    "approve_review",
+    // 答复权限请求（D42：重度危险的请求 Leader 只能拒绝，见 [`allows_heavy_danger`]）
+    "respond_permission",
     // 岗位消息（D8：消息由 Leader 发起属正常编排）
     "send_message",
     "list_threads",
@@ -117,6 +121,14 @@ pub fn dispatch(
     if caller == Caller::Leader && (!leader_allowed(cmd, args) || binds_leader_role(ts, cmd, args))
     {
         return Err(deny(ts, cmd, args));
+    }
+    if caller == Caller::Leader
+        && let Some(reason) = allows_heavy_danger(ts, cmd, args)
+    {
+        let message = format!(
+            "这个权限请求属于重度危险操作（{reason}），只能由你在 Teamspace 应用中放行；Leader 可以选择拒绝"
+        );
+        return Err(deny_with(ts, cmd, args, message));
     }
     let actor = caller.actor();
     match cmd {
@@ -189,7 +201,7 @@ pub fn dispatch(
         "list_runs" => out(ts.list_runs(&arg::<String>(args, "taskId")?)),
         "list_active_runs" => out(ts.list_active_runs(&arg::<String>(args, "roleId")?)),
         "list_run_updates" => out(ts.list_run_updates(arg(args, "input")?)),
-        "respond_permission" => out(ts.respond_permission(arg(args, "input")?)),
+        "respond_permission" => out(ts.respond_permission_as(actor, arg(args, "input")?)),
         "get_review" => {
             let task_id = arg::<String>(args, "taskId")?;
             // Leader 轮询验收视图是只读的：不提交执行目录，也不跟 Human 的验收抢仓库锁。
@@ -203,7 +215,7 @@ pub fn dispatch(
             &arg::<String>(args, "runId")?,
             &arg::<String>(args, "path")?,
         )),
-        "approve_review" => out(ts.approve_review(arg(args, "input")?)),
+        "approve_review" => out(ts.approve_review_as(actor, arg(args, "input")?)),
         "reject_review" => out(ts.reject_review_as(actor, arg(args, "input")?)),
         "resolve_merge_manually" => out(ts.resolve_merge_manually(arg(args, "input")?)),
         "rerun_after_conflict" => out(ts.rerun_after_conflict(arg(args, "input")?)),
@@ -256,6 +268,35 @@ fn creates_leader_role(args: &Value) -> bool {
         == Some(true)
 }
 
+/// Leader 要放行的权限请求是否属于重度危险（D42）；是的话返回原因。
+///
+/// 只看「允许」类选项：拒绝总是可以的。执行或选项不存在时不在这里拦，由内核报错。
+fn allows_heavy_danger(ts: &Teamspace, cmd: &str, args: &Value) -> Option<String> {
+    if cmd != "respond_permission" {
+        return None;
+    }
+    let input = args.get("input")?;
+    let run_id = input.get("runId")?.as_str()?;
+    let request_id = input.get("requestId")?.as_str()?;
+    let option_id = input.get("optionId")?.as_str()?;
+    let run = run_svc::get(&ts.lock(), run_id).ok()?;
+    // 没有待答复的请求时交给内核报「不存在或已处理」。执行里只存排在最前的那条请求：
+    // Leader 答的不是它时核对不了内容，按危险处理（宁严勿松）。
+    let prompt = run.pending_permission?;
+    if prompt.request_id != request_id {
+        return Some("还没轮到这条请求，无法核对内容".to_owned());
+    }
+    let allows = prompt
+        .options
+        .iter()
+        .find(|option| option.option_id == option_id)
+        .is_some_and(|option| option.kind.starts_with("allow"));
+    if !allows {
+        return None;
+    }
+    crate::run::danger::heavy_danger(&prompt)
+}
+
 /// 绑定 Harness 的请求是否落在 Leader 岗位上（Leader 不允许，D41）。
 ///
 /// 要查库才知道目标岗位是不是 Leader，所以不放在纯判定的 [`leader_allowed`] 里。
@@ -283,7 +324,11 @@ fn changes_to_done(args: &Value) -> bool {
 /// 留痕失败时（数据库忙、定位不到团队）错误里会带上「留痕失败」：拒绝本身一定生效，
 /// 但 Human 那边看不到这条记录，Leader 应当知道。
 fn deny(ts: &Teamspace, cmd: &str, args: &Value) -> ErrorPayload {
-    let message = leader_denied_message(cmd);
+    deny_with(ts, cmd, args, leader_denied_message(cmd))
+}
+
+/// 以给定说明拒绝越权请求并留痕（同 [`deny`]）。
+fn deny_with(ts: &Teamspace, cmd: &str, args: &Value, message: String) -> ErrorPayload {
     match record_denial(ts, cmd, args, &message) {
         Some(reason) => Error::conflict(format!("{message}（{reason}）")).payload(),
         None => Error::conflict(message).payload(),
@@ -490,8 +535,6 @@ mod tests {
             "unbind_role_harness",
             "rebind_role",
             "cancel_pending_rebind",
-            "respond_permission",
-            "approve_review",
             "resolve_merge_manually",
             "rerun_after_conflict",
             "takeover_run",

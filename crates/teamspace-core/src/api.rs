@@ -1765,7 +1765,16 @@ impl Teamspace {
     /// 回应等待 Human 确认的权限请求：`optionId` 须是该请求的选项之一；请求不存在或已处理为
     /// not_found，执行已结束为 conflict。返回最新的执行记录。
     pub fn respond_permission(&self, input: RespondPermissionInput) -> Result<Run> {
-        self.decide_permission(&input.run_id, &input.request_id, &input.option_id)?;
+        self.respond_permission_as(Actor::Human, input)
+    }
+
+    /// 以指定操作者回应权限请求（答复记录里的操作者为 `actor`；Leader 答复见 D42）。
+    pub fn respond_permission_as(
+        &self,
+        actor: Actor,
+        input: RespondPermissionInput,
+    ) -> Result<Run> {
+        self.decide_permission(&input.run_id, &input.request_id, &input.option_id, actor)?;
         run_svc::get(&self.lock(), &input.run_id)
     }
 

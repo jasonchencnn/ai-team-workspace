@@ -218,24 +218,26 @@ fn qa_leader_spoofed_extra_arguments_cannot_bypass_privileges() {
 
     let attempts = [
         (
-            "approve_review",
+            "takeover_run",
             json!({
-                "input": { "runId": "fake-run-id" },
+                "runId": "fake-run-id",
                 "actor": "human",
                 "caller": "Human",
                 "role": "admin",
                 "force": true,
             }),
-            "通过验收（合并）",
+            "人工接管执行",
         ),
         (
-            "respond_permission",
+            "rebind_role",
             json!({
-                "input": { "runId": "fake-run-id", "requestId": "req-1", "optionId": "allow" },
+                "roleId": env.role_ids[0],
+                "harnessInstanceId": env.harness_id,
+                "mode": "after_current",
                 "actor": "human",
                 "isLeader": false,
             }),
-            "答复权限请求",
+            "更换岗位的 Harness",
         ),
         (
             "unbind_role_harness",
@@ -766,7 +768,7 @@ fn qa_run_lifecycle_waiting_permission_and_failure_reporting() {
         pending_json["hint"]
             .as_str()
             .unwrap()
-            .contains("应用中答复")
+            .contains("respond_permission")
     );
 
     // 收尾清理
@@ -1140,7 +1142,7 @@ fn qa_empty_and_whitespace_only_arguments_validation() {
     );
     assert!(done_status.is_error, "{}", done_status.text);
     assert!(
-        done_status.text.contains("不能把任务置为已完成"),
+        done_status.text.contains("不能直接把任务置为已完成"),
         "{}",
         done_status.text
     );

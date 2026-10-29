@@ -333,3 +333,24 @@ pub struct BindHarnessArgs {
     #[serde(default)]
     pub team: Option<String>,
 }
+
+/// 答复权限请求的参数。
+#[derive(Debug, Clone, Default, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+pub struct RespondPermissionArgs {
+    /// 选哪一项：allow（允许一次）、always（本次执行内总是允许）、reject（拒绝），
+    /// 也可以写选项 id 或选项名称（见 pending_permissions 返回的 options）。
+    pub option: String,
+    /// 任务编号或标题（取该任务最近一次执行）；与 run 二选一。
+    #[serde(default)]
+    pub task: Option<String>,
+    /// 执行 id；与 task 二选一。
+    #[serde(default)]
+    pub run: Option<String>,
+    /// 权限请求 id（pending_permissions 返回的 requestId）；省略时答复该执行当前等待的那条。
+    #[serde(default)]
+    pub request: Option<String>,
+    /// 团队名称或 id；只有一个团队时可省略。
+    #[serde(default)]
+    pub team: Option<String>,
+}

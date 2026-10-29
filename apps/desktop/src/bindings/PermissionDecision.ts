@@ -13,7 +13,8 @@ optionId: string | null,
  */
 kind: string, 
 /**
- * `rule`：按权限规则自动批准；`human`：Human 选择；`cancelled`：执行取消或结束时撤销。
+ * `rule`：按权限规则自动批准；`human`：Human 选择；`leader`：Leader 经 MCP 选择（D42）；
+ * `cancelled`：执行取消或结束时撤销。
  */
 by: string, 
 /**

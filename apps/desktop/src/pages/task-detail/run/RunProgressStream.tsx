@@ -257,7 +257,13 @@ function PermissionRow({ body }: { body: PermissionBody }) {
         ) : decision.kind === "cancelled" ? (
           <Tag tone="neutral">已撤销</Tag>
         ) : decision.kind.startsWith("allow") ? (
-          <Tag tone="success">{decision.by === "rule" ? "自动批准" : "你已允许"}</Tag>
+          <Tag tone="success">
+            {decision.by === "rule"
+              ? "自动批准"
+              : decision.by === "leader"
+                ? "Leader 已允许"
+                : "你已允许"}
+          </Tag>
         ) : (
           <Tag tone="danger">已拒绝</Tag>
         )}

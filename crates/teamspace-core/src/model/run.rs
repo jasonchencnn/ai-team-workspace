@@ -323,7 +323,8 @@ pub struct PermissionDecision {
     pub option_id: Option<String>,
     /// allow_once / allow_always / reject_once / reject_always / cancelled
     pub kind: String,
-    /// `rule`：按权限规则自动批准；`human`：Human 选择；`cancelled`：执行取消或结束时撤销。
+    /// `rule`：按权限规则自动批准；`human`：Human 选择；`leader`：Leader 经 MCP 选择（D42）；
+    /// `cancelled`：执行取消或结束时撤销。
     pub by: String,
     /// 中文说明，如「编辑本岗位文件夹内的文件，自动允许」。
     pub reason: String,
