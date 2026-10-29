@@ -2,9 +2,9 @@
 //!
 //! stdout 留给 MCP 协议，stderr 是普通日志。启动后一直服务到标准输入关闭。
 //!
-//! 控制 socket 的路径：默认是 macOS 应用数据目录下的
-//! `~/Library/Application Support/com.ai-team-workspace.desktop/teamspace-control.sock`，
-//! 可用环境变量 `TEAMSPACE_CONTROL_SOCKET` 覆盖（测试用）。
+//! 控制 socket 的路径：默认是应用数据目录下的 `control/teamspace-control.sock`，
+//! 超过 `sun_path` 上限时改用 `~/.teamspace/control/teamspace-control.sock`
+//! （见 [`teamspace_mcp::client::socket_path_in`]）；可用环境变量 `TEAMSPACE_CONTROL_SOCKET` 覆盖。
 
 use rmcp::ServiceExt;
 use rmcp::transport::stdio;

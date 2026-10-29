@@ -10,9 +10,11 @@ Teamspace 的 MCP stdio 服务：给 Leader（Claude Code / Codex 等外部会�
 
 - **Teamspace 应用要先打开**。没打开时工具会返回「Teamspace 应用没有运行，请先打开 Teamspace」，
   服务本身不会崩。
-- 控制 socket 默认在 macOS 应用数据目录里：
-  `~/Library/Application Support/com.ai-team-workspace.desktop/teamspace-control.sock`
-  （仅当前用户可读写，权限 0600）。可用环境变量 `TEAMSPACE_CONTROL_SOCKET` 覆盖路径（测试用）。
+- 控制 socket 默认在应用数据目录的 `control/` 子目录里
+  （仅当前用户可读写，目录 0700、socket 0600）。路径超过系统 `sun_path` 上限（macOS 103 字节、
+  Linux 107 字节）时改用 `~/.teamspace/control/teamspace-control.sock`——macOS 的
+  `~/Library/Application Support/com.ai-team-workspace.desktop/control/teamspace-control.sock`
+  在用户名超过 7 个字符时就会超长。应用与 MCP 都认环境变量 `TEAMSPACE_CONTROL_SOCKET`，可用它覆盖路径。
 
 ## 在 Claude Code 中接入
 

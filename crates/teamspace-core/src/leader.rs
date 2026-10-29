@@ -31,7 +31,7 @@ pub const MCP_BINARY_NAME: &str = "teamspace-mcp";
 pub const MCP_CONFIG_FILE: &str = ".mcp.json";
 /// 写 `.mcp.json` 前的备份文件名（原文件的内容留在那里）。
 pub const MCP_CONFIG_BACKUP_FILE: &str = ".mcp.json.bak";
-/// 控制 socket 的文件名（放在应用数据目录下的 `control/` 子目录里）。
+/// 控制 socket 的文件名（放在 `control/` 子目录里，见 [`socket_path_in`]）。
 pub const SOCKET_FILE_NAME: &str = "teamspace-control.sock";
 /// 控制 socket 所在子目录（放在应用数据目录下，权限 0700：只有当前用户能进）。
 pub const SOCKET_DIR_NAME: &str = "control";
@@ -68,9 +68,46 @@ pub fn app_data_dir() -> PathBuf {
     PathBuf::from(APP_IDENTIFIER)
 }
 
-/// 控制 socket 的默认路径（应用数据目录下的 `teamspace-control.sock`）。
+/// 控制 socket 路径的字节上限（`sockaddr_un.sun_path` 去掉结尾的 NUL）：macOS 104、Linux 108。
+#[cfg(target_os = "macos")]
+pub const MAX_SOCKET_PATH_BYTES: usize = 103;
+/// 控制 socket 路径的字节上限（`sockaddr_un.sun_path` 去掉结尾的 NUL）：macOS 104、Linux 108。
+#[cfg(not(target_os = "macos"))]
+pub const MAX_SOCKET_PATH_BYTES: usize = 107;
+/// 数据目录下的 socket 路径超长时，改放到家目录下的这个目录里（再套一层 `control/`）。
+pub const SHORT_SOCKET_HOME_DIR: &str = ".teamspace";
+
+/// 数据目录 `data_dir` 对应的控制 socket 路径：优先 `<data_dir>/control/teamspace-control.sock`；
+/// 超过 [`MAX_SOCKET_PATH_BYTES`] 时（macOS 的应用数据目录很长，用户名稍长就超）
+/// 改用 `~/.teamspace/control/teamspace-control.sock`，否则 `bind` 必然失败。
+///
+/// 与 `crates/teamspace-mcp` 里的同名逻辑保持一致。
+pub fn socket_path_in(data_dir: &Path) -> PathBuf {
+    let preferred = data_dir.join(SOCKET_DIR_NAME).join(SOCKET_FILE_NAME);
+    if preferred.as_os_str().len() <= MAX_SOCKET_PATH_BYTES {
+        return preferred;
+    }
+    match std::env::var_os("HOME") {
+        Some(home) => PathBuf::from(home)
+            .join(SHORT_SOCKET_HOME_DIR)
+            .join(SOCKET_DIR_NAME)
+            .join(SOCKET_FILE_NAME),
+        None => preferred,
+    }
+}
+
+/// 控制 socket 的默认路径（应用数据目录对应的 socket，见 [`socket_path_in`]）。
 pub fn default_socket_path() -> PathBuf {
-    app_data_dir().join(SOCKET_DIR_NAME).join(SOCKET_FILE_NAME)
+    socket_path_in(&app_data_dir())
+}
+
+/// 宿主应用实际监听的控制 socket：环境变量 `TEAMSPACE_CONTROL_SOCKET` 优先，
+/// 缺省为数据目录对应的 socket。
+pub fn control_socket_path(data_dir: &Path) -> PathBuf {
+    match std::env::var_os(SOCKET_ENV) {
+        Some(value) if !value.is_empty() => PathBuf::from(value),
+        _ => socket_path_in(data_dir),
+    }
 }
 
 /// `teamspace-mcp` 可执行文件的位置。
@@ -399,7 +436,7 @@ struct LeaderContext {
 impl Teamspace {
     fn leader_context(&self, team_id: &str) -> Result<LeaderContext> {
         let team = team::get_active(&self.lock(), team_id)?;
-        let socket = self.data_dir.join(SOCKET_DIR_NAME).join(SOCKET_FILE_NAME);
+        let socket = control_socket_path(&self.data_dir);
         let socket_override =
             (socket != default_socket_path()).then(|| socket.display().to_string());
         let binary = locate_binary(std::env::current_exe().ok().as_deref());

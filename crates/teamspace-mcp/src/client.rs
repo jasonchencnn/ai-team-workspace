@@ -15,7 +15,7 @@ use serde_json::{Value, json};
 /// 环境变量名：覆盖控制 socket 的路径（测试用）。
 pub const SOCKET_ENV: &str = "TEAMSPACE_CONTROL_SOCKET";
 
-/// 控制 socket 文件名（放在应用数据目录下的 `control/` 子目录里）。
+/// 控制 socket 文件名（放在 `control/` 子目录里，见 [`socket_path_in`]）。
 pub const SOCKET_NAME: &str = "teamspace-control.sock";
 
 /// 控制 socket 所在子目录（放在应用数据目录下，权限 0700：只有当前用户能进）。
@@ -61,9 +61,37 @@ pub fn app_data_dir() -> PathBuf {
     PathBuf::from(APP_IDENTIFIER)
 }
 
-/// 控制 socket 的默认路径（应用数据目录下的 `control/teamspace-control.sock`）。
+/// 控制 socket 路径的字节上限（`sockaddr_un.sun_path` 去掉结尾的 NUL）：macOS 104、Linux 108。
+#[cfg(target_os = "macos")]
+pub const MAX_SOCKET_PATH_BYTES: usize = 103;
+/// 控制 socket 路径的字节上限（`sockaddr_un.sun_path` 去掉结尾的 NUL）：macOS 104、Linux 108。
+#[cfg(not(target_os = "macos"))]
+pub const MAX_SOCKET_PATH_BYTES: usize = 107;
+
+/// 数据目录下的 socket 路径超长时，改放到家目录下的这个目录里（再套一层 `control/`）。
+pub const SHORT_SOCKET_HOME_DIR: &str = ".teamspace";
+
+/// 数据目录 `data_dir` 对应的控制 socket 路径：优先 `<data_dir>/control/teamspace-control.sock`，
+/// 超过 [`MAX_SOCKET_PATH_BYTES`] 时改用 `~/.teamspace/control/teamspace-control.sock`。
+///
+/// 与 `teamspace-core` 的 `leader::socket_path_in` 保持一致（本 crate 不能依赖它，只能各写一份）。
+pub fn socket_path_in(data_dir: &Path) -> PathBuf {
+    let preferred = data_dir.join(SOCKET_DIR_NAME).join(SOCKET_NAME);
+    if preferred.as_os_str().len() <= MAX_SOCKET_PATH_BYTES {
+        return preferred;
+    }
+    match std::env::var_os("HOME") {
+        Some(home) => PathBuf::from(home)
+            .join(SHORT_SOCKET_HOME_DIR)
+            .join(SOCKET_DIR_NAME)
+            .join(SOCKET_NAME),
+        None => preferred,
+    }
+}
+
+/// 控制 socket 的默认路径（应用数据目录对应的 socket，见 [`socket_path_in`]）。
 pub fn default_socket_path() -> PathBuf {
-    app_data_dir().join(SOCKET_DIR_NAME).join(SOCKET_NAME)
+    socket_path_in(&app_data_dir())
 }
 
 /// 与控制 socket 打交道时出的问题。
@@ -264,19 +292,36 @@ mod tests {
     use super::*;
 
     #[test]
-    fn default_path_is_inside_the_app_data_dir() {
+    fn default_path_is_in_a_private_control_dir() {
         let path = default_socket_path();
         assert!(path.ends_with(SOCKET_NAME), "{}", path.display());
-        assert!(
-            path.to_string_lossy().contains(APP_IDENTIFIER),
-            "{}",
-            path.display()
-        );
         // 放在专用子目录里（权限 0700）。
         assert!(
             path.parent().unwrap().ends_with(SOCKET_DIR_NAME),
             "{}",
             path.display()
+        );
+    }
+
+    #[test]
+    fn a_short_data_dir_keeps_the_socket_inside_it() {
+        let dir = Path::new("/tmp/teamspace-data");
+        assert_eq!(
+            socket_path_in(dir),
+            dir.join(SOCKET_DIR_NAME).join(SOCKET_NAME)
+        );
+    }
+
+    #[test]
+    fn a_long_data_dir_moves_the_socket_under_home() {
+        let dir = PathBuf::from("/").join("d".repeat(MAX_SOCKET_PATH_BYTES));
+        let path = socket_path_in(&dir);
+        let home = PathBuf::from(std::env::var_os("HOME").expect("测试环境有 HOME"));
+        assert_eq!(
+            path,
+            home.join(SHORT_SOCKET_HOME_DIR)
+                .join(SOCKET_DIR_NAME)
+                .join(SOCKET_NAME)
         );
     }
 

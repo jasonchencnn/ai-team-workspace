@@ -99,11 +99,6 @@ register_commands!(
     pick_backup_dest_dir,
 );
 
-/// 本机控制 socket 的文件名（放在应用数据目录下的 `control/` 子目录里）。
-const CONTROL_SOCKET_NAME: &str = teamspace_core::leader::SOCKET_FILE_NAME;
-/// 本机控制 socket 所在子目录（放在应用数据目录下，权限 0700）。
-const CONTROL_SOCKET_DIR: &str = teamspace_core::leader::SOCKET_DIR_NAME;
-
 /// Starts the native host.
 pub fn run() -> tauri::Result<()> {
     tauri::Builder::default()
@@ -131,7 +126,7 @@ pub fn run() -> tauri::Result<()> {
                 let _ = notify_handle.emit(NOTIFY_EVENT, event);
             });
             // 本机控制 socket：外部会话（Leader）经它操作 Teamspace，权限边界在内核里把守。
-            let socket_path = dir.join(CONTROL_SOCKET_DIR).join(CONTROL_SOCKET_NAME);
+            let socket_path = teamspace_core::leader::control_socket_path(&dir);
             // 控制 socket 起不来时应用照常运行：只是 Leader 连不上，界面「接入 Leader」处提示。
             let control = match teamspace_core::control::serve(Arc::clone(&teamspace), &socket_path)
             {
