@@ -394,6 +394,15 @@ pub fn respond_permission(
     ts.respond_permission(input)
 }
 
+/// Leader 把权限请求升级给 Human（主要经 MCP 调用；应用里也可调用以记一条说明）。
+#[tauri::command(async)]
+pub fn escalate_permission(
+    ts: State<'_, Arc<Teamspace>>,
+    input: EscalatePermissionInput,
+) -> Result<Run, Error> {
+    ts.escalate_permission(input)
+}
+
 #[tauri::command(async)]
 pub fn get_review(ts: State<'_, Arc<Teamspace>>, task_id: &str) -> Result<ReviewView, Error> {
     ts.get_review(task_id)
@@ -528,6 +537,24 @@ pub fn update_notification_settings(
     input: UpdateNotificationSettingsInput,
 ) -> Result<NotificationSettings, Error> {
     ts.update_notification_settings(input)
+}
+
+// ---------------------------------------------------------------- 团队自动化
+
+#[tauri::command(async)]
+pub fn get_team_automation(
+    ts: State<'_, Arc<Teamspace>>,
+    team_id: String,
+) -> Result<TeamAutomation, Error> {
+    ts.get_team_automation(&team_id)
+}
+
+#[tauri::command(async)]
+pub fn update_team_automation(
+    ts: State<'_, Arc<Teamspace>>,
+    input: UpdateTeamAutomationInput,
+) -> Result<TeamAutomation, Error> {
+    ts.update_team_automation(input)
 }
 
 // ---------------------------------------------------------------- 数据备份

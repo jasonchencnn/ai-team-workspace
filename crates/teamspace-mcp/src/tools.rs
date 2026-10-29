@@ -18,10 +18,10 @@ use serde_json::{Value, json};
 use crate::client::{ControlClient, ControlError};
 use crate::error::ToolError;
 use crate::params::{
-    ActivityArgs, BindHarnessArgs, BoardArgs, CancelRunArgs, ChangeStatusArgs, CreateRoleArgs,
-    CreateTaskArgs, ListThreadsArgs, NewHarnessArgs, RejectReviewArgs, RespondPermissionArgs,
-    RunProgressArgs, RunStatusArgs, SendMessageArgs, SetDependenciesArgs, TaskArgs, TeamArgs,
-    ThreadArgs, UpdateTaskArgs, WaitReplyArgs,
+    ActivityArgs, AnswerPermissionArgs, BindHarnessArgs, BoardArgs, CancelRunArgs,
+    ChangeStatusArgs, CreateRoleArgs, CreateTaskArgs, EscalatePermissionArgs, ListThreadsArgs,
+    NewHarnessArgs, RejectReviewArgs, RunProgressArgs, RunStatusArgs, SendMessageArgs,
+    SetDependenciesArgs, TaskArgs, TeamArgs, ThreadArgs, UpdateTaskArgs, WaitReplyArgs,
 };
 use crate::resolve::{self, HarnessRef, RoleRef, TaskRef, TeamRef};
 
@@ -300,7 +300,7 @@ impl TeamspaceServer {
     /// 待答复的权限请求。
     #[tool(
         name = "pending_permissions",
-        description = "查询正在执行、等待答复的权限请求：命令、涉及路径、原因与可选项。用 respond_permission 答复。",
+        description = "查询正在执行、等待答复的权限请求：命令、涉及路径、原因与可选项。用 answer_permission 答复。",
         annotations(read_only_hint = true)
     )]
     async fn pending_permissions(&self, Parameters(args): Parameters<TeamArgs>) -> CallToolResult {
@@ -340,7 +340,7 @@ impl TeamspaceServer {
     #[tool(
         name = "inbox",
         description = "查看待我处理（只读）：待验收、执行失败或受阻、待答复的权限请求、需要拍板的消息与 Leader 越权记录。\
-                       验收用 approve_review / reject_review，权限用 respond_permission；记录决策需要你在 Teamspace 应用中处理。",
+                       验收用 approve_review / reject_review，权限用 answer_permission；记录决策需要你在 Teamspace 应用中处理。",
         annotations(read_only_hint = true)
     )]
     async fn inbox(&self, Parameters(args): Parameters<TeamArgs>) -> CallToolResult {
@@ -413,7 +413,8 @@ impl TeamspaceServer {
     /// 开始执行。
     #[tool(
         name = "start_run",
-        description = "开始执行任务：任务转为执行中，由负责岗位绑定的 Harness 干活。",
+        description = "开始执行任务：READY 或受阻的任务（如 Agent 登录后重跑）转为执行中，由负责岗位绑定的 Harness 干活。\
+                       任务编号在多个团队重复时请带上 team。",
         annotations(destructive_hint = false)
     )]
     async fn start_run(&self, Parameters(args): Parameters<TaskArgs>) -> CallToolResult {
@@ -518,16 +519,33 @@ impl TeamspaceServer {
 
     /// 答复权限请求。
     #[tool(
-        name = "respond_permission",
-        description = "答复执行中等待确认的权限请求：allow（允许一次）、always（本次执行内总是允许）或 reject（拒绝）。\
-                       重度危险的请求（对外发布与推送、提权与系统级改动、凭据与改写 Git 历史）只能拒绝，放行要由你在应用里点。",
+        name = "answer_permission",
+        description = "答复执行中等待确认的权限请求：allow（允许一次）、always（本次执行内总是允许）或 reject（拒绝），\
+                       必须写理由（记进活动）。常用命令与重度危险命令已由团队规则自动答复，到这里的是规则拿不准的；\
+                       你也拿不准时用 escalate_permission 交给 Human。重度危险的请求只能拒绝。",
         annotations(destructive_hint = false)
     )]
-    async fn respond_permission(
+    async fn answer_permission(
         &self,
-        Parameters(args): Parameters<RespondPermissionArgs>,
+        Parameters(args): Parameters<AnswerPermissionArgs>,
     ) -> CallToolResult {
         match self.answer(args).await {
+            Ok(value) => ok(value),
+            Err(err) => fail(err.message()),
+        }
+    }
+
+    /// 把权限请求升级给 Human。
+    #[tool(
+        name = "escalate_permission",
+        description = "把拿不准的权限请求交给 Human：写清楚拿不准的地方，请求继续等待，Human 在 Teamspace 应用里答复。",
+        annotations(destructive_hint = false)
+    )]
+    async fn escalate_permission(
+        &self,
+        Parameters(args): Parameters<EscalatePermissionArgs>,
+    ) -> CallToolResult {
+        match self.escalate(args).await {
             Ok(value) => ok(value),
             Err(err) => fail(err.message()),
         }
@@ -681,7 +699,7 @@ impl TeamspaceServer {
         Ok(json!({
             "count": items.len(),
             "permissions": items,
-            "hint": "用 respond_permission 答复；重度危险的请求只能拒绝，放行要由你在 Teamspace 应用中点。",
+            "hint": "用 answer_permission 答复；重度危险的请求只能拒绝，放行要由你在 Teamspace 应用中点。",
         }))
     }
 
@@ -750,7 +768,7 @@ impl TeamspaceServer {
             "counts": inbox.get("counts").cloned().unwrap_or(Value::Null),
             "items": items,
             "generatedAt": inbox.get("generatedAt"),
-            "hint": "验收用 approve_review / reject_review，权限用 respond_permission；记录决策需要你在 Teamspace 应用中处理。",
+            "hint": "验收用 approve_review / reject_review，权限用 answer_permission；记录决策需要你在 Teamspace 应用中处理。",
         }))
     }
 
@@ -1266,7 +1284,13 @@ impl TeamspaceServer {
     }
 
     /// 答复权限请求：按 allow / always / reject、选项 id 或名称挑出选项。
-    async fn answer(&self, args: RespondPermissionArgs) -> Result<Value, ToolError> {
+    async fn answer(&self, args: AnswerPermissionArgs) -> Result<Value, ToolError> {
+        let reason = args.reason.trim().to_owned();
+        if reason.is_empty() {
+            return Err(ToolError::Message(
+                "答复权限请求必须写理由：为什么允许或拒绝。".to_owned(),
+            ));
+        }
         let run = self
             .pick_run(
                 args.run.as_deref(),
@@ -1322,6 +1346,7 @@ impl TeamspaceServer {
             "runId": run_id,
             "requestId": request_id,
             "optionId": option.get("optionId"),
+            "reason": reason,
         });
         let after = self
             .client
@@ -1335,6 +1360,43 @@ impl TeamspaceServer {
             "kind": option.get("kind"),
             "status": after.get("status"),
             "nextPermission": after.get("pendingPermission"),
+        }))
+    }
+
+    /// 把权限请求升级给 Human：取该执行当前等待的那条请求。
+    async fn escalate(&self, args: EscalatePermissionArgs) -> Result<Value, ToolError> {
+        let reason = args.reason.trim().to_owned();
+        if reason.is_empty() {
+            return Err(ToolError::Message(
+                "升级给 Human 时要写清楚拿不准的地方。".to_owned(),
+            ));
+        }
+        let run = self
+            .pick_run(
+                args.run.as_deref(),
+                args.task.as_deref(),
+                args.team.as_deref(),
+            )
+            .await?;
+        let run_id = string_of(&run, "id");
+        let Some(prompt) = run.get("pendingPermission").filter(|p| !p.is_null()) else {
+            return Err(ToolError::Message(format!(
+                "执行「{run_id}」现在没有等待答复的权限请求。"
+            )));
+        };
+        let request_id = string_of(prompt, "requestId");
+        self.client
+            .call(
+                "escalate_permission",
+                json!({ "input": { "runId": run_id, "requestId": request_id, "reason": reason } }),
+            )
+            .await?;
+        Ok(json!({
+            "runId": run_id,
+            "requestId": request_id,
+            "title": prompt.get("title"),
+            "escalated": true,
+            "hint": "已交给 Human，请求继续等待；Human 在 Teamspace 应用里答复。",
         }))
     }
 
@@ -1713,7 +1775,7 @@ fn update_summary(body: &Value) -> (String, String) {
             if body.get("decision").is_some_and(|d| !d.is_null()) {
                 format!("权限请求：{title}（已答复）")
             } else {
-                format!("权限请求：{title}（待答复，可用 respond_permission）")
+                format!("权限请求：{title}（待答复，可用 answer_permission）")
             }
         }
         "file_write" => {

@@ -276,6 +276,7 @@ fn k_run_015_permission_decision_after_interruption_is_a_conflict() {
                 run_id: id.clone(),
                 request_id: "any".into(),
                 option_id: "allow".into(),
+                reason: None,
             })
             .unwrap_err();
     assert_eq!(err.kind(), crate::ErrorKind::Conflict);

@@ -79,6 +79,7 @@ pub const LEADER_ALLOWED: &[&str] = &[
     "approve_review",
     // 答复权限请求（D42：重度危险的请求 Leader 只能拒绝，见 [`allows_heavy_danger`]）
     "respond_permission",
+    "escalate_permission",
     // 岗位消息（D8：消息由 Leader 发起属正常编排）
     "send_message",
     "list_threads",
@@ -86,6 +87,8 @@ pub const LEADER_ALLOWED: &[&str] = &[
     "list_role_messages",
     // 待我处理（只读：Leader 可以看，但不能记录决策、也不能改通知订阅）
     "get_inbox",
+    // 团队自动化设置（只读：自治级别等只由 Human 修改，D43）
+    "get_team_automation",
     // 组建团队（D41）：新增岗位、注册 Harness、给岗位绑定 Harness。
     // Leader 岗位本身由 Human 在应用里创建和绑定，见 [`leader_allowed`] 与 [`binds_leader_role`]。
     "suggest_task_prefix",
@@ -99,7 +102,13 @@ pub const LEADER_ALLOWED: &[&str] = &[
 ///
 /// 数据备份（M7-04）在这张名单上：备份里含整个数据库与各团队工作空间的岗位说明与工作日志，
 /// 恢复还会覆盖当前数据——这类操作只能由 Human 在应用里发起。
-pub const LEADER_DENIED: &[&str] = &["export_backup", "inspect_backup", "restore_backup"];
+pub const LEADER_DENIED: &[&str] = &[
+    "export_backup",
+    "inspect_backup",
+    "restore_backup",
+    // 自治级别本身只由 Human 调（D43）：Leader 不能给自己扩权。
+    "update_team_automation",
+];
 
 /// 分发一条命令：按 `cmd` 找到内核方法，参数取自 `args`。
 ///
@@ -202,6 +211,7 @@ pub fn dispatch(
         "list_active_runs" => out(ts.list_active_runs(&arg::<String>(args, "roleId")?)),
         "list_run_updates" => out(ts.list_run_updates(arg(args, "input")?)),
         "respond_permission" => out(ts.respond_permission_as(actor, arg(args, "input")?)),
+        "escalate_permission" => out(ts.escalate_permission(arg(args, "input")?)),
         "get_review" => {
             let task_id = arg::<String>(args, "taskId")?;
             // Leader 轮询验收视图是只读的：不提交执行目录，也不跟 Human 的验收抢仓库锁。
@@ -233,6 +243,8 @@ pub fn dispatch(
         "record_decision" => out(ts.record_decision(arg(args, "input")?)),
         "list_decisions" => out(ts.list_decisions(arg(args, "input")?)),
         "get_notification_settings" => out(ts.get_notification_settings(arg(args, "input")?)),
+        "get_team_automation" => out(ts.get_team_automation(&arg::<String>(args, "teamId")?)),
+        "update_team_automation" => out(ts.update_team_automation(arg(args, "input")?)),
         "update_notification_settings" => out(ts.update_notification_settings(arg(args, "input")?)),
         "export_backup" => out(ts.export_backup(arg(args, "input")?)),
         "inspect_backup" => out(ts.inspect_backup(arg(args, "input")?)),
@@ -384,6 +396,7 @@ fn operation_label(cmd: &str) -> String {
         "record_decision" => "记录决策",
         "list_decisions" => "查看决策记录",
         "get_notification_settings" => "查看通知订阅设置",
+        "update_team_automation" => "修改团队自动化设置（自治级别）",
         "update_notification_settings" => "修改通知订阅设置",
         "export_backup" => "导出数据备份",
         "inspect_backup" => "查看数据备份摘要",

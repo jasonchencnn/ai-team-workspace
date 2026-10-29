@@ -11,4 +11,8 @@ requestId: string,
 /**
  * 选中的 `PermissionOption.optionId`。
  */
-optionId: string, };
+optionId: string, 
+/**
+ * 答复理由；Leader 答复时必填（D43），写进答复记录与活动。
+ */
+reason?: string | null, };

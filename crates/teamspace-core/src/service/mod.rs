@@ -1,5 +1,6 @@
 //! 业务服务：每个函数在调用方提供的连接（通常是事务）上执行，校验规则并写活动记录。
 
+pub(crate) mod automation;
 pub(crate) mod backup;
 pub(crate) mod decision;
 pub(crate) mod dependency;

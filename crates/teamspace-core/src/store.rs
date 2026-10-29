@@ -12,7 +12,7 @@ use time::OffsetDateTime;
 use crate::error::{Error, Result};
 
 /// 当前 schema 版本。
-pub(crate) const SCHEMA_VERSION: i64 = 18;
+pub(crate) const SCHEMA_VERSION: i64 = 19;
 
 const SCHEMA_V1: &str = r#"
 CREATE TABLE teams (
@@ -491,10 +491,25 @@ DROP INDEX message_threads_team;
 CREATE INDEX message_threads_team ON message_threads (team_id, updated_at DESC, id DESC);
 "#;
 
+/// v19：团队自动化设置（D43）。每个团队至多一行，没有行时按默认值（自治级别 0、不推送任务动态）。
+/// 列表类字段存 JSON 数组。
+const SCHEMA_V19: &str = r#"
+CREATE TABLE team_automation (
+    team_id TEXT PRIMARY KEY NOT NULL REFERENCES teams(id),
+    autonomy_level INTEGER NOT NULL DEFAULT 0 CHECK (autonomy_level BETWEEN 0 AND 2),
+    check_command TEXT,
+    protected_paths TEXT NOT NULL DEFAULT '[]',
+    allow_commands TEXT NOT NULL DEFAULT '[]',
+    deny_commands TEXT NOT NULL DEFAULT '[]',
+    notify_leader INTEGER NOT NULL DEFAULT 0,
+    updated_at TEXT NOT NULL
+);
+"#;
+
 const MIGRATIONS: &[&str] = &[
     SCHEMA_V1, SCHEMA_V2, SCHEMA_V3, SCHEMA_V4, SCHEMA_V5, SCHEMA_V6, SCHEMA_V7, SCHEMA_V8,
     SCHEMA_V9, SCHEMA_V10, SCHEMA_V11, SCHEMA_V12, SCHEMA_V13, SCHEMA_V14, SCHEMA_V15, SCHEMA_V16,
-    SCHEMA_V17, SCHEMA_V18,
+    SCHEMA_V17, SCHEMA_V18, SCHEMA_V19,
 ];
 
 /// 打开数据库：WAL 日志、synchronous=NORMAL、开启外键，并迁移到当前版本。

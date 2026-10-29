@@ -768,7 +768,7 @@ fn qa_run_lifecycle_waiting_permission_and_failure_reporting() {
         pending_json["hint"]
             .as_str()
             .unwrap()
-            .contains("respond_permission")
+            .contains("answer_permission")
     );
 
     // 收尾清理

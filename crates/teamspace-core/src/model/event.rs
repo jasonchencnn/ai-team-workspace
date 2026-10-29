@@ -58,6 +58,14 @@ pub enum EventKind {
     /// Leader 越权：外部会话经本机控制 socket 请求了白名单之外的操作，被拒绝并留痕
     /// （`data.command` 为被拒的命令名，`data.message` 为拒绝原因）。
     LeaderDenied,
+    /// 团队自动化设置被修改（D43；`data` 为修改后的设置）。
+    TeamAutomationUpdated,
+    /// 权限请求按团队自动化规则自动允许或拒绝（D43；`data.runId`、`data.kind`、`data.command`）。
+    PermissionAutoAnswered,
+    /// Leader 答复了权限请求（D43；`data.runId`、`data.kind`、`data.reason` 为 Leader 写的理由）。
+    PermissionAnsweredByLeader,
+    /// Leader 把权限请求升级给 Human（D43；`data.runId`、`data.reason`）。
+    PermissionEscalated,
     /// 消息已发出（`data.messageId`、`data.threadId`、`data.toRoleId`）。
     MessageSent,
     /// 消息已收到回复（`data.messageId`、`data.threadId`）。

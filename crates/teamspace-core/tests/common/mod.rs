@@ -216,6 +216,7 @@ impl Env {
                 run_id: run.id.clone(),
                 request_id: prompt.request_id.clone(),
                 option_id: option_id.into(),
+                reason: None,
             })
             .unwrap();
     }

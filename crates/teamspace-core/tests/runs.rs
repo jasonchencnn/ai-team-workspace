@@ -467,6 +467,7 @@ fn permission_needing_human_waits_and_resumes_on_decision() {
         run_id: run.id.clone(),
         request_id: prompt.request_id.clone(),
         option_id: "nope".into(),
+        reason: None,
     });
     assert_eq!(bad.unwrap_err().kind(), ErrorKind::Invalid);
     let after =
@@ -474,6 +475,7 @@ fn permission_needing_human_waits_and_resumes_on_decision() {
             run_id: run.id.clone(),
             request_id: prompt.request_id.clone(),
             option_id: "reject".into(),
+            reason: None,
         })
         .unwrap();
     assert!(after.pending_permission.is_none());
@@ -501,6 +503,7 @@ fn permission_needing_human_waits_and_resumes_on_decision() {
         run_id: run.id.clone(),
         request_id: prompt.request_id,
         option_id: "allow".into(),
+        reason: None,
     });
     assert_eq!(again.unwrap_err().kind(), ErrorKind::Conflict);
 }

@@ -28,6 +28,7 @@
 #[cfg(test)]
 mod fencing_tests;
 
+pub mod auto_rules;
 pub mod brief;
 pub mod danger;
 pub mod env_profile;
@@ -162,6 +163,7 @@ enum Msg {
         request_id: String,
         option_id: String,
         actor: Actor,
+        note: Option<String>,
         reply: Sender<Result<()>>,
     },
     Stop,
@@ -329,6 +331,7 @@ impl Core {
         request_id: &str,
         option_id: &str,
         actor: Actor,
+        note: Option<String>,
     ) -> Result<()> {
         let Some(active) = self.runs.get(run_id) else {
             let run = store_run::get(&self.lock(), run_id)?;
@@ -342,6 +345,7 @@ impl Core {
             request_id: request_id.to_owned(),
             option_id: option_id.to_owned(),
             actor,
+            note,
             reply,
         }) {
             return Err(Error::conflict("执行已结束，权限请求已失效"));
@@ -1635,9 +1639,11 @@ impl Driver {
                     request_id,
                     option_id,
                     actor,
+                    note,
                     reply,
                 }) => {
-                    let result = self.on_human_decision(&request_id, &option_id, actor);
+                    let result =
+                        self.on_human_decision(&request_id, &option_id, actor, note.as_deref());
                     let _ = reply.send(result);
                 }
                 Ok(Msg::Stop) => {
@@ -1973,6 +1979,18 @@ impl Driver {
         }
     }
 
+    /// 按团队自动化设置对一条要确认的权限请求做自动答复（D43）。
+    fn auto_answer(&self, prompt: &PermissionPrompt) -> Option<auto_rules::AutoAnswer> {
+        let settings = crate::service::automation::get(&self.core.lock(), &self.run.team_id).ok();
+        let team = settings
+            .map(|s| auto_rules::TeamRules {
+                allow: s.allow_commands,
+                deny: s.deny_commands,
+            })
+            .unwrap_or_default();
+        auto_rules::decide(prompt, self.scope().exec_dir(), &team)
+    }
+
     fn scope(&self) -> &Scope {
         self.scope
             .as_ref()
@@ -2066,6 +2084,50 @@ impl Driver {
             }
             Verdict::Ask(reason) => reason,
         };
+        // 团队的自动答复规则（D43）：命中允许或拒绝就当场答复，不命中才挂起等 Leader 或 Human。
+        let candidate = prompt(reason.clone());
+        if let Some(answer) = self.auto_answer(&candidate) {
+            let (wanted, reason): (&[&str], String) = match answer {
+                auto_rules::AutoAnswer::Allow(reason) => (&["allow_once", "allow_always"], reason),
+                auto_rules::AutoAnswer::Deny(reason) => (&["reject_once", "reject_always"], reason),
+            };
+            if let Some(option) = wanted
+                .iter()
+                .find_map(|k| options.iter().find(|o| o.kind == *k))
+            {
+                let _ = self.conn().respond(
+                    &rpc_id,
+                    json!({ "outcome": { "outcome": "selected", "optionId": option.option_id } }),
+                );
+                let decision = PermissionDecision {
+                    option_id: Some(option.option_id.clone()),
+                    kind: option.kind.clone(),
+                    by: "rule".to_owned(),
+                    reason: reason.clone(),
+                    decided_at: now(),
+                };
+                self.insert(
+                    Some(&candidate.request_id),
+                    &permission_body(&candidate, Some(decision)),
+                );
+                if option.kind.starts_with("reject") {
+                    let run = self.run.clone();
+                    let command = candidate.command.clone().unwrap_or(candidate.title.clone());
+                    self.db(|tx| {
+                        store_run::record_event(
+                            tx,
+                            &run,
+                            Actor::System,
+                            EventKind::PermissionAutoAnswered,
+                            format!("{} 的权限请求已自动拒绝：{reason}", run.task_key),
+                            json!({ "runId": run.id, "kind": option.kind, "command": command,
+                                    "reason": reason }),
+                        )
+                    });
+                }
+                return;
+            }
+        }
         let p = prompt(reason);
         let Some(update_id) = self.insert(Some(&p.request_id), &permission_body(&p, None)) else {
             let _ = self
@@ -2110,7 +2172,13 @@ impl Driver {
         self.granted.add(&prompt.tool_call_id, real, always);
     }
 
-    fn on_human_decision(&mut self, request_id: &str, option_id: &str, actor: Actor) -> Result<()> {
+    fn on_human_decision(
+        &mut self,
+        request_id: &str,
+        option_id: &str,
+        actor: Actor,
+        note: Option<&str>,
+    ) -> Result<()> {
         let index = self
             .pending
             .iter()
@@ -2174,7 +2242,10 @@ impl Driver {
             option_id: Some(option.option_id.clone()),
             kind: option.kind.clone(),
             by: crate::store::enum_str(actor),
-            reason: format!("{} 选择「{}」", actor_label(actor), option.name),
+            reason: match note {
+                Some(note) => format!("{} 选择「{}」：{note}", actor_label(actor), option.name),
+                None => format!("{} 选择「{}」", actor_label(actor), option.name),
+            },
             decided_at: now(),
         };
         self.replace(&p.update_id, &permission_body(&p.prompt, Some(decision)));

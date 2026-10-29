@@ -8,6 +8,7 @@
 //! - 输出类型中可空字段为 `T | null`；输入类型中可缺省字段为 `field?: T | null`。
 //! - TS 类型由 `pnpm run bindings` 生成到 `apps/desktop/src/bindings/`。
 
+mod automation;
 mod backup;
 mod event;
 mod file;
@@ -23,6 +24,7 @@ mod system;
 mod task;
 mod team;
 
+pub use automation::*;
 pub use backup::*;
 pub use event::*;
 pub use file::*;

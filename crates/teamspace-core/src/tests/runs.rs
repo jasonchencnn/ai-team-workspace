@@ -269,6 +269,7 @@ fn run_lookups_validate_input() {
             run_id: run.id.clone(),
             request_id: "r".into(),
             option_id: "o".into(),
+            reason: None,
         }),
         ErrorKind::Conflict,
     );

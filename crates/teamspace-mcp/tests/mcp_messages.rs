@@ -302,7 +302,7 @@ fn shows_the_inbox_with_a_hint_to_handle_it_in_the_app() {
     assert_eq!(empty["team"], "产品团队", "{empty}");
     let hint = empty["hint"].as_str().unwrap_or_default();
     assert!(hint.contains("approve_review"), "{hint}");
-    assert!(hint.contains("respond_permission"), "{hint}");
+    assert!(hint.contains("answer_permission"), "{hint}");
     assert!(hint.contains("决策"), "{hint}");
     assert!(hint.contains("应用"), "{hint}");
 

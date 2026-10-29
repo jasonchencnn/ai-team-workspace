@@ -37,8 +37,8 @@ use crate::service::rebind::AppliedRebind;
 use crate::service::run::{self as run_svc, Ending, NewRun};
 use crate::service::task::FileCheck;
 use crate::service::{
-    decision, event, folder, handoff, harness, inbox, message, notification, rebind, role, task,
-    team, workspace,
+    automation, decision, event, folder, handoff, harness, inbox, message, notification, rebind,
+    role, task, team, workspace,
 };
 use crate::store;
 use crate::workspace_file;
@@ -112,6 +112,7 @@ pub const COMMANDS: &[&str] = &[
     "list_active_runs",
     "list_run_updates",
     "respond_permission",
+    "escalate_permission",
     "get_review",
     "get_review_file_patch",
     "approve_review",
@@ -131,6 +132,8 @@ pub const COMMANDS: &[&str] = &[
     "list_decisions",
     "get_notification_settings",
     "update_notification_settings",
+    "get_team_automation",
+    "update_team_automation",
     "export_backup",
     "inspect_backup",
     "restore_backup",
@@ -1774,8 +1777,86 @@ impl Teamspace {
         actor: Actor,
         input: RespondPermissionInput,
     ) -> Result<Run> {
-        self.decide_permission(&input.run_id, &input.request_id, &input.option_id, actor)?;
+        let note = input
+            .reason
+            .as_deref()
+            .map(str::trim)
+            .filter(|reason| !reason.is_empty())
+            .map(str::to_owned);
+        if actor == Actor::Leader && note.is_none() {
+            return Err(Error::invalid(
+                "Leader 答复权限请求必须写理由：为什么允许或拒绝",
+            ));
+        }
+        let before = run_svc::get(&self.lock(), &input.run_id)?;
+        self.decide_permission(
+            &input.run_id,
+            &input.request_id,
+            &input.option_id,
+            actor,
+            note.clone(),
+        )?;
+        if actor == Actor::Leader
+            && let Some(prompt) = before
+                .pending_permission
+                .clone()
+                .filter(|prompt| prompt.request_id == input.request_id)
+        {
+            let option = prompt
+                .options
+                .iter()
+                .find(|option| option.option_id == input.option_id);
+            let kind = option.map(|o| o.kind.clone()).unwrap_or_default();
+            let name = option.map(|o| o.name.clone()).unwrap_or_default();
+            let reason = note.unwrap_or_default();
+            let command = prompt.command.clone().unwrap_or(prompt.title.clone());
+            self.write(|tx| {
+                run_svc::record_event(
+                    tx,
+                    &before,
+                    Actor::Leader,
+                    EventKind::PermissionAnsweredByLeader,
+                    format!(
+                        "Leader 答复 {} 的权限请求「{}」：{name}（{reason}）",
+                        before.task_key, prompt.title
+                    ),
+                    serde_json::json!({ "runId": before.id, "requestId": input.request_id,
+                                        "kind": kind, "command": command, "reason": reason }),
+                )
+            })?;
+        }
         run_svc::get(&self.lock(), &input.run_id)
+    }
+
+    /// Leader 把拿不准的权限请求升级给 Human（D43）：请求继续等待，记一条活动，Human 在应用里答复。
+    pub fn escalate_permission(&self, input: crate::model::EscalatePermissionInput) -> Result<Run> {
+        let reason = input.reason.trim();
+        if reason.is_empty() {
+            return Err(Error::invalid("升级给 Human 时要写清楚拿不准的地方"));
+        }
+        let run = run_svc::get(&self.lock(), &input.run_id)?;
+        let Some(prompt) = run
+            .pending_permission
+            .clone()
+            .filter(|prompt| prompt.request_id == input.request_id)
+        else {
+            return Err(Error::not_found("权限请求不存在或已处理"));
+        };
+        self.write(|tx| {
+            run_svc::record_event(
+                tx,
+                &run,
+                Actor::Leader,
+                EventKind::PermissionEscalated,
+                format!(
+                    "Leader 把 {} 的权限请求「{}」交给你处理：{reason}",
+                    run.task_key, prompt.title
+                ),
+                serde_json::json!({ "runId": run.id, "requestId": input.request_id,
+                                    "command": prompt.command, "reason": reason }),
+            )
+        })?;
+        Ok(run)
     }
 
     // ---------------------------------------------------------------- 活动
@@ -1883,6 +1964,42 @@ impl Teamspace {
         let conn = self.lock();
         team::get_active(&conn, &input.team_id)?;
         notification::update(&conn, &input)
+    }
+
+    // ---------------------------------------------------------------- 团队自动化（D43）
+
+    /// 团队的自动化设置：权限自动答复规则、Leader 自治级别与合并闸门、任务动态推送给 Leader。
+    pub fn get_team_automation(&self, team_id: &str) -> Result<crate::model::TeamAutomation> {
+        let conn = self.lock();
+        team::get_active(&conn, team_id)?;
+        automation::get(&conn, team_id)
+    }
+
+    /// 修改团队的自动化设置（整体替换）；只由 Human 在应用里修改。记一条活动。
+    pub fn update_team_automation(
+        &self,
+        input: crate::model::UpdateTeamAutomationInput,
+    ) -> Result<crate::model::TeamAutomation> {
+        self.write(|tx| {
+            team::get_active(tx, &input.team_id)?;
+            let before = automation::get(tx, &input.team_id)?;
+            let after = automation::update(tx, &input)?;
+            event::record(
+                tx,
+                event::NewEvent {
+                    team_id: &input.team_id,
+                    task_id: None,
+                    role_id: None,
+                    kind: crate::model::EventKind::TeamAutomationUpdated,
+                    summary: format!(
+                        "修改团队自动化设置：Leader 自治级别 {} → {}",
+                        before.autonomy_level, after.autonomy_level
+                    ),
+                    data: serde_json::to_value(&after)?,
+                },
+            )?;
+            Ok(after)
+        })
     }
 }
 

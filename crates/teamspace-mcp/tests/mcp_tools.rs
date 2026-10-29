@@ -44,7 +44,8 @@ const EXPECTED_TOOLS: &[&str] = &[
     "create_role",
     "bind_role_harness",
     "approve_review",
-    "respond_permission",
+    "answer_permission",
+    "escalate_permission",
 ];
 
 /// 不该由 Leader 触发的操作（D7、D8、D26、D32、D41、D42）。
@@ -350,8 +351,8 @@ fn lists_pending_permissions_and_answers_them() {
 
     // Leader 答复（普通命令可以放行，D42）。
     let answered = client.call(
-        "respond_permission",
-        json!({ "task": key, "option": "allow" }),
+        "answer_permission",
+        json!({ "task": key, "option": "allow", "reason": "只是 echo，无副作用" }),
     );
     let answered = answered.ok_json();
     assert_eq!(answered["kind"], "allow_once", "{answered}");

@@ -1,7 +1,7 @@
-//! 集成测试：Leader 答复权限请求与通过验收（D42）。
+//! 集成测试：权限请求的自动答复与 Leader 答复（D42、D43），以及 Leader 通过验收。
 //!
-//! 覆盖：普通命令可以放行、操作者记为 Leader；重度危险的命令（推送、提权、凭据）只能拒绝，
-//! 放行被内核挡下并留越权记录；普通文件夹与 Git 工作空间的任务都能由 Leader 通过验收。
+//! 覆盖：常用命令由规则自动允许、重度危险命令由规则自动拒绝；规则拿不准的交给 Leader（必须写理由），
+//! Leader 也拿不准时升级给你；普通文件夹与 Git 工作空间的任务都能由 Leader 通过验收。
 
 mod common;
 
@@ -39,90 +39,104 @@ fn events(client: &mut Client, kind: &str) -> Vec<Value> {
         .collect()
 }
 
-#[test]
-fn the_leader_allows_an_ordinary_command() {
-    let env = Env::new(false, &[("前端开发", "FE")]);
-    let mut client = Client::start(&env.socket);
-    let (key, run_id) = start(
-        &mut client,
-        "跑测试",
-        "[mock:permcmd=cargo test --workspace]",
-    );
-    wait_for_status(&mut client, &run_id, RunStatus::WaitingPermission);
-
-    let answered = client.call(
-        "respond_permission",
-        json!({ "task": key, "option": "always" }),
-    );
-    let answered = answered.ok_json();
-    assert_eq!(answered["kind"], "allow_always", "{answered}");
-    wait_for_status(&mut client, &run_id, RunStatus::Succeeded);
-
-    // 执行进度里的答复记着是 Leader 选的。
+/// 执行进度里各条权限答复的说明（`decision.reason`）。
+fn decisions(env: &Env, run_id: &str) -> String {
     let progress = env
         .ts
         .list_run_updates(teamspace_core::model::RunUpdateQuery {
-            run_id: run_id.clone(),
+            run_id: run_id.to_owned(),
             cursor: None,
             limit: None,
         })
         .unwrap();
-    let decision = serde_json::to_value(&progress).unwrap().to_string();
-    assert!(decision.contains("Leader 选择"), "{decision}");
+    serde_json::to_value(&progress).unwrap().to_string()
 }
 
+/// 常用命令只涉及执行目录：团队规则当场允许，不打扰 Leader 和你（D43）。
 #[test]
-fn heavy_danger_can_only_be_rejected_by_the_leader() {
+fn everyday_commands_are_allowed_by_the_rules() {
     let env = Env::new(false, &[("前端开发", "FE")]);
     let mut client = Client::start(&env.socket);
-    let (key, run_id) = start(&mut client, "发版", "[mock:permcmd=git push origin main]");
+    let (_, run_id) = start(
+        &mut client,
+        "跑测试",
+        "[mock:permcmd=cargo test --workspace]",
+    );
+    wait_for_status(&mut client, &run_id, RunStatus::Succeeded);
+    let text = decisions(&env, &run_id);
+    assert!(text.contains("自动允许"), "{text}");
+}
+
+/// 重度危险的命令：团队规则当场拒绝，并记一条活动（D43）。
+#[test]
+fn dangerous_commands_are_rejected_by_the_rules() {
+    let env = Env::new(false, &[("前端开发", "FE")]);
+    let mut client = Client::start(&env.socket);
+    for command in ["git push origin main", "sudo make install", "git stash"] {
+        let (_, run_id) = start(&mut client, command, &format!("[mock:permcmd={command}]"));
+        wait_for_status(&mut client, &run_id, RunStatus::Succeeded);
+        let text = decisions(&env, &run_id);
+        assert!(text.contains("自动拒绝"), "{command}: {text}");
+    }
+    let rejected = events(&mut client, "permission_auto_answered");
+    assert_eq!(rejected.len(), 3, "{rejected:?}");
+}
+
+/// 规则拿不准的交给 Leader：必须写理由，理由记进执行记录与活动（D43）。
+#[test]
+fn the_leader_answers_what_the_rules_leave_with_a_reason() {
+    let env = Env::new(false, &[("前端开发", "FE")]);
+    let mut client = Client::start(&env.socket);
+    let (key, run_id) = start(&mut client, "装依赖", "[mock:permcmd=pnpm install]");
     wait_for_status(&mut client, &run_id, RunStatus::WaitingPermission);
 
-    // 放行被挡下：说明原因，请求仍在等你答复。
-    let allow = client.call(
-        "respond_permission",
-        json!({ "task": key, "option": "allow" }),
+    let missing = client.call(
+        "answer_permission",
+        json!({ "task": key, "option": "allow", "reason": "  " }),
     );
-    assert!(allow.is_error, "{}", allow.text);
-    assert!(allow.text.contains("重度危险"), "{}", allow.text);
-    assert!(allow.text.contains("git push"), "{}", allow.text);
+    assert!(missing.is_error, "{}", missing.text);
+    assert!(missing.text.contains("理由"), "{}", missing.text);
+
+    let answered = client.call(
+        "answer_permission",
+        json!({ "task": key, "option": "allow", "reason": "锁文件已提交，只装项目依赖" }),
+    );
+    let answered = answered.ok_json();
+    assert_eq!(answered["kind"], "allow_once", "{answered}");
+    wait_for_status(&mut client, &run_id, RunStatus::Succeeded);
+    let text = decisions(&env, &run_id);
+    assert!(text.contains("Leader 选择"), "{text}");
+    assert!(text.contains("锁文件已提交"), "{text}");
+    let logged = events(&mut client, "permission_answered_by_leader");
+    assert_eq!(logged.len(), 1, "{logged:?}");
+    assert_eq!(logged[0]["actor"], "leader");
+    assert_eq!(logged[0]["data"]["reason"], "锁文件已提交，只装项目依赖");
+}
+
+/// Leader 拿不准时升级给你：请求继续等待，记一条活动（D43）。
+#[test]
+fn the_leader_can_escalate_to_the_human() {
+    let env = Env::new(false, &[("前端开发", "FE")]);
+    let mut client = Client::start(&env.socket);
+    let (key, run_id) = start(
+        &mut client,
+        "读主仓库",
+        "[mock:permcmd=cat /Volumes/other/secret-plan.md]",
+    );
+    wait_for_status(&mut client, &run_id, RunStatus::WaitingPermission);
+
+    let escalated = client.call(
+        "escalate_permission",
+        json!({ "task": key, "reason": "要读工作空间外的文件，不确定是否涉密" }),
+    );
+    let escalated = escalated.ok_json();
+    assert_eq!(escalated["escalated"], true, "{escalated}");
     let still = client
         .call("run_status", json!({ "run": run_id }))
         .ok_json();
     assert_eq!(still["status"], "waiting_permission", "{still}");
-    let denied = events(&mut client, "leader_denied");
-    assert_eq!(denied.len(), 1, "{denied:?}");
-    assert_eq!(denied[0]["data"]["command"], "respond_permission");
-
-    // 拒绝总是可以的。
-    let reject = client.call(
-        "respond_permission",
-        json!({ "task": key, "option": "reject" }),
-    );
-    let reject = reject.ok_json();
-    assert_eq!(reject["kind"], "reject_once", "{reject}");
-}
-
-#[test]
-fn credentials_and_privilege_are_heavy_danger_too() {
-    let env = Env::new(false, &[("前端开发", "FE")]);
-    let mut client = Client::start(&env.socket);
-    for command in ["sudo make install", "cat ~/.ssh/id_ed25519"] {
-        let (key, run_id) = start(&mut client, command, &format!("[mock:permcmd={command}]"));
-        wait_for_status(&mut client, &run_id, RunStatus::WaitingPermission);
-        let allow = client.call(
-            "respond_permission",
-            json!({ "task": key, "option": "allow" }),
-        );
-        assert!(allow.is_error, "{command}: {}", allow.text);
-        assert!(allow.text.contains("重度危险"), "{}", allow.text);
-        client
-            .call(
-                "respond_permission",
-                json!({ "task": key, "option": "reject" }),
-            )
-            .ok_json();
-    }
+    let logged = events(&mut client, "permission_escalated");
+    assert_eq!(logged.len(), 1, "{logged:?}");
 }
 
 #[test]
@@ -155,4 +169,19 @@ fn the_leader_merges_a_git_review() {
     // 再通过一次：没有待验收的执行了。
     let again = client.call("approve_review", json!({ "task": key }));
     assert!(again.is_error, "{}", again.text);
+}
+
+/// 受阻的任务（例如 Agent 要求登录导致执行失败）登录后可以由 Leader 直接重新开始执行。
+#[test]
+fn a_blocked_task_can_be_started_again() {
+    let env = Env::new(false, &[("前端开发", "FE")]);
+    let mut client = Client::start(&env.socket);
+    let (key, run_id) = start(&mut client, "交叉评审", "[mock:auth]");
+    wait_for_status(&mut client, &run_id, RunStatus::Failed);
+    let task = client.call("get_task", json!({ "task": key })).ok_json();
+    assert_eq!(task["task"]["status"], "blocked", "{task}");
+
+    let again = client.call("start_run", json!({ "task": key }));
+    let again = again.ok_json();
+    assert_eq!(again["attempt"], 2, "{again}");
 }

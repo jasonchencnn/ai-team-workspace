@@ -442,6 +442,21 @@ pub struct RespondPermissionInput {
     pub request_id: String,
     /// 选中的 `PermissionOption.optionId`。
     pub option_id: String,
+    /// 答复理由；Leader 答复时必填（D43），写进答复记录与活动。
+    #[serde(default)]
+    #[ts(optional = nullable)]
+    pub reason: Option<String>,
+}
+
+/// Leader 把权限请求升级给 Human（D43）：请求继续等待，Human 在应用里答复。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct EscalatePermissionInput {
+    pub run_id: String,
+    pub request_id: String,
+    /// 为什么拿不准（必填）。
+    pub reason: String,
 }
 
 /// 内核推送给前端的执行事件（Tauri 事件名 [`crate::api::RUN_EVENT`]）。

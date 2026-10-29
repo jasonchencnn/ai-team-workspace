@@ -24,6 +24,9 @@ import type { CreateRoleInput } from "../bindings/CreateRoleInput.js";
 import type { CreateTaskInput } from "../bindings/CreateTaskInput.js";
 import type { CreateTeamInput } from "../bindings/CreateTeamInput.js";
 import type { Decision } from "../bindings/Decision.js";
+import type { EscalatePermissionInput } from "../bindings/EscalatePermissionInput.js";
+import type { TeamAutomation } from "../bindings/TeamAutomation.js";
+import type { UpdateTeamAutomationInput } from "../bindings/UpdateTeamAutomationInput.js";
 import type { ErrorPayload } from "../bindings/ErrorPayload.js";
 import type { EventPage } from "../bindings/EventPage.js";
 import type { EventQuery } from "../bindings/EventQuery.js";
@@ -308,6 +311,10 @@ export const listRunUpdates = (input: RunUpdateQuery) =>
 export const respondPermission = (input: RespondPermissionInput) =>
   invoke<Run>("respond_permission", { input });
 
+/** 把权限请求升级给 Human（D43）：请求继续等待，记一条活动。 */
+export const escalatePermission = (input: EscalatePermissionInput) =>
+  invoke<Run>("escalate_permission", { input });
+
 // ---------------------------------------------------------------- 验收
 
 /** 验收页数据：待验收的执行、摘要、改动文件、能否通过 / 退回及原因、历次退回意见。 */
@@ -398,6 +405,16 @@ export const getNotificationSettings = (input: GetNotificationSettingsInput) =>
 /** 修改通知订阅设置，返回修改后的设置。 */
 export const updateNotificationSettings = (input: UpdateNotificationSettingsInput) =>
   invoke<NotificationSettings>("update_notification_settings", { input });
+
+// ---------------------------------------------------------------- 团队自动化
+
+/** 团队自动化设置：权限自动答复规则、Leader 自治级别与合并闸门、任务动态推送给 Leader。 */
+export const getTeamAutomation = (teamId: string) =>
+  invoke<TeamAutomation>("get_team_automation", { teamId });
+
+/** 修改团队自动化设置（整体替换），返回修改后的设置。 */
+export const updateTeamAutomation = (input: UpdateTeamAutomationInput) =>
+  invoke<TeamAutomation>("update_team_automation", { input });
 
 // ---------------------------------------------------------------- 数据备份
 

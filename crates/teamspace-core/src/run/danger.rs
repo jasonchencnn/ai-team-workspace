@@ -194,7 +194,7 @@ pub fn path_danger(path: &str) -> Option<&'static str> {
 }
 
 /// 按 shell 分隔符切段。
-fn segments(command: &str) -> impl Iterator<Item = &str> {
+pub(crate) fn segments(command: &str) -> impl Iterator<Item = &str> {
     command
         .split(['\n', ';', '|', '&'])
         .map(str::trim)
@@ -211,7 +211,7 @@ fn words(segment: &str) -> Vec<&str> {
 }
 
 /// 切词并去掉开头的 `FOO=bar` 赋值与 `env`、`command`、`exec`、`time`、`nohup` 前缀。
-fn program_words(segment: &str) -> Vec<&str> {
+pub(crate) fn program_words(segment: &str) -> Vec<&str> {
     let all = words(segment);
     let start = all
         .iter()

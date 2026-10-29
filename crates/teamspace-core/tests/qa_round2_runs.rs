@@ -159,7 +159,7 @@ def prompt(mid, params):
         r = call("session/request_permission", {
             "sessionId": session,
             "toolCall": {"toolCallId": "x1", "title": "运行脚本", "kind": "execute", "status": "pending",
-                         "locations": [{"path": path}], "rawInput": {"command": "touch " + path}},
+                         "locations": [{"path": path}], "rawInput": {"command": "printf x > " + path}},
             "options": ALLOW,
         })
         log("perm_outcome=" + json.dumps(r.get("result")))
@@ -1128,6 +1128,7 @@ fn k_run_008_waiting_for_human_does_not_count_towards_the_idle_timeout() {
         run_id: run.id.clone(),
         request_id: request.request_id,
         option_id: "allow".into(),
+        reason: None,
     })
     .unwrap();
     let done = e.wait_end(&run.id);
@@ -1468,6 +1469,7 @@ fn k_perm_004_human_allowed_execute_does_not_grant_write() {
         run_id: run.id.clone(),
         request_id: request.request_id,
         option_id: "allow".into(),
+        reason: None,
     })
     .unwrap();
     let run = e.wait_end(&run.id);
@@ -1507,6 +1509,7 @@ fn editgrant(e: &Env, path: &Path, extra: &Path, choose: &str) -> Vec<String> {
         run_id: run.id.clone(),
         request_id: request.request_id,
         option_id: choose.into(),
+        reason: None,
     })
     .unwrap();
     let run = e.wait_end(&run.id);
@@ -1587,6 +1590,7 @@ fn outside_read(e: &Env, path: &Path, choose: &str) -> (Vec<String>, PermissionP
         run_id: run.id.clone(),
         request_id: request.request_id.clone(),
         option_id: choose.into(),
+        reason: None,
     })
     .unwrap();
     let run = e.wait_end(&run.id);
@@ -1682,6 +1686,7 @@ fn k_perm_007_multiple_requests_and_invalid_responses() {
             run_id: run.id.clone(),
             request_id: request_id.into(),
             option_id: option.into(),
+            reason: None,
         })
     };
     // 1) 不存在的请求 ID。
@@ -1759,6 +1764,7 @@ fn k_perm_010_read_without_allow_option_goes_to_human_and_grants_nothing() {
         run_id: run.id.clone(),
         request_id: prompt.request_id,
         option_id: "reject".into(),
+        reason: None,
     })
     .unwrap();
     let done = e.wait_end(&run.id);
