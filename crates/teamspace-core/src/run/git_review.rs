@@ -7,6 +7,7 @@ use std::process::Command;
 use std::time::Duration;
 
 use crate::model::FileChangeKind;
+use crate::role_folder::ROOT_DIR;
 use crate::run::worktree::{GIT_TIMEOUT, git, git_with_timeout};
 
 /// 单个文件补丁的最大字节数。
@@ -421,6 +422,55 @@ fn checkout_collision(
     Ok(None)
 }
 
+/// 合并前把主工作区 `Teamspace/` 下未提交的改动（岗位说明、工作日志，都是 Teamspace 自己写的）
+/// 提交到基线分支，免得它们挡住合并。
+///
+/// 只在基线分支正检出在主工作区、且没有进行中的合并或变基时做；只提交这个目录（`commit -- <目录>`
+/// 不带上别处已暂存的内容），其他未提交改动照旧由后面的检查拦下合并。返回是否新建了提交。
+fn commit_teamspace_folder(
+    root: &Path,
+    base_ref: &str,
+    path_env: Option<&OsStr>,
+) -> Result<bool, String> {
+    let on_base = matches!(
+        git(root, &["symbolic-ref", "--quiet", "HEAD"], path_env),
+        Ok(head) if head.trim() == base_ref
+    );
+    if !on_base || operation_in_progress(root, path_env)? {
+        return Ok(false);
+    }
+    let dirty = git(
+        root,
+        &[
+            "status",
+            "--porcelain=v1",
+            "-z",
+            "--untracked-files=all",
+            "--",
+            ROOT_DIR,
+        ],
+        path_env,
+    )?;
+    if dirty.is_empty() {
+        return Ok(false);
+    }
+    git(root, &["add", "--all", "--", ROOT_DIR], path_env)?;
+    with_identity(
+        root,
+        &[
+            "commit",
+            "--author=Teamspace <teamspace@localhost>",
+            "-m",
+            "chore(teamspace): 更新岗位文件夹",
+            "--",
+            ROOT_DIR,
+        ],
+        path_env,
+        GIT_TIMEOUT,
+    )?;
+    Ok(true)
+}
+
 /// 预检成功后以 --no-ff 合并；未检出的基线通过双亲提交与 update-ref CAS 推进。
 pub fn merge_into_base(
     repo_dir: &Path,
@@ -496,6 +546,23 @@ pub fn merge_into_base(
         }
         return Ok(MergeOutcome::Merged { commit });
     }
+    // 预检没有冲突、基线检出在主工作区：先提交 Teamspace 自己写的岗位文件夹改动；
+    // 基线因此前进时重新预检（冲突时不合并，但这次提交保留：它本来就该进基线）。
+    let (base, tree) = match commit_teamspace_folder(&root, &base_ref, path_env) {
+        Err(err) => {
+            return Ok(blocked(format!(
+                "提交 {ROOT_DIR}/ 下的岗位文件夹改动失败，基线保持不变：{err}"
+            )));
+        }
+        Ok(false) => (base, tree),
+        Ok(true) => {
+            let base = resolve_commit(&root, &base_ref, path_env)?;
+            match preflight(&root, &base, &run, path_env)? {
+                Ok(tree) => (base, tree),
+                Err(files) => return Ok(MergeOutcome::Conflict { files }),
+            }
+        }
+    };
     if operation_in_progress(&root, path_env)? {
         return Ok(blocked(
             "工作空间存在尚未完成的 Git 合并、变基或拣选，请先处理",
@@ -965,6 +1032,33 @@ mod tests {
                 "local\n"
             );
         }
+    }
+
+    /// Teamspace 写进主工作区的岗位文件夹改动不挡合并：先提交到基线，再合并（日志弄脏 main 的问题）。
+    #[test]
+    fn teamspace_folder_changes_are_committed_before_merging() {
+        let repo = Repo::new();
+        let journal = repo.root.join("Teamspace/前端/工作日志.md");
+        fs::create_dir_all(journal.parent().unwrap()).unwrap();
+        fs::write(&journal, "# 工作日志\n").unwrap();
+        checked(&repo.root, &["add", "Teamspace"]);
+        checked(&repo.root, &["commit", "-q", "-m", "journal"]);
+        let run = repo.worktree();
+        fs::write(run.root.join("new.txt"), "new\n").unwrap();
+        save(&run.root);
+        // 合并前 Teamspace 又追加了日志、新建了说明，都还没提交。
+        fs::write(&journal, "# 工作日志\n- 派工\n").unwrap();
+        fs::write(repo.root.join("Teamspace/前端/岗位说明.md"), "说明\n").unwrap();
+
+        merged(repo.merge());
+        let status = checked(&repo.root, &["status", "--porcelain=v1"]);
+        assert!(status.is_empty(), "{status}");
+        let log = checked(&repo.root, &["log", "--format=%s", "-3"]);
+        assert!(log.contains("chore(teamspace)"), "{log}");
+        assert_eq!(
+            fs::read_to_string(&journal).unwrap(),
+            "# 工作日志\n- 派工\n"
+        );
     }
 
     #[test]

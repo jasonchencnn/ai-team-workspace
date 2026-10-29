@@ -196,10 +196,18 @@ fn git_run_is_committed_reviewed_merged_and_cleaned_up() {
     assert_eq!(result.task.status, TaskStatus::Done);
     let merged = result.merged_commit.unwrap();
     assert_eq!(git_out(&e.ws, &["rev-parse", "main"]), merged);
-    assert_eq!(
-        git_out(&e.ws, &["rev-parse", &format!("{merged}^1")]),
-        main_before
-    );
+    // 第一亲是合并前的 main，或是合并前顺带提交 Teamspace/ 岗位文件夹改动的那一个（其父是原来的 main）。
+    let parent = git_out(&e.ws, &["rev-parse", &format!("{merged}^1")]);
+    if parent != main_before {
+        assert_eq!(
+            git_out(&e.ws, &["log", "-1", "--format=%s", &parent]),
+            "chore(teamspace): 更新岗位文件夹"
+        );
+        assert_eq!(
+            git_out(&e.ws, &["rev-parse", &format!("{parent}^1")]),
+            main_before
+        );
+    }
     assert!(e.ws.join(&file.path).is_file());
     assert!(!Path::new(&run.exec_dir).exists());
     assert!(!branch_exists(&e, &branch));
