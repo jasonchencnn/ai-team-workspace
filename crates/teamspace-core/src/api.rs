@@ -425,6 +425,7 @@ impl Core {
     ///
     /// 调用时不得持有数据库锁：这里自己加锁读订阅设置，事务已提交后才推送。
     pub(crate) fn push_notification(&self, spec: NotificationSpec) {
+        self.notify_leader(&spec);
         let built = {
             let conn = self.lock();
             notification::build(&conn, &spec)
@@ -433,6 +434,55 @@ impl Core {
             self.emit_notify(&NotifyEvent::Notification {
                 notification: Box::new(notification),
             });
+        }
+    }
+
+    /// 任务动态推送给 Leader（D43）：团队开了「通知 Leader」、有绑定了 Harness 的 Leader 岗位时，
+    /// 任务待验收、执行失败或受阻、权限请求等待答复，以负责岗位的身份给 Leader 发一条消息，
+    /// 投递引擎唤起 Leader 的 Harness（会话里带 teamspace MCP）去处理。Leader 自己负责的任务不推。
+    ///
+    /// 推送失败只记日志：不影响通知与原来的流程。调用时不得持有数据库锁。
+    fn notify_leader(&self, spec: &NotificationSpec) {
+        use crate::model::{NotificationCategory as C, SendMessageInput};
+        if !matches!(
+            spec.category,
+            C::TaskReview | C::TaskBlocked | C::TaskFailed | C::Permission
+        ) {
+            return;
+        }
+        let sent = self.write(|tx| {
+            let settings = automation::get(tx, &spec.team_id)?;
+            if !settings.notify_leader {
+                return Ok(None);
+            }
+            let leader = role::list_views(tx, &spec.team_id)?
+                .into_iter()
+                .map(|view| view.role)
+                .find(|role| role.is_leader && role.harness_id.is_some());
+            let (Some(leader), Some(from)) = (leader, spec.role_id.as_deref()) else {
+                return Ok(None);
+            };
+            if from == leader.id {
+                return Ok(None);
+            }
+            let input = SendMessageInput {
+                team_id: spec.team_id.clone(),
+                to_role_id: leader.id.clone(),
+                body: leader_brief(spec, settings.autonomy_level),
+                task_id: spec.task_id.clone(),
+                thread_id: None,
+                subject: Some(spec.title.clone()),
+                from_role_id: Some(from.to_owned()),
+            };
+            message::send(tx, Actor::System, &input).map(Some)
+        });
+        match sent {
+            Ok(Some(message)) => {
+                self.emit_message_status(&message, None);
+                self.deliveries.schedule();
+            }
+            Ok(None) => {}
+            Err(err) => eprintln!("teamspace: 任务动态推送给 Leader 失败：{err}"),
         }
     }
 
@@ -2001,6 +2051,38 @@ impl Teamspace {
             Ok(after)
         })
     }
+}
+
+/// 推给 Leader 的任务动态正文：发生了什么，以及用哪些 teamspace 工具处理。
+fn leader_brief(spec: &NotificationSpec, autonomy_level: u8) -> String {
+    use crate::model::NotificationCategory as C;
+    let task = spec.task_key.as_deref().unwrap_or("任务");
+    let what = match spec.category {
+        C::TaskReview => {
+            let merge = match autonomy_level {
+                0 => "团队自治级别为 0：你只能评审和退回，通过（合并）由 Human 在应用里点",
+                1 => "团队自治级别为 1：只改文档或测试时可以直接 approve_review，其余由 Human 合并",
+                _ => {
+                    "团队自治级别为 2：闸门（检查命令、受保护路径、无冲突）全过就可以 approve_review"
+                }
+            };
+            format!(
+                "用 get_review 看 {task} 的改动；合格就 approve_review，不合格用 reject_review 写清要改什么。{merge}。"
+            )
+        }
+        C::TaskBlocked | C::TaskFailed => format!(
+            "用 run_status / run_progress 查 {task} 为什么停下；能解决的就调整任务或 start_run 重跑，\
+             需要 Human（登录、凭据、拍板）的写清楚原因。"
+        ),
+        _ => format!(
+            "用 pending_permissions 看 {task} 等你答复的请求，answer_permission 答复并写理由；\
+             拿不准用 escalate_permission 交给 Human。"
+        ),
+    };
+    format!(
+        "[Teamspace 任务动态] {}\n{}\n\n{what}\n处理完用一两句话回复你做了什么。",
+        spec.title, spec.body
+    )
 }
 
 /// 用系统默认程序打开时会被直接运行（或安装、挂载）的扩展名。

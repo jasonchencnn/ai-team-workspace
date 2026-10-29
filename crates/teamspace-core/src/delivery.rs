@@ -257,6 +257,8 @@ struct Context {
     workspace: PathBuf,
     /// 岗位文件夹（绝对路径）；还没有时为 `None`。
     role_folder: Option<PathBuf>,
+    /// 会话里带的 MCP 服务器：Leader 岗位带 teamspace MCP（D43），其他岗位为空。
+    mcp_servers: Value,
 }
 
 /// 取出投递上下文；任何一步不满足都给出中文失败原因。
@@ -293,6 +295,11 @@ fn load_context(core: &Arc<Core>, message: &Message) -> std::result::Result<Cont
         harness_args: instance.args.clone(),
         env_profile: instance.env_profile.clone(),
         workspace,
+        mcp_servers: if role.is_leader {
+            crate::leader::acp_mcp_servers(&core.data_dir)
+        } else {
+            json!([])
+        },
     })
 }
 
@@ -349,7 +356,7 @@ fn run_session(
     let response = request(
         &process,
         "session/new",
-        json!({ "cwd": cwd.to_string_lossy(), "mcpServers": [] }),
+        json!({ "cwd": cwd.to_string_lossy(), "mcpServers": context.mcp_servers }),
     )
     .map_err(|err| format!("无法建立会话：{err}"))?;
     let session = response

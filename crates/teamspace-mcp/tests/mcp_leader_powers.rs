@@ -213,3 +213,75 @@ fn wait_events_returns_when_a_task_needs_the_leader() {
         .ok_json();
     assert_eq!(none["timedOut"], true, "{none}");
 }
+
+/// 开了「通知 Leader」：任务待验收时，以负责岗位的身份给 Leader 岗位发一条任务动态，
+/// 投递引擎唤起 Leader 绑定的 Harness 处理并回复（D43）。没开时不发。
+#[test]
+fn task_events_are_pushed_to_the_leader_role() {
+    use teamspace_core::model::{
+        CreateRoleInput, ListRoleMessagesQuery, MessageStatus, NewRole, UpdateTeamAutomationInput,
+    };
+    let env = Env::new(false, &[("前端开发", "FE")]);
+    let leader = env
+        .ts
+        .create_role(CreateRoleInput {
+            team_id: env.team_id.clone(),
+            role: NewRole {
+                name: "Leader".into(),
+                code: None,
+                task_prefix: "LD".into(),
+                description: String::new(),
+                guidelines: String::new(),
+                is_leader: true,
+            },
+        })
+        .unwrap();
+    env.ts
+        .bind_role_harness(&leader.role.id, &env.harness_id)
+        .unwrap();
+    let messages = |env: &Env| {
+        env.ts
+            .list_role_messages(ListRoleMessagesQuery {
+                role_id: leader.role.id.clone(),
+                statuses: Some(vec![
+                    MessageStatus::Queued,
+                    MessageStatus::Delivering,
+                    MessageStatus::Replied,
+                    MessageStatus::Failed,
+                ]),
+                limit: None,
+            })
+            .unwrap()
+    };
+    let mut client = Client::start(&env.socket);
+
+    // 没开：不推。
+    let (_, run_id) = start(&mut client, "第一件", "");
+    wait_for_status(&mut client, &run_id, RunStatus::Succeeded);
+    assert!(messages(&env).is_empty());
+
+    env.ts
+        .update_team_automation(UpdateTeamAutomationInput {
+            team_id: env.team_id.clone(),
+            autonomy_level: 0,
+            check_command: None,
+            protected_paths: Vec::new(),
+            allow_commands: Vec::new(),
+            deny_commands: Vec::new(),
+            notify_leader: true,
+        })
+        .unwrap();
+    let (key, run_id) = start(&mut client, "第二件", "");
+    wait_for_status(&mut client, &run_id, RunStatus::Succeeded);
+    common::wait_until("Leader 收到并回复任务动态", || {
+        messages(&env)
+            .iter()
+            .any(|m| m.status == MessageStatus::Replied)
+    });
+    let pushed = messages(&env);
+    assert_eq!(pushed.len(), 1, "{pushed:#?}");
+    let body = &pushed[0].body;
+    assert!(body.contains("[Teamspace 任务动态]"), "{body}");
+    assert!(body.contains(&key), "{body}");
+    assert!(body.contains("get_review"), "{body}");
+}

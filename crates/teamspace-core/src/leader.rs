@@ -423,6 +423,23 @@ fn write_mcp_config(
     })
 }
 
+/// Leader 岗位的 ACP 会话用的 MCP 服务器（`session/new` 的 `mcpServers` 格式，D43）：
+/// 投递给 Leader 的消息唤起它的 Harness 时，会话里带上 teamspace MCP，Leader 才能动手处理。
+/// 找不到 `teamspace-mcp` 可执行文件时为空数组。
+pub(crate) fn acp_mcp_servers(data_dir: &Path) -> Value {
+    let binary = locate_binary(std::env::current_exe().ok().as_deref());
+    if !binary.found {
+        return json!([]);
+    }
+    let socket = control_socket_path(data_dir);
+    json!([{
+        "name": MCP_SERVER_NAME,
+        "command": binary.path.display().to_string(),
+        "args": [],
+        "env": [{ "name": SOCKET_ENV, "value": socket.display().to_string() }],
+    }])
+}
+
 /// Leader 接入需要的内部信息。
 struct LeaderContext {
     team: Team,
