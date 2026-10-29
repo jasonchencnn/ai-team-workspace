@@ -36,6 +36,8 @@ const ALLOWED_STATUS: &[&str] = &["todo", "ready", "doing", "blocked", "review",
 const DEFAULT_WAIT_SECONDS: u64 = 60;
 /// `wait_reply` 最多等多少秒（超过就按这个值算）。
 const MAX_WAIT_SECONDS: u64 = 600;
+/// `approve_review` 等内核答复的上限：内核要先跑团队的检查命令（最多 20 分钟）再合并。
+const APPROVE_TIMEOUT: Duration = Duration::from_secs(25 * 60);
 /// `wait_events` 默认等多少秒。
 const DEFAULT_EVENT_WAIT_SECONDS: u64 = 300;
 /// `wait_events` 等的事项类别：待验收、执行失败或受阻、待答复权限（都是 Leader 能处理的）。
@@ -527,7 +529,9 @@ impl TeamspaceServer {
     #[tool(
         name = "approve_review",
         description = "通过验收：普通文件夹任务直接完成；Git 任务把执行分支合并进基线分支（--no-ff，不推送），\
-                       之后任务完成、下游任务自动推进。合并冲突时任务转为受阻并列出冲突文件。先用 get_review 看改动。",
+                       之后任务完成、下游任务自动推进。先用 get_review 看改动。内核按团队的 Leader 自治级别把关：\
+                       0 不能合并；1 只合并文档或测试类改动；2 闸门全过才合并（无冲突、不碰受保护路径、检查命令通过，\
+                       检查可能要几分钟）。没过的留在待验收给 Human。",
         annotations(destructive_hint = false)
     )]
     async fn approve_review(&self, Parameters(args): Parameters<TaskArgs>) -> CallToolResult {
@@ -1349,8 +1353,7 @@ impl TeamspaceServer {
             .and_then(Value::as_str)
             .unwrap_or_default();
         let input = json!({ "runId": run_id, "expectedHead": review.get("headCommit") });
-        let result = self
-            .client
+        let result = ControlClient::with_timeout(self.client.path().to_path_buf(), APPROVE_TIMEOUT)
             .call("approve_review", json!({ "input": input }))
             .await?;
         Ok(json!({

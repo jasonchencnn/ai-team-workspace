@@ -35,6 +35,7 @@ pub mod env_profile;
 pub mod git_review;
 mod grants;
 pub mod handoff;
+pub mod merge_gate;
 pub mod policy;
 pub(crate) mod review_seam;
 mod session_mode;

@@ -50,6 +50,7 @@ export const KIND_LABELS: Record<EventKind, string> = {
   permission_auto_answered: "权限自动答复",
   permission_answered_by_leader: "Leader 答复权限",
   permission_escalated: "Leader 升级权限请求",
+  review_gate_blocked: "合并闸门未通过",
   message_sent: "发送消息",
   message_replied: "消息已回复",
   message_delivery_failed: "消息投递失败",

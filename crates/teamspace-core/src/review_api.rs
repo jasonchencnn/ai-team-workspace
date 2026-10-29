@@ -661,12 +661,98 @@ impl Teamspace {
         self.approve_review_as(Actor::Human, input)
     }
 
-    /// 以指定操作者通过验收（活动记录的操作者为 `actor`；Leader 通过验收见 D42）。
+    /// Leader 合并前的闸门（D43）：自治级别、无冲突、不碰受保护路径、（级别 1）只改文档或测试、
+    /// 检查命令通过。任何一道没过就拒绝（conflict），记一条活动，任务留在待验收等 Human。
+    fn leader_gates(&self, input: &ApproveReviewInput) -> Result<()> {
+        use crate::run::merge_gate;
+        let (task, run) = review::check_pending(&self.lock(), &input.run_id)?;
+        let settings = crate::service::automation::get(&self.lock(), &task.team_id)?;
+        let refuse = |reason: String| -> Error {
+            let recorded = self.write(|tx| {
+                run_svc::record_event(
+                    tx,
+                    &run,
+                    Actor::Leader,
+                    EventKind::ReviewGateBlocked,
+                    format!("Leader 不能合并 {}：{reason}", task.key),
+                    serde_json::json!({ "runId": run.id, "reason": reason,
+                                        "autonomyLevel": settings.autonomy_level }),
+                )
+            });
+            if let Err(err) = recorded {
+                eprintln!("teamspace: 记录合并闸门失败：{err}");
+            }
+            Error::conflict(format!(
+                "Leader 不能合并 {}：{reason}；任务留在待验收，由 Human 在 Teamspace 应用中处理",
+                task.key
+            ))
+        };
+        if settings.autonomy_level == 0 {
+            return Err(refuse(
+                "团队的 Leader 自治级别为 0，合并只能由 Human 点".to_owned(),
+            ));
+        }
+        let view = self.get_review_readonly(&task.id)?;
+        if view.conflict {
+            return Err(refuse("执行分支与基线有冲突".to_owned()));
+        }
+        let files: Vec<String> = view.files.iter().map(|file| file.path.clone()).collect();
+        let hits = merge_gate::protected_hits(&files, &settings.protected_paths);
+        if !hits.is_empty() {
+            return Err(refuse(format!("改动碰到受保护路径：{}", hits.join("、"))));
+        }
+        if settings.autonomy_level == 1
+            && let Some(file) = merge_gate::first_non_doc_or_test(&files)
+        {
+            return Err(refuse(format!(
+                "自治级别 1 只合并文档或测试类改动，这次还改了 {file}"
+            )));
+        }
+        if let Some(command) = settings.check_command.as_deref() {
+            let workspace = run_svc::workspace_of(&self.lock(), &run.id)?;
+            let path_env = self.probe.command_path_env();
+            let outcome = match (
+                run.isolation,
+                run.base_branch.as_deref(),
+                run.branch.as_deref(),
+            ) {
+                (RunIsolation::Worktree, Some(base), Some(branch)) => merge_gate::check_merged(
+                    Path::new(&workspace),
+                    base,
+                    branch,
+                    command,
+                    &self.data_dir.join("checks"),
+                    Some(&path_env),
+                    merge_gate::CHECK_TIMEOUT,
+                )
+                .map_err(|err| refuse(format!("检查命令没能运行：{err}")))?,
+                _ => merge_gate::run_check(
+                    Path::new(&workspace),
+                    command,
+                    Some(&path_env),
+                    merge_gate::CHECK_TIMEOUT,
+                ),
+            };
+            if !outcome.passed {
+                return Err(refuse(format!(
+                    "检查命令 {command} 没有通过：{}",
+                    outcome.detail
+                )));
+            }
+        }
+        Ok(())
+    }
+
+    /// 以指定操作者通过验收（活动记录的操作者为 `actor`；Leader 通过验收见 D42、D43）。
     pub fn approve_review_as(
         &self,
         actor: Actor,
         input: ApproveReviewInput,
     ) -> Result<ApproveReviewResult> {
+        if actor == Actor::Leader {
+            // 闸门在拿验收锁之前判断：检查命令可能跑好几分钟，不占着锁。
+            self.leader_gates(&input)?;
+        }
         let (first, first_run) = review::check_pending(&self.lock(), &input.run_id)?;
         let workspace = run_svc::workspace_of(&self.lock(), &first_run.id)?;
         let _guard = self.begin_review(&first.id, &workspace)?;

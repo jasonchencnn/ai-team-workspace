@@ -66,6 +66,8 @@ pub enum EventKind {
     PermissionAnsweredByLeader,
     /// Leader 把权限请求升级给 Human（D43；`data.runId`、`data.reason`）。
     PermissionEscalated,
+    /// Leader 合并被闸门挡下，任务留在待验收（D43；`data.runId`、`data.reason`）。
+    ReviewGateBlocked,
     /// 消息已发出（`data.messageId`、`data.threadId`、`data.toRoleId`）。
     MessageSent,
     /// 消息已收到回复（`data.messageId`、`data.threadId`）。

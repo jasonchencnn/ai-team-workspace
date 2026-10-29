@@ -139,32 +139,82 @@ fn the_leader_can_escalate_to_the_human() {
     assert_eq!(logged.len(), 1, "{logged:?}");
 }
 
+/// 设置团队的自治级别、检查命令与受保护路径。
+fn automate(env: &Env, level: u8, check: Option<&str>, protected: &[&str]) {
+    env.ts
+        .update_team_automation(teamspace_core::model::UpdateTeamAutomationInput {
+            team_id: env.team_id.clone(),
+            autonomy_level: level,
+            check_command: check.map(str::to_owned),
+            protected_paths: protected.iter().map(|p| (*p).to_owned()).collect(),
+            allow_commands: Vec::new(),
+            deny_commands: Vec::new(),
+            notify_leader: false,
+        })
+        .unwrap();
+}
+
+/// 自治级别 0（默认）：Leader 不能合并，任务留在待验收，记一条活动（D43）。
 #[test]
-fn the_leader_approves_a_review_in_a_plain_folder() {
+fn level_zero_keeps_merging_with_the_human() {
     let env = Env::new(false, &[("前端开发", "FE")]);
     let mut client = Client::start(&env.socket);
     let (key, run_id) = start(&mut client, "实现登录页", "");
     wait_for_status(&mut client, &run_id, RunStatus::Succeeded);
 
-    let approved = client.call("approve_review", json!({ "task": key }));
-    let approved = approved.ok_json();
+    let refused = client.call("approve_review", json!({ "task": key }));
+    assert!(refused.is_error, "{}", refused.text);
+    assert!(refused.text.contains("自治级别为 0"), "{}", refused.text);
+    let task = client.call("get_task", json!({ "task": key })).ok_json();
+    assert_eq!(task["task"]["status"], "review", "{task}");
+    assert_eq!(events(&mut client, "review_gate_blocked").len(), 1);
+}
+
+/// 自治级别 1：只改了岗位文件夹里的过程文件（算文档类）时可以直接合并（普通文件夹）。
+#[test]
+fn level_one_approves_doc_only_changes() {
+    let env = Env::new(false, &[("前端开发", "FE")]);
+    automate(&env, 1, None, &[]);
+    let mut client = Client::start(&env.socket);
+    let (key, run_id) = start(&mut client, "写说明", "");
+    wait_for_status(&mut client, &run_id, RunStatus::Succeeded);
+
+    let approved = client
+        .call("approve_review", json!({ "task": key }))
+        .ok_json();
     assert_eq!(approved["taskStatus"], "done", "{approved}");
     let events = events(&mut client, "review_approved");
-    assert_eq!(events.len(), 1, "{events:?}");
     assert_eq!(events[0]["actor"], "leader", "{events:?}");
 }
 
+/// 自治级别 2：检查命令在临时 worktree 里跑通才合并；没通过、碰到受保护路径都留给 Human。
 #[test]
-fn the_leader_merges_a_git_review() {
+fn level_two_merges_only_when_the_gates_pass() {
     let env = Env::new(true, &[("前端开发", "FE")]);
     let mut client = Client::start(&env.socket);
-    let (key, run_id) = start(&mut client, "实现登录页", "");
-    wait_for_status(&mut client, &run_id, RunStatus::Succeeded);
 
-    let approved = client.call("approve_review", json!({ "task": key }));
-    let approved = approved.ok_json();
+    // 检查命令失败：输出带回来，基线不动。
+    automate(&env, 2, Some("echo 检查没过 && exit 1"), &[]);
+    let (key, run_id) = start(&mut client, "第一件", "");
+    wait_for_status(&mut client, &run_id, RunStatus::Succeeded);
+    let failed = client.call("approve_review", json!({ "task": key }));
+    assert!(failed.is_error, "{}", failed.text);
+    assert!(failed.text.contains("检查没过"), "{}", failed.text);
+
+    // 碰到受保护路径。
+    automate(&env, 2, Some("true"), &["Teamspace/"]);
+    let protected = client.call("approve_review", json!({ "task": key }));
+    assert!(protected.is_error, "{}", protected.text);
+    assert!(protected.text.contains("受保护路径"), "{}", protected.text);
+
+    // 闸门全过：合并。检查命令看得到执行分支的改动（跑在合并后的临时 worktree 里）。
+    automate(&env, 2, Some("test -d Teamspace"), &[]);
+    let approved = client
+        .call("approve_review", json!({ "task": key }))
+        .ok_json();
     assert_eq!(approved["taskStatus"], "done", "{approved}");
     assert!(approved["mergedCommit"].is_string(), "{approved}");
+    assert_eq!(events(&mut client, "review_gate_blocked").len(), 2);
 
     // 再通过一次：没有待验收的执行了。
     let again = client.call("approve_review", json!({ "task": key }));
